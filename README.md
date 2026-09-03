@@ -39,11 +39,10 @@ a leaked secret can be rotated with no downtime and no client change. Details in
 `api/jwt_keys.py`.
 
 **3. Releases — git tags.** Consumers must pin a **tag**, never a branch.
-`apps.json` entries take a git ref in the `branch` field, and `git clone
---branch` accepts a tag:
+`apps.json` entries take a git ref in the `branch` field, and `git clone --branch` accepts a tag:
 
 ```json
-[{"url": "https://github.com/<org>/oan_auth_service.git", "branch": "v0.1.0"}]
+[{ "url": "https://github.com/<org>/oan_auth_service.git", "branch": "v0.1.0" }]
 ```
 
 This matters because the deployments are independent. Pinning a moving branch
