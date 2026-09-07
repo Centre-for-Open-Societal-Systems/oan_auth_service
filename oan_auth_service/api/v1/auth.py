@@ -11,6 +11,7 @@ from frappe.utils import cint
 from frappe.utils.password import passlibctx
 
 from oan_auth_service.api import tokens
+from oan_auth_service.api.utils import handle_api_errors
 from oan_auth_service.config import settings
 
 REFRESH_TOKEN_DOCTYPE = "OAN User Refresh Token"
@@ -146,6 +147,7 @@ def _issue_token_pair(user: str, remember_me: bool, scope: list[str] | None = No
 
 
 @frappe.whitelist(allow_guest=True)
+@handle_api_errors
 def login(usr: str, pwd: str, remember_me: bool = False, scope: str | list[str] | None = None):
 	"""Authenticate and issue an access token plus a refresh token.
 
@@ -165,18 +167,125 @@ def login(usr: str, pwd: str, remember_me: bool = False, scope: str | list[str] 
 
 
 @frappe.whitelist(allow_guest=True)
-def register_user(**kwargs):
-	"""Create a User and its role assignment, then issue a first token pair."""
-	raise NotImplementedError(
-		"Registration is intentionally unimplemented in the shared service. Which "
-		"roles a new account may self-assign, whether signup is open at all, and what "
-		"verification it requires are product decisions that differ per consumer — "
-		"and a wrong default here is a privilege-escalation hole in every consumer at "
-		"once. Implement it in the consuming app and call _issue_token_pair()."
+@handle_api_errors
+def register_user(
+	email: str,
+	password: str,
+	full_name: str,
+	phone_number: str | None = None,
+	role: str | None = None,
+	roles: list[str] | str | None = None,
+	**kwargs,
+):
+	"""Create a User and its role assignment, trigger registered hooks, and issue the first token pair.
+
+	- Guest callers can self-assign roles listed in `jwt_self_registerable_roles` in site_config.json.
+	- If no role is requested, `jwt_default_registration_role` is assigned (if configured).
+	- Authenticated administrators (e.g. System Manager) can assign any valid role.
+	- Broadcasts `on_user_registered` hooks for consuming apps to initialize and link domain DocTypes.
+	"""
+	from oan_auth_service.api.utils import (
+		parse_multi_value,
+		validate_email_string,
+		validate_password_complexity,
+		validate_phone_string,
 	)
+
+	if not email or not str(email).strip():
+		frappe.throw(_("Email is required."), frappe.ValidationError)
+
+	if not password or not str(password).strip():
+		frappe.throw(_("Password is required."), frappe.ValidationError)
+
+	if not full_name or not str(full_name).strip():
+		frappe.throw(_("Full name is required."), frappe.ValidationError)
+
+	validate_email_string(email)
+	validate_password_complexity(password)
+
+	if phone_number:
+		phone_number = validate_phone_string(phone_number)
+
+	if frappe.db.exists("User", email):
+		frappe.throw(_("A user with this email address already exists."), frappe.ValidationError)
+
+	if phone_number and frappe.db.exists("User", {"mobile_no": phone_number}):
+		frappe.throw(_("A user with this phone number already exists."), frappe.ValidationError)
+
+	# Combine singular `role` or `roles` list/string
+	raw_roles = []
+	if role:
+		raw_roles.append(role)
+	if roles:
+		raw_roles.extend(parse_multi_value(roles))
+
+	requested_roles = parse_multi_value(raw_roles)
+
+	is_admin_caller = frappe.session.user != "Guest" and "System Manager" in frappe.get_roles(
+		frappe.session.user
+	)
+
+	if not requested_roles:
+		default_role = frappe.conf.get("jwt_default_registration_role")
+		if default_role:
+			requested_roles = [default_role]
+	elif not is_admin_caller:
+		# Enforce self-registration whitelist for non-admin / guest callers
+		allowed_roles = frappe.conf.get("jwt_self_registerable_roles") or []
+		if not allowed_roles:
+			frappe.throw(
+				_("Role assignment is not allowed during public registration."), frappe.PermissionError
+			)
+		unallowed = [r for r in requested_roles if r not in allowed_roles]
+		if unallowed:
+			frappe.throw(
+				_("The following roles cannot be self-assigned: {0}").format(", ".join(sorted(unallowed))),
+				frappe.PermissionError,
+			)
+
+	first_name, _sep, last_name = full_name.strip().partition(" ")
+
+	user_doc = frappe.get_doc(
+		{
+			"doctype": "User",
+			"email": email,
+			"first_name": first_name,
+			"last_name": last_name,
+			"mobile_no": phone_number if phone_number else None,
+			"send_welcome_email": 0,
+			"enabled": 1,
+			"new_password": password,
+			"roles": [{"role": r} for r in requested_roles],
+		}
+	)
+	user_doc.insert(ignore_permissions=True)
+
+	# Broadcast on_user_registered so consuming apps can create and link their own
+	# domain records. Every subscriber is called on every registration — the auth
+	# service does not know which roles map to which doctypes, so each handler is
+	# responsible for checking `roles` and returning early if it isn't concerned.
+	#
+	# Failures deliberately propagate: handle_api_errors rolls the transaction back,
+	# so a handler that cannot create its record also undoes the User insert. A
+	# registration that half-succeeded — an account with a role but no linked
+	# record, and a token pair already in the caller's hands — is worse than one
+	# that visibly failed and can be retried.
+	hook_kwargs = {k: v for k, v in kwargs.items() if k != "cmd"}
+	for hook_path in frappe.get_hooks("on_user_registered"):
+		try:
+			fn = frappe.get_attr(hook_path)
+			fn(user_doc=user_doc, role=role, roles=requested_roles, **hook_kwargs)
+		except Exception:
+			frappe.logger().error(f"on_user_registered hook failed, aborting registration: {hook_path}")
+			raise
+
+	pair = _issue_token_pair(email, remember_me=False)
+	frappe.db.commit()
+	return pair
 
 
 @frappe.whitelist(allow_guest=True)
+@handle_api_errors
 def refresh(refresh_token: str):
 	"""Exchange a refresh token for a new pair, rotating the stored row.
 
@@ -224,6 +333,7 @@ def refresh(refresh_token: str):
 
 
 @frappe.whitelist(allow_guest=True)
+@handle_api_errors
 def logout(refresh_token: str):
 	"""Revoke a refresh token. Access tokens expire on their own."""
 	if not refresh_token:
@@ -273,6 +383,7 @@ def on_logout(login_manager):
 
 
 @frappe.whitelist(allow_guest=True)
+@handle_api_errors
 def forgot_password(usr: str):
 	"""Send a password-reset email, without revealing whether the account exists.
 
@@ -291,6 +402,7 @@ def forgot_password(usr: str):
 
 
 @frappe.whitelist(allow_guest=True)
+@handle_api_errors
 def reset_password(key: str, new_password: str):
 	"""Complete a reset using the key from the email, and revoke live sessions."""
 	from frappe.core.doctype.user.user import update_password as frappe_update_password

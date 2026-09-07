@@ -2,7 +2,7 @@
 	"info": {
 		"_postman_id": "9b3c4f9a-6562-42ea-a45a-c6e3952f41b2",
 		"name": "OAN Auth Service API",
-		"description": "Postman collection for OAN Auth Service v1 endpoints covering token lifecycle (login, refresh, logout) and password recovery flows.",
+		"description": "Postman collection for OAN Auth Service v1 endpoints covering registration, login, token refresh, logout, and password recovery flows.",
 		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
 	},
 	"variable": [
@@ -34,7 +34,84 @@
 	],
 	"item": [
 		{
-			"name": "1. Login",
+			"name": "1. Register User",
+			"event": [
+				{
+					"listen": "prerequest",
+					"script": {
+						"exec": [
+							"var baseUrl = pm.environment.get(\"base_url\") || pm.collectionVariables.get(\"base_url\");",
+							"if (!baseUrl) {",
+							"    console.warn(\"[Pre-request] 'base_url' is empty. Set it in your environment or collection variables.\");",
+							"}"
+						],
+						"type": "text/javascript"
+					}
+				},
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test(\"Status code is 200\", function () {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							"",
+							"if (pm.response.code === 200) {",
+							"    var jsonData = pm.response.json();",
+							"    // Frappe nests a whitelisted return value under `message`; the API",
+							"    // then wraps its payload in a `data` envelope. Unwrap both, tolerating",
+							"    // either being absent.",
+							"    var envelope = jsonData.message || jsonData;",
+							"    var data = envelope.data || envelope;",
+							"    if (data && data.access_token) {",
+							"        pm.collectionVariables.set(\"access_token\", data.access_token);",
+							"        if (pm.environment.name) {",
+							"            pm.environment.set(\"access_token\", data.access_token);",
+							"        }",
+							"        console.log(\"[Post-response] Saved access_token:\", data.access_token);",
+							"    }",
+							"    if (data && data.refresh_token) {",
+							"        pm.collectionVariables.set(\"refresh_token\", data.refresh_token);",
+							"        if (pm.environment.name) {",
+							"            pm.environment.set(\"refresh_token\", data.refresh_token);",
+							"        }",
+							"        console.log(\"[Post-response] Saved refresh_token:\", data.refresh_token);",
+							"    }",
+							"}"
+						],
+						"type": "text/javascript"
+					}
+				}
+			],
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"email\": \"newuser@example.com\",\n    \"password\": \"SecurePass123!\",\n    \"full_name\": \"John Doe\",\n    \"phone_number\": \"+1234567890\"\n}"
+				},
+				"url": {
+					"raw": "{{base_url}}/api/method/oan_auth_service.api.v1.auth.register_user",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"api",
+						"method",
+						"oan_auth_service.api.v1.auth.register_user"
+					]
+				},
+				"description": "Registers a new user account with password complexity validation and issues the initial access/refresh token pair."
+			},
+			"response": []
+		},
+		{
+			"name": "2. Login",
 			"event": [
 				{
 					"listen": "prerequest",
@@ -62,7 +139,11 @@
 							"",
 							"if (pm.response.code === 200) {",
 							"    var jsonData = pm.response.json();",
-							"    var data = jsonData.message || jsonData;",
+							"    // Frappe nests a whitelisted return value under `message`; the API",
+							"    // then wraps its payload in a `data` envelope. Unwrap both, tolerating",
+							"    // either being absent.",
+							"    var envelope = jsonData.message || jsonData;",
+							"    var data = envelope.data || envelope;",
 							"    if (data && data.access_token) {",
 							"        pm.collectionVariables.set(\"access_token\", data.access_token);",
 							"        if (pm.environment.name) {",
@@ -111,7 +192,7 @@
 			"response": []
 		},
 		{
-			"name": "2. Refresh Token",
+			"name": "3. Refresh Token",
 			"event": [
 				{
 					"listen": "prerequest",
@@ -119,7 +200,7 @@
 						"exec": [
 							"var refreshToken = pm.environment.get(\"refresh_token\") || pm.collectionVariables.get(\"refresh_token\");",
 							"if (!refreshToken) {",
-							"    console.warn(\"[Pre-request] 'refresh_token' is empty. Run '1. Login' first to obtain one.\");",
+							"    console.warn(\"[Pre-request] 'refresh_token' is empty. Run Login or Register first to obtain one.\");",
 							"}"
 						],
 						"type": "text/javascript"
@@ -135,7 +216,11 @@
 							"",
 							"if (pm.response.code === 200) {",
 							"    var jsonData = pm.response.json();",
-							"    var data = jsonData.message || jsonData;",
+							"    // Frappe nests a whitelisted return value under `message`; the API",
+							"    // then wraps its payload in a `data` envelope. Unwrap both, tolerating",
+							"    // either being absent.",
+							"    var envelope = jsonData.message || jsonData;",
+							"    var data = envelope.data || envelope;",
 							"    if (data && data.access_token) {",
 							"        pm.collectionVariables.set(\"access_token\", data.access_token);",
 							"        if (pm.environment.name) {",
@@ -184,7 +269,7 @@
 			"response": []
 		},
 		{
-			"name": "3. Logout",
+			"name": "4. Logout",
 			"event": [
 				{
 					"listen": "prerequest",
@@ -246,7 +331,7 @@
 			"response": []
 		},
 		{
-			"name": "4. Forgot Password",
+			"name": "5. Forgot Password",
 			"event": [
 				{
 					"listen": "prerequest",
@@ -300,13 +385,13 @@
 			"response": []
 		},
 		{
-			"name": "5. Reset Password",
+			"name": "6. Reset Password",
 			"event": [
 				{
 					"listen": "prerequest",
 					"script": {
 						"exec": [
-							"// Pre-request script to verify reset parameters if needed"
+							"// Pre-request verification for reset parameters"
 						],
 						"type": "text/javascript"
 					}
@@ -333,7 +418,7 @@
 				],
 				"body": {
 					"mode": "raw",
-					"raw": "{\n    \"key\": \"reset_key_from_email\",\n    \"new_password\": \"newSecurePassword123\"\n}"
+					"raw": "{\n    \"key\": \"reset_key_from_email\",\n    \"new_password\": \"NewSecurePass123!\"\n}"
 				},
 				"url": {
 					"raw": "{{base_url}}/api/method/oan_auth_service.api.v1.auth.reset_password",
