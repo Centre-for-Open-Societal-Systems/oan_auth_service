@@ -1,0 +1,37 @@
+{
+	"id": "e427189c-a1d2-43bb-a579-24b9148d424b",
+	"name": "OAN Auth Environment",
+	"values": [
+		{
+			"key": "base_url",
+			"value": "",
+			"type": "default",
+			"enabled": true
+		},
+		{
+			"key": "user_email",
+			"value": "",
+			"type": "default",
+			"enabled": true
+		},
+		{
+			"key": "user_password",
+			"value": "",
+			"type": "secret",
+			"enabled": true
+		},
+		{
+			"key": "access_token",
+			"value": "",
+			"type": "secret",
+			"enabled": true
+		},
+		{
+			"key": "refresh_token",
+			"value": "",
+			"type": "secret",
+			"enabled": true
+		}
+	],
+	"_postman_variable_scope": "environment"
+}

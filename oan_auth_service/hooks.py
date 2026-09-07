@@ -21,7 +21,12 @@ app_license = "mit"
 # registered namespace. Consuming apps register their namespace and exempt paths
 # via api.middleware.register_namespace() — see that module.
 
-# auth_hooks = ["oan_auth_service.api.middleware.validate_jwt_request"]
+auth_hooks = ["oan_auth_service.api.middleware.validate_jwt_request"]
+
+# Revokes refresh tokens when a session ends through Frappe's own logout. Without
+# it a desk logout drops the session cookie but leaves every refresh token live
+# for its full lifetime, so a user who believes they logged out has not.
+on_logout = "oan_auth_service.api.v1.auth.on_logout"
 
 
 # Fixtures
@@ -36,11 +41,11 @@ app_license = "mit"
 # Expired refresh tokens are deleted on a schedule; rows are only pruned here,
 # never read back, so a daily sweep is enough.
 
-# scheduler_events = {
-# 	"daily": [
-# 		"oan_auth_service.oan_auth.doctype.oan_user_refresh_token.oan_user_refresh_token.prune_expired",
-# 	],
-# }
+scheduler_events = {
+	"daily": [
+		"oan_auth_service.oan_auth.doctype.oan_user_refresh_token.oan_user_refresh_token.prune_expired",
+	],
+}
 
 
 # Testing
