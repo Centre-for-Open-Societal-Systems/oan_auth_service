@@ -1,0 +1,64 @@
+exclude: 'node_modules|.git'
+default_stages: [pre-commit]
+fail_fast: false
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        files: "oan_auth_service.*"
+        exclude: ".*json$|.*txt$|.*csv|.*md|.*svg"
+      - id: check-merge-conflict
+      - id: check-ast
+      - id: check-json
+      - id: check-toml
+      - id: check-yaml
+      - id: debug-statements
+      # A file with no newline on its last line makes every append to it a
+      # conflict, because both sides have to rewrite that line. .editorconfig
+      # already asks for this; the hook is what enforces it. Doctype JSON is
+      # excluded because Frappe writes those without a final newline.
+      - id: end-of-file-fixer
+        exclude: ".*json$|.*svg$"
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.14.10
+    hooks:
+      - id: ruff
+        name: "Run ruff import sorter"
+        args: ["--select=I", "--fix"]
+
+      - id: ruff
+        name: "Run ruff linter"
+
+      - id: ruff-format
+        name: "Run ruff formatter"
+
+  - repo: https://github.com/pre-commit/mirrors-prettier
+    rev: v2.7.1
+    hooks:
+      - id: prettier
+        types_or: [javascript, vue, scss]
+        exclude: |
+            (?x)^(
+                oan_auth_service/public/dist/.*|
+                .*node_modules.*|
+                .*boilerplate.*|
+                oan_auth_service/templates/includes/.*|
+                oan_auth_service/public/js/lib/.*
+            )$
+
+      - id: prettier
+        name: "Run prettier on markdown"
+        types_or: [markdown]
+        exclude: |
+            (?x)^(
+                .*node_modules.*|
+                .*boilerplate.*
+            )$
+
+ci:
+    autoupdate_schedule: weekly
+    skip: []
+    submodules: false
