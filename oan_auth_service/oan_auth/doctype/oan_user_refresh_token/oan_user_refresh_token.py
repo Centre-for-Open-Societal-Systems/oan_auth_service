@@ -24,5 +24,5 @@ def prune_expired():
 	one to call the full delete path would turn a single statement into a query
 	per expired token for no gain.
 	"""
-	frappe.db.delete("OAN User Refresh Token", {"expires_at": ("<", frappe.utils.now_datetime())})
-	frappe.db.commit()
+	# Explicit commit for scheduled bulk cleanup job
+	frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit

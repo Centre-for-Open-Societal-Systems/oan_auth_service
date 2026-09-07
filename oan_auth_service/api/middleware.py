@@ -24,6 +24,7 @@ is a distinct Authorization scheme rather than a patch to the exception handling
 """
 
 import frappe
+from frappe import _
 
 from oan_auth_service.api import tokens
 from oan_auth_service.api.jwt_keys import JWTKeyConfigurationError
@@ -121,7 +122,7 @@ def validate_jwt_request(request=None):
 		# operator sees "we have no keys" rather than a flood of 401s that look
 		# like clients misbehaving.
 		frappe.log_error(title="oan_auth_service: JWT key material unusable")
-		frappe.throw("Authentication is misconfigured on this server", frappe.ValidationError)
+		frappe.throw(_("Authentication is misconfigured on this server"), frappe.ValidationError)
 	except tokens.TokenError:
 		_reject("Invalid or expired token")
 
@@ -140,7 +141,8 @@ def validate_jwt_request(request=None):
 
 	_verify_scope_still_held(user, claims)
 
-	frappe.set_user(user)
+	# Deliberately sets the authenticated request user from validated JWT claims
+	frappe.set_user(user)  # nosemgrep: frappe-semgrep-rules.rules.security.frappe-setuser
 
 	# Exposed so consumer code can read the token it was authenticated with —
 	# notably the `scope` claim, which this app records but cannot itself
@@ -172,6 +174,6 @@ def _reject(reason: str):
 	401 regardless: telling a caller whether their token was expired, forged or
 	revoked helps them work out which half of an attempt succeeded.
 	"""
-	frappe.local.response["message"] = "Authentication failed"
+	frappe.local.response["message"] = _("Authentication failed")
 	frappe.log_error(title="oan_auth_service: rejected request", message=reason)
 	raise frappe.AuthenticationError

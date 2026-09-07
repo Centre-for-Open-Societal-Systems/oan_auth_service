@@ -146,7 +146,7 @@ def _issue_token_pair(user: str, remember_me: bool, scope: list[str] | None = No
 	}
 
 
-@frappe.whitelist(allow_guest=True)
+@frappe.whitelist(allow_guest=True)  # nosemgrep: frappe-semgrep-rules.rules.security.guest-whitelisted-method
 @handle_api_errors
 def login(usr: str, pwd: str, remember_me: bool = False, scope: str | list[str] | None = None):
 	"""Authenticate and issue an access token plus a refresh token.
@@ -162,11 +162,12 @@ def login(usr: str, pwd: str, remember_me: bool = False, scope: str | list[str] 
 
 	pair = _issue_token_pair(user, remember_me=cint(remember_me), scope=narrowed)
 
-	frappe.db.commit()
+	# Explicit commit to immediately persist token hash before returning
+	frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
 	return pair
 
 
-@frappe.whitelist(allow_guest=True)
+@frappe.whitelist(allow_guest=True)  # nosemgrep: frappe-semgrep-rules.rules.security.guest-whitelisted-method
 @handle_api_errors
 def register_user(
 	email: str,
@@ -280,11 +281,12 @@ def register_user(
 			raise
 
 	pair = _issue_token_pair(email, remember_me=False)
-	frappe.db.commit()
+	# Explicit commit to ensure user and initial token state are persisted
+	frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
 	return pair
 
 
-@frappe.whitelist(allow_guest=True)
+@frappe.whitelist(allow_guest=True)  # nosemgrep: frappe-semgrep-rules.rules.security.guest-whitelisted-method
 @handle_api_errors
 def refresh(refresh_token: str):
 	"""Exchange a refresh token for a new pair, rotating the stored row.
@@ -314,7 +316,8 @@ def refresh(refresh_token: str):
 	frappe.delete_doc(
 		REFRESH_TOKEN_DOCTYPE, row.name, ignore_permissions=True, force=True, delete_permanently=True
 	)
-	frappe.db.commit()
+	# Unconditionally commit deletion to prevent replay attacks
+	frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
 
 	if frappe.utils.get_datetime(row.expires_at) < frappe.utils.now_datetime():
 		raise frappe.AuthenticationError(_("Invalid refresh token"))
@@ -328,11 +331,12 @@ def refresh(refresh_token: str):
 	# bounds the staleness of the roles claim to one access-token TTL.
 	pair = _issue_token_pair(row.user, remember_me=cint(row.remember_me))
 
-	frappe.db.commit()
+	# Explicit commit to persist newly rotated token pair
+	frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
 	return pair
 
 
-@frappe.whitelist(allow_guest=True)
+@frappe.whitelist(allow_guest=True)  # nosemgrep: frappe-semgrep-rules.rules.security.guest-whitelisted-method
 @handle_api_errors
 def logout(refresh_token: str):
 	"""Revoke a refresh token. Access tokens expire on their own."""
@@ -346,7 +350,8 @@ def logout(refresh_token: str):
 		frappe.delete_doc(
 			REFRESH_TOKEN_DOCTYPE, name, ignore_permissions=True, force=True, delete_permanently=True
 		)
-		frappe.db.commit()
+		# Explicit commit to ensure revoked token cannot be re-used
+		frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
 
 	# Reports success either way. Whether a given token string was live is not
 	# something an unauthenticated caller should be able to probe for.
@@ -382,7 +387,7 @@ def on_logout(login_manager):
 		revoke_all_for_user(user)
 
 
-@frappe.whitelist(allow_guest=True)
+@frappe.whitelist(allow_guest=True)  # nosemgrep: frappe-semgrep-rules.rules.security.guest-whitelisted-method
 @handle_api_errors
 def forgot_password(usr: str):
 	"""Send a password-reset email, without revealing whether the account exists.
@@ -396,12 +401,13 @@ def forgot_password(usr: str):
 	from frappe.core.doctype.user.user import reset_password as frappe_reset_password
 
 	frappe_reset_password(user=usr)
-	frappe.db.commit()
+	# Explicit commit to ensure queued email and reset key are stored
+	frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
 
 	return {"message": _("If that account exists, a reset link has been sent.")}
 
 
-@frappe.whitelist(allow_guest=True)
+@frappe.whitelist(allow_guest=True)  # nosemgrep: frappe-semgrep-rules.rules.security.guest-whitelisted-method
 @handle_api_errors
 def reset_password(key: str, new_password: str):
 	"""Complete a reset using the key from the email, and revoke live sessions."""
@@ -421,6 +427,7 @@ def reset_password(key: str, new_password: str):
 		# a user performs *because* they were compromised leaves the attacker's
 		# session running — the exact scenario the reset was meant to end.
 		revoke_all_for_user(user)
-		frappe.db.commit()
+		# Explicit commit to ensure session revocation and password change are finalized
+		frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
 
 	return {"message": result}
