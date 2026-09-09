@@ -176,7 +176,7 @@ class TestUserRegistration(unittest.TestCase):
 			)
 			self.assertEqual(res["status"], "error")
 			self.assertEqual(res["code"], "VALIDATION_ERROR")
-			self.assertIn("Password is required", res["message"])
+			self.assertIn("password", res.get("details", {}))
 
 	def test_missing_full_name_rejected(self):
 		with configured_keys(), override_conf(jwt_self_registerable_roles=["Customer"]):
@@ -188,4 +188,29 @@ class TestUserRegistration(unittest.TestCase):
 			)
 			self.assertEqual(res["status"], "error")
 			self.assertEqual(res["code"], "VALIDATION_ERROR")
-			self.assertIn("Full name is required", res["message"])
+			self.assertIn("full_name", res.get("details", {}))
+
+	def test_password_complexity_rejected(self):
+		with configured_keys(), override_conf(jwt_self_registerable_roles=["Customer"]):
+			# Missing special character
+			res = register_user(
+				email="weakpass@example.com",
+				password="Password12345",
+				full_name="Weak Pass",
+				role="Customer",
+			)
+			self.assertEqual(res["status"], "error")
+			self.assertEqual(res["code"], "VALIDATION_ERROR")
+			self.assertIn("password", res.get("details", {}))
+
+	def test_invalid_email_format_rejected(self):
+		with configured_keys(), override_conf(jwt_self_registerable_roles=["Customer"]):
+			res = register_user(
+				email="not-an-email",
+				password="SecurePassword123!",
+				full_name="Bad Email",
+				role="Customer",
+			)
+			self.assertEqual(res["status"], "error")
+			self.assertEqual(res["code"], "VALIDATION_ERROR")
+			self.assertIn("email", res.get("details", {}))

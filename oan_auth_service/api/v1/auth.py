@@ -9,9 +9,17 @@ import frappe
 from frappe import _
 from frappe.utils import cint
 from frappe.utils.password import passlibctx
+from pydantic import BaseModel, Field, field_validator
 
 from oan_auth_service.api import tokens
-from oan_auth_service.api.utils import handle_api_errors
+from oan_auth_service.api.utils import (
+	SafeEmail,
+	SafePhone,
+	handle_api_errors,
+	parse_multi_value,
+	validate_password_complexity,
+	validate_request,
+)
 from oan_auth_service.config import settings
 
 REFRESH_TOKEN_DOCTYPE = "OAN User Refresh Token"
@@ -146,7 +154,53 @@ def _issue_token_pair(user: str, remember_me: bool, scope: list[str] | None = No
 	}
 
 
+class LoginSchema(BaseModel):
+	usr: str = Field(..., min_length=1)
+	pwd: str = Field(..., min_length=1)
+	remember_me: bool = False
+	scope: str | list[str] | None = None
+
+
+class RegisterUserSchema(BaseModel):
+	model_config = {"extra": "allow"}
+
+	email: SafeEmail | None = None
+	password: str = Field(..., min_length=8, max_length=128)
+	full_name: str = Field(..., min_length=1, max_length=140)
+	phone_number: SafePhone | None = None
+	role: str | None = None
+	roles: list[str] | str | None = None
+
+	@field_validator("password")
+	@classmethod
+	def validate_password(cls, v: str) -> str:
+		return validate_password_complexity(v)
+
+
+class RefreshTokenSchema(BaseModel):
+	refresh_token: str = Field(..., min_length=1)
+
+
+class LogoutSchema(BaseModel):
+	refresh_token: str = Field(..., min_length=1)
+
+
+class ForgotPasswordSchema(BaseModel):
+	usr: str = Field(..., min_length=1)
+
+
+class ResetPasswordSchema(BaseModel):
+	key: str = Field(..., min_length=1)
+	new_password: str = Field(..., min_length=8, max_length=128)
+
+	@field_validator("new_password")
+	@classmethod
+	def validate_password(cls, v: str) -> str:
+		return validate_password_complexity(v)
+
+
 @frappe.whitelist(allow_guest=True)  # nosemgrep: frappe-semgrep-rules.rules.security.guest-whitelisted-method
+@validate_request(LoginSchema)
 @handle_api_errors
 def login(usr: str, pwd: str, remember_me: bool = False, scope: str | list[str] | None = None):
 	"""Authenticate and issue an access token plus a refresh token.
@@ -168,11 +222,12 @@ def login(usr: str, pwd: str, remember_me: bool = False, scope: str | list[str] 
 
 
 @frappe.whitelist(allow_guest=True)  # nosemgrep: frappe-semgrep-rules.rules.security.guest-whitelisted-method
+@validate_request(RegisterUserSchema)
 @handle_api_errors
 def register_user(
+	password: str,
+	full_name: str,
 	email: str | None = None,
-	password: str | None = None,
-	full_name: str | None = None,
 	phone_number: str | None = None,
 	role: str | None = None,
 	roles: list[str] | str | None = None,
@@ -185,31 +240,14 @@ def register_user(
 	- Authenticated administrators (e.g. System Manager) can assign any valid role.
 	- Broadcasts `on_user_registered` hooks for consuming apps to initialize and link domain DocTypes.
 	"""
-	from oan_auth_service.api.utils import (
-		parse_multi_value,
-		validate_email_string,
-		validate_password_complexity,
-		validate_phone_string,
-	)
-
-	if not password or not str(password).strip():
-		frappe.throw(_("Password is required."), frappe.ValidationError)
-
-	if not full_name or not str(full_name).strip():
-		frappe.throw(_("Full name is required."), frappe.ValidationError)
-
-	validate_password_complexity(password)
-
 	if email and str(email).strip():
 		email = str(email).strip()
-		validate_email_string(email)
 		if frappe.db.exists("Contact Email", {"email_id": email}) or frappe.db.exists("User", email):
 			frappe.throw(_("A user with this email address already exists."), frappe.ValidationError)
 	else:
 		email = None
 
 	if phone_number:
-		phone_number = validate_phone_string(phone_number)
 		if frappe.db.exists("User", {"mobile_no": phone_number}) or frappe.db.exists(
 			"Contact Phone", {"phone": phone_number}
 		):
@@ -311,6 +349,7 @@ def register_user(
 
 
 @frappe.whitelist(allow_guest=True)  # nosemgrep: frappe-semgrep-rules.rules.security.guest-whitelisted-method
+@validate_request(RefreshTokenSchema)
 @handle_api_errors
 def refresh(refresh_token: str):
 	"""Exchange a refresh token for a new pair, rotating the stored row.
@@ -361,6 +400,7 @@ def refresh(refresh_token: str):
 
 
 @frappe.whitelist(allow_guest=True)  # nosemgrep: frappe-semgrep-rules.rules.security.guest-whitelisted-method
+@validate_request(LogoutSchema)
 @handle_api_errors
 def logout(refresh_token: str):
 	"""Revoke a refresh token. Access tokens expire on their own."""
@@ -412,6 +452,7 @@ def on_logout(login_manager):
 
 
 @frappe.whitelist(allow_guest=True)  # nosemgrep: frappe-semgrep-rules.rules.security.guest-whitelisted-method
+@validate_request(ForgotPasswordSchema)
 @handle_api_errors
 def forgot_password(usr: str):
 	"""Send a password-reset email, without revealing whether the account exists.
@@ -432,6 +473,7 @@ def forgot_password(usr: str):
 
 
 @frappe.whitelist(allow_guest=True)  # nosemgrep: frappe-semgrep-rules.rules.security.guest-whitelisted-method
+@validate_request(ResetPasswordSchema)
 @handle_api_errors
 def reset_password(key: str, new_password: str):
 	"""Complete a reset using the key from the email, and revoke live sessions."""
