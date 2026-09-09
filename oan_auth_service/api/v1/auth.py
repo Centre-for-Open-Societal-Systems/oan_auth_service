@@ -170,9 +170,9 @@ def login(usr: str, pwd: str, remember_me: bool = False, scope: str | list[str] 
 @frappe.whitelist(allow_guest=True)  # nosemgrep: frappe-semgrep-rules.rules.security.guest-whitelisted-method
 @handle_api_errors
 def register_user(
-	email: str,
-	password: str,
-	full_name: str,
+	email: str | None = None,
+	password: str | None = None,
+	full_name: str | None = None,
 	phone_number: str | None = None,
 	role: str | None = None,
 	roles: list[str] | str | None = None,
@@ -192,26 +192,28 @@ def register_user(
 		validate_phone_string,
 	)
 
-	if not email or not str(email).strip():
-		frappe.throw(_("Email is required."), frappe.ValidationError)
-
 	if not password or not str(password).strip():
 		frappe.throw(_("Password is required."), frappe.ValidationError)
 
 	if not full_name or not str(full_name).strip():
 		frappe.throw(_("Full name is required."), frappe.ValidationError)
 
-	validate_email_string(email)
 	validate_password_complexity(password)
+
+	if email and str(email).strip():
+		email = str(email).strip()
+		validate_email_string(email)
+		if frappe.db.exists("Contact Email", {"email_id": email}) or frappe.db.exists("User", email):
+			frappe.throw(_("A user with this email address already exists."), frappe.ValidationError)
+	else:
+		email = None
 
 	if phone_number:
 		phone_number = validate_phone_string(phone_number)
-
-	if frappe.db.exists("User", email):
-		frappe.throw(_("A user with this email address already exists."), frappe.ValidationError)
-
-	if phone_number and frappe.db.exists("User", {"mobile_no": phone_number}):
-		frappe.throw(_("A user with this phone number already exists."), frappe.ValidationError)
+		if frappe.db.exists("User", {"mobile_no": phone_number}) or frappe.db.exists(
+			"Contact Phone", {"phone": phone_number}
+		):
+			frappe.throw(_("A user with this phone number already exists."), frappe.ValidationError)
 
 	# Combine singular `role` or `roles` list/string
 	raw_roles = []
@@ -246,10 +248,14 @@ def register_user(
 
 	first_name, _sep, last_name = full_name.strip().partition(" ")
 
+	name = f"{frappe.generate_hash(length=16)}@id.openagrinet.internal"
+	while frappe.db.exists("User", name):
+		name = f"{frappe.generate_hash(length=16)}@id.openagrinet.internal"
+
 	user_doc = frappe.get_doc(
 		{
 			"doctype": "User",
-			"email": email,
+			"email": name,
 			"first_name": first_name,
 			"last_name": last_name,
 			"mobile_no": phone_number if phone_number else None,
@@ -260,6 +266,24 @@ def register_user(
 		}
 	)
 	user_doc.insert(ignore_permissions=True)
+
+	if email or phone_number:
+		contact_doc = frappe.get_doc(
+			{
+				"doctype": "Contact",
+				"first_name": first_name,
+				"last_name": last_name,
+				"user": user_doc.name,
+				"email_ids": [{"email_id": email, "is_primary": 1}] if email else [],
+				"phone_nos": (
+					[{"phone": phone_number, "is_primary_mobile_no": 1, "is_primary_phone": 1}]
+					if phone_number
+					else []
+				),
+				"links": [{"link_doctype": "User", "link_name": user_doc.name}],
+			}
+		)
+		contact_doc.insert(ignore_permissions=True)
 
 	# Broadcast on_user_registered so consuming apps can create and link their own
 	# domain records. Every subscriber is called on every registration — the auth
@@ -280,7 +304,7 @@ def register_user(
 			frappe.logger().error(f"on_user_registered hook failed, aborting registration: {hook_path}")
 			raise
 
-	pair = _issue_token_pair(email, remember_me=False)
+	pair = _issue_token_pair(user_doc.name, remember_me=False)
 	# Explicit commit to ensure user and initial token state are persisted
 	frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
 	return pair

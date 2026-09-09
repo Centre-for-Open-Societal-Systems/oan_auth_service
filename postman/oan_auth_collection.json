@@ -22,6 +22,26 @@
 			"type": "string"
 		},
 		{
+			"key": "user_full_name",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "user_phone_number",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "reset_key",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "user_new_password",
+			"value": "",
+			"type": "string"
+		},
+		{
 			"key": "access_token",
 			"value": "",
 			"type": "string"
@@ -41,8 +61,13 @@
 					"script": {
 						"exec": [
 							"var baseUrl = pm.environment.get(\"base_url\") || pm.collectionVariables.get(\"base_url\");",
+							"var email = pm.environment.get(\"user_email\") || pm.collectionVariables.get(\"user_email\");",
+							"var password = pm.environment.get(\"user_password\") || pm.collectionVariables.get(\"user_password\");",
 							"if (!baseUrl) {",
 							"    console.warn(\"[Pre-request] 'base_url' is empty. Set it in your environment or collection variables.\");",
+							"}",
+							"if (!email || !password) {",
+							"    console.warn(\"[Pre-request] 'user_email' or 'user_password' is empty. Set credentials before registering.\");",
 							"}"
 						],
 						"type": "text/javascript"
@@ -93,7 +118,7 @@
 				],
 				"body": {
 					"mode": "raw",
-					"raw": "{\n    \"email\": \"newuser@example.com\",\n    \"password\": \"SecurePass123!\",\n    \"full_name\": \"John Doe\",\n    \"phone_number\": \"+1234567890\"\n}"
+					"raw": "{\n    \"email\": \"{{user_email}}\",\n    \"password\": \"{{user_password}}\",\n    \"full_name\": \"{{user_full_name}}\",\n    \"phone_number\": \"{{user_phone_number}}\"\n}"
 				},
 				"url": {
 					"raw": "{{base_url}}/api/method/oan_auth_service.api.v1.auth.register_user",
@@ -391,7 +416,11 @@
 					"listen": "prerequest",
 					"script": {
 						"exec": [
-							"// Pre-request verification for reset parameters"
+							"var key = pm.environment.get(\"reset_key\") || pm.collectionVariables.get(\"reset_key\");",
+							"var newPassword = pm.environment.get(\"user_new_password\") || pm.collectionVariables.get(\"user_new_password\");",
+							"if (!key || !newPassword) {",
+							"    console.warn(\"[Pre-request] 'reset_key' or 'user_new_password' is empty. Set reset parameters before sending.\");",
+							"}"
 						],
 						"type": "text/javascript"
 					}
@@ -418,7 +447,7 @@
 				],
 				"body": {
 					"mode": "raw",
-					"raw": "{\n    \"key\": \"reset_key_from_email\",\n    \"new_password\": \"NewSecurePass123!\"\n}"
+					"raw": "{\n    \"key\": \"{{reset_key}}\",\n    \"new_password\": \"{{user_new_password}}\"\n}"
 				},
 				"url": {
 					"raw": "{{base_url}}/api/method/oan_auth_service.api.v1.auth.reset_password",

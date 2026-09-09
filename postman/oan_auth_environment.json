@@ -21,6 +21,30 @@
 			"enabled": true
 		},
 		{
+			"key": "user_full_name",
+			"value": "",
+			"type": "default",
+			"enabled": true
+		},
+		{
+			"key": "user_phone_number",
+			"value": "",
+			"type": "default",
+			"enabled": true
+		},
+		{
+			"key": "reset_key",
+			"value": "",
+			"type": "secret",
+			"enabled": true
+		},
+		{
+			"key": "user_new_password",
+			"value": "",
+			"type": "secret",
+			"enabled": true
+		},
+		{
 			"key": "access_token",
 			"value": "",
 			"type": "secret",
