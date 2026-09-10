@@ -29,6 +29,16 @@ auth_hooks = ["oan_auth_service.api.middleware.validate_jwt_request"]
 on_logout = "oan_auth_service.api.v1.auth.on_logout"
 
 
+# Installation
+# ------------
+# Adds User.oan_login_email on fresh sites. `bench install-app` marks patches as
+# applied without running them (frappe/installer.py:357), so the patch that adds
+# this field covers upgrades only — new sites, and the site CI builds each run,
+# depend on this hook. Both call the same idempotent function.
+
+after_install = "oan_auth_service.setup.install.after_install"
+
+
 # Fixtures
 # --------
 # Roles owned by this app, exported to oan_auth_service/fixtures/ and committed.

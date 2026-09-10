@@ -4,3 +4,4 @@
 [post_model_sync]
 # Patches that run after doctype schema sync.
 # oan_auth_service.patches.<module_name>
+oan_auth_service.patches.add_login_email_field
