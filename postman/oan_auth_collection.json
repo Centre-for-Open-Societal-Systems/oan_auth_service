@@ -405,7 +405,7 @@
 						"oan_auth_service.api.v1.auth.forgot_password"
 					]
 				},
-				"description": "Triggers a password-reset email without leaking whether the account exists."
+				"description": "Starts a password reset. `usr` may be the login email, the phone number, or the internal user id.\n\nThe channel is chosen server-side from what the account has: a login email gets a reset link, a phone-only account gets an SMS code. The response is identical either way and never reveals whether the account exists, so the client should decide which screen to show from the identifier the user typed."
 			},
 			"response": []
 		},
@@ -460,7 +460,7 @@
 						"oan_auth_service.api.v1.auth.reset_password"
 					]
 				},
-				"description": "Completes password reset using key and automatically revokes existing sessions/refresh tokens for that user."
+				"description": "Completes a password reset over either channel, and revokes existing sessions/refresh tokens for that user.\n\nSend EITHER `key` (from the emailed link, for accounts that have a login email) OR both `usr` and `otp` (from the SMS code, for phone-only accounts). Sending both, or neither, is rejected.\n\nSMS variant body:\n{\n    \"usr\": \"{{user_phone}}\",\n    \"otp\": \"{{reset_otp}}\",\n    \"new_password\": \"{{user_new_password}}\"\n}"
 			},
 			"response": []
 		}
