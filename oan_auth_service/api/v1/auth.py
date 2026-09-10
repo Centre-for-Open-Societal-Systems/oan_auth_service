@@ -20,6 +20,7 @@ from oan_auth_service.api.utils import (
 	check_rate_limit,
 	handle_api_errors,
 	parse_multi_value,
+	success_response,
 	validate_password_complexity,
 	validate_request,
 )
@@ -326,7 +327,7 @@ def login(usr: str, pwd: str, remember_me: bool = False, scope: str | list[str] 
 
 	# Explicit commit to immediately persist token hash before returning
 	frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
-	return pair
+	return success_response(data=pair)
 
 
 @frappe.whitelist(allow_guest=True)  # nosemgrep: frappe-semgrep-rules.rules.security.guest-whitelisted-method
@@ -468,7 +469,7 @@ def register_user(
 	pair = _issue_token_pair(user_doc.name, remember_me=False)
 	# Explicit commit to ensure user and initial token state are persisted
 	frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
-	return pair
+	return success_response(data=pair)
 
 
 @frappe.whitelist(allow_guest=True)  # nosemgrep: frappe-semgrep-rules.rules.security.guest-whitelisted-method
@@ -519,7 +520,7 @@ def refresh(refresh_token: str):
 
 	# Explicit commit to persist newly rotated token pair
 	frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
-	return pair
+	return success_response(data=pair)
 
 
 @frappe.whitelist(allow_guest=True)  # nosemgrep: frappe-semgrep-rules.rules.security.guest-whitelisted-method
@@ -528,7 +529,7 @@ def refresh(refresh_token: str):
 def logout(refresh_token: str):
 	"""Revoke a refresh token. Access tokens expire on their own."""
 	if not refresh_token:
-		return {"revoked": False}
+		return success_response(data={"revoked": False})
 
 	token_hash = tokens.hash_refresh_token(refresh_token)
 	name = frappe.db.get_value(REFRESH_TOKEN_DOCTYPE, {"token_hash": token_hash}, "name")
@@ -542,7 +543,7 @@ def logout(refresh_token: str):
 
 	# Reports success either way. Whether a given token string was live is not
 	# something an unauthenticated caller should be able to probe for.
-	return {"revoked": True}
+	return success_response(data={"revoked": True})
 
 
 def revoke_all_for_user(user: str) -> int:
@@ -709,7 +710,7 @@ def forgot_password(usr: str):
 		# Explicit commit to ensure the reset key and any queued mail are stored
 		frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
 
-	return {"message": _("If that account exists, reset instructions have been sent.")}
+	return success_response(message=_("If that account exists, reset instructions have been sent."))
 
 
 def _verify_password_reset_otp(user: str, otp: str) -> bool:
@@ -825,4 +826,4 @@ def reset_password(new_password: str, key: str | None = None, usr: str | None = 
 		# Explicit commit to ensure session revocation and password change are finalized
 		frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
 
-	return {"message": result}
+	return success_response(message=result)

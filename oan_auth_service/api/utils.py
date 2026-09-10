@@ -402,19 +402,52 @@ def _envelope_success(data=None, message="Success", meta=None, pagination=None) 
 	return res
 
 
-def error_response(message: str, code: str = "GENERIC_ERROR", details: dict | None = None) -> dict:
-	"""Format standardized JSON error envelope with request_id."""
+def error_response(
+	message: str,
+	code: str = "GENERIC_ERROR",
+	details: dict | None = None,
+	meta: dict | None = None,
+) -> dict:
+	"""Format standardized JSON error envelope with request_id and metadata."""
 	clean_message = extract_message_from_str(message) if isinstance(message, str) else str(message)
 	res = {
 		"status": "error",
 		"message": clean_message,
 		"code": code,
 		"details": details or {},
+		"meta": meta or {},
 	}
 	req_id = getattr(frappe.local, "request_id", None)
 	if req_id:
 		res["request_id"] = req_id
 	return res
+
+
+def _resolve_version_meta(func, explicit_meta: dict | None = None) -> dict:
+	"""Dynamically resolve the API version_meta from the caller's package if not explicitly provided."""
+	auto_meta = {}
+	mod_name = getattr(func, "__module__", "")
+
+	if ".api." in mod_name:
+		try:
+			parts = mod_name.split(".api.")
+			base_pkg = parts[0] + ".api"
+			ver_candidate = parts[1].split(".")[0]
+
+			import importlib
+
+			api_mod = importlib.import_module(base_pkg)
+			version_meta_fn = getattr(api_mod, "version_meta", None)
+			if callable(version_meta_fn):
+				auto_meta = version_meta_fn(ver_candidate)
+			else:
+				auto_meta = {"api_version": ver_candidate}
+		except Exception:
+			auto_meta = {}
+
+	if explicit_meta and isinstance(explicit_meta, dict):
+		return {**auto_meta, **explicit_meta}
+	return auto_meta
 
 
 # Frappe already carries the exception -> status mapping we need: every class in
@@ -519,7 +552,8 @@ def handle_api_errors(func):
 				pagination = res.get("pagination")
 				meta = res.get("meta")
 
-			return _envelope_success(data=data, message=message, pagination=pagination, meta=meta)
+			resolved_meta = _resolve_version_meta(func, meta)
+			return _envelope_success(data=data, message=message, pagination=pagination, meta=resolved_meta)
 
 		except PydanticValidationError as e:
 			# Handled ahead of the generic path only because it carries a per-field
@@ -532,7 +566,13 @@ def handle_api_errors(func):
 			_rollback()
 			frappe.local.message_log = []
 			frappe.response["http_status_code"] = 400
-			return error_response(message=_("Validation failed"), code="VALIDATION_ERROR", details=errors)
+			resolved_meta = _resolve_version_meta(func)
+			return error_response(
+				message=_("Validation failed"),
+				code="VALIDATION_ERROR",
+				details=errors,
+				meta=resolved_meta,
+			)
 
 		except JWTKeyConfigurationError as e:
 			# The one 5xx whose message is safe — and necessary — to show the caller:
@@ -542,7 +582,8 @@ def handle_api_errors(func):
 			frappe.local.message_log = []
 			frappe.response["http_status_code"] = 500
 			frappe.log_error(title="JWT Key Configuration Error", message=str(e))
-			return error_response(str(e), "CONFIGURATION_ERROR")
+			resolved_meta = _resolve_version_meta(func)
+			return error_response(str(e), "CONFIGURATION_ERROR", meta=resolved_meta)
 
 		except Exception as e:
 			_rollback()
@@ -576,6 +617,7 @@ def handle_api_errors(func):
 
 			frappe.local.message_log = []
 			frappe.response["http_status_code"] = status
-			return error_response(message, code)
+			resolved_meta = _resolve_version_meta(func)
+			return error_response(message, code, meta=resolved_meta)
 
 	return wrapper
