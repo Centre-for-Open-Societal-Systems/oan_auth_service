@@ -64,7 +64,8 @@ def rest(
 		def endpoint(**path_args):
 			params = {**frappe.form_dict, **path_args}
 			params.pop("cmd", None)
-			result = frappe.call(fn, **params)
+			filtered_args = frappe.get_newargs(fn, params)
+			result = fn(**filtered_args)
 
 			if isinstance(result, Response):
 				return result

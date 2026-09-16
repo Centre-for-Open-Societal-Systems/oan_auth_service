@@ -339,8 +339,9 @@ class ResetPasswordSchema(BaseModel):
 route = prefixed("/api/v1/auth")
 
 
+# nosemgrep: guest-whitelisted-method, frappe-semgrep-rules.rules.security.guest-whitelisted-method
 @route("/login", allow_guest=True, summary="Login and obtain token pair")
-@frappe.whitelist(allow_guest=True)  # nosemgrep: frappe-semgrep-rules.rules.security.guest-whitelisted-method
+@frappe.whitelist(allow_guest=True)
 @validate_request(LoginSchema)
 @handle_api_errors
 def login(usr: str, pwd: str, remember_me: bool = False, scope: str | list[str] | None = None):
@@ -362,9 +363,9 @@ def login(usr: str, pwd: str, remember_me: bool = False, scope: str | list[str] 
 	return success_response(data=pair)
 
 
+# nosemgrep: guest-whitelisted-method, frappe-semgrep-rules.rules.security.guest-whitelisted-method
 @route("/register", allow_guest=True, summary="Register a new user account")
-@route("/user", allow_guest=True, summary="Register user (alias)")
-@frappe.whitelist(allow_guest=True)  # nosemgrep: frappe-semgrep-rules.rules.security.guest-whitelisted-method
+@frappe.whitelist(allow_guest=True)
 @validate_request(RegisterUserSchema)
 @handle_api_errors
 def register_user(
@@ -506,8 +507,9 @@ def register_user(
 	return success_response(data=pair)
 
 
+# nosemgrep: guest-whitelisted-method, frappe-semgrep-rules.rules.security.guest-whitelisted-method
 @route("/refresh", allow_guest=True, summary="Exchange single-use refresh token")
-@frappe.whitelist(allow_guest=True)  # nosemgrep: frappe-semgrep-rules.rules.security.guest-whitelisted-method
+@frappe.whitelist(allow_guest=True)
 @validate_request(RefreshTokenSchema)
 @handle_api_errors
 def refresh(refresh_token: str):
@@ -558,8 +560,9 @@ def refresh(refresh_token: str):
 	return success_response(data=pair)
 
 
+# nosemgrep: guest-whitelisted-method, frappe-semgrep-rules.rules.security.guest-whitelisted-method
 @route("/logout", allow_guest=True, summary="Revoke refresh token")
-@frappe.whitelist(allow_guest=True)  # nosemgrep: frappe-semgrep-rules.rules.security.guest-whitelisted-method
+@frappe.whitelist(allow_guest=True)
 @validate_request(LogoutSchema)
 @handle_api_errors
 def logout(refresh_token: str):
@@ -699,9 +702,9 @@ def _deliver_reset_by_email(user_doc, login_email: str) -> None:
 	user_doc._reset_password(send_email=True)
 
 
+# nosemgrep: guest-whitelisted-method, frappe-semgrep-rules.rules.security.guest-whitelisted-method
 @route("/forgot-password", allow_guest=True, summary="Initiate password recovery")
-@route("/password/forgot", allow_guest=True, summary="Initiate password recovery (alias)")
-@frappe.whitelist(allow_guest=True)  # nosemgrep: frappe-semgrep-rules.rules.security.guest-whitelisted-method
+@frappe.whitelist(allow_guest=True)
 @validate_request(ForgotPasswordSchema)
 @handle_api_errors
 def forgot_password(usr: str):
@@ -820,9 +823,9 @@ def _mint_reset_key(user: str) -> str:
 	return key
 
 
+# nosemgrep: guest-whitelisted-method, frappe-semgrep-rules.rules.security.guest-whitelisted-method
 @route("/reset-password", allow_guest=True, summary="Complete password reset")
-@route("/password/reset", allow_guest=True, summary="Complete password reset (alias)")
-@frappe.whitelist(allow_guest=True)  # nosemgrep: frappe-semgrep-rules.rules.security.guest-whitelisted-method
+@frappe.whitelist(allow_guest=True)
 @validate_request(ResetPasswordSchema)
 @handle_api_errors
 def reset_password(new_password: str, key: str | None = None, usr: str | None = None, otp: str | None = None):
@@ -896,8 +899,8 @@ def get_me():
 	)
 
 
+# nosemgrep: guest-whitelisted-method, frappe-semgrep-rules.rules.security.guest-whitelisted-method
 @route("/keys", methods=("GET",), allow_guest=True, summary="Public key information")
-@route("/jwks", methods=("GET",), allow_guest=True, summary="Public key information (JWKS alias)")
 @frappe.whitelist(allow_guest=True)
 @handle_api_errors
 def get_public_keys():
@@ -922,8 +925,8 @@ def get_public_keys():
 	)
 
 
+# nosemgrep: guest-whitelisted-method, frappe-semgrep-rules.rules.security.guest-whitelisted-method
 @route("/health", methods=("GET",), allow_guest=True, summary="Service health status")
-@route("/ping", methods=("GET",), allow_guest=True, summary="Service ping (alias)")
 @frappe.whitelist(allow_guest=True)
 @handle_api_errors
 def get_health():
