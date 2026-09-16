@@ -36,7 +36,7 @@ _NAMESPACES: dict[str, dict] = {}
 def register_namespace(prefix: str, exempt_paths: list[str] | None = None, revocation_check=None):
 	"""Declare an API namespace as JWT-protected.
 
-	prefix           e.g. "/api/method/grievance_backend."
+	prefix           e.g. "/api/method/grievance_backend." or "/api/v1/grievance"
 	exempt_paths     full paths reachable without a token (login, refresh, webhooks)
 	revocation_check optional callable(user) -> str | None; a returned string is
 	                 the rejection reason. Lets a consumer invalidate live tokens
@@ -47,17 +47,22 @@ def register_namespace(prefix: str, exempt_paths: list[str] | None = None, revoc
 	so registering inside a request handler would protect only the worker that
 	happened to serve that request.
 	"""
-	if not prefix.startswith("/api/method/"):
+	if not (prefix.startswith("/api/") or prefix == "/api"):
 		raise ValueError(
-			f"Namespace prefix {prefix!r} must start with '/api/method/'. Matching is by "
+			f"Namespace prefix {prefix!r} must start with '/api/'. Matching is by "
 			"request path, and a prefix that cannot appear in one would register a "
 			"namespace that silently never matches."
 		)
 
-	_NAMESPACES[prefix] = {
-		"exempt_paths": set(exempt_paths or []),
-		"revocation_check": revocation_check,
-	}
+	if prefix in _NAMESPACES:
+		_NAMESPACES[prefix]["exempt_paths"].update(exempt_paths or [])
+		if revocation_check:
+			_NAMESPACES[prefix]["revocation_check"] = revocation_check
+	else:
+		_NAMESPACES[prefix] = {
+			"exempt_paths": set(exempt_paths or []),
+			"revocation_check": revocation_check,
+		}
 
 
 def _match_namespace(path: str) -> dict | None:
@@ -102,7 +107,7 @@ def validate_jwt_request(request=None):
 	if config is None:
 		return
 
-	if path in config["exempt_paths"]:
+	if path in config["exempt_paths"] or path.rstrip("/") in config["exempt_paths"]:
 		return
 
 	# Something earlier in validate_auth already authenticated this request (see
@@ -141,8 +146,11 @@ def validate_jwt_request(request=None):
 
 	_verify_scope_still_held(user, claims)
 
+	form_dict = getattr(frappe.local, "form_dict", None)
 	# Deliberately sets the authenticated request user from validated JWT claims
 	frappe.set_user(user)  # nosemgrep: frappe-semgrep-rules.rules.security.frappe-setuser
+	if form_dict is not None:
+		frappe.local.form_dict = form_dict
 
 	# Exposed so consumer code can read the token it was authenticated with —
 	# notably the `scope` claim, which this app records but cannot itself

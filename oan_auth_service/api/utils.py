@@ -10,7 +10,7 @@ from typing import Annotated
 
 import frappe
 from frappe import _
-from pydantic import BaseModel, BeforeValidator
+from pydantic import BaseModel, BeforeValidator, TypeAdapter
 from pydantic import ValidationError as PydanticValidationError
 
 from oan_auth_service.api.jwt_keys import JWTKeyConfigurationError
@@ -18,6 +18,22 @@ from oan_auth_service.api.jwt_keys import JWTKeyConfigurationError
 
 class _DummyException(Exception):
 	pass
+
+
+class ResponseValidationError(Exception):
+	"""An endpoint returned data that does not match its declared `response_model`.
+
+	This is always a fault in this service, never caller error: the endpoint
+	promised a shape and did not produce it. It is therefore a 500, and the
+	offending field errors are logged rather than echoed to the caller.
+	"""
+
+	http_status_code = 500
+
+	def __init__(self, endpoint: str, errors: list[dict]):
+		self.endpoint = endpoint
+		self.errors = errors
+		super().__init__(f"Response validation failed for {endpoint}: {errors}")
 
 
 # ---------------------------------------------------------------------------
@@ -122,7 +138,17 @@ def check_rate_limit(key: str, limit: int, window: int):
 
 
 def validate_request(schema: type[BaseModel]):
-	"""Decorator to validate whitelisted API inputs using a Pydantic schema."""
+	"""Decorator to validate whitelisted API inputs using a Pydantic schema.
+
+	Schema failures are reported as **400 with code VALIDATION_ERROR**, not 422.
+	Both are defensible and much of the ecosystem (FastAPI among them) picks 422;
+	400 is chosen here and held deliberately, because it is what this service has
+	always returned and `_ERROR_CODES` already keys VALIDATION_ERROR off it, so a
+	change would break every client branching on the pair. The rule is: one code
+	for "your input was rejected", set in exactly two places — here and the
+	`PydanticValidationError` branch of `handle_api_errors`. Change both or
+	neither.
+	"""
 
 	def decorator(func):
 		@wraps(func)
@@ -160,6 +186,44 @@ def validate_request(schema: type[BaseModel]):
 	return decorator
 
 
+def _apply_response_model(endpoint: str, adapter: TypeAdapter, res):
+	"""Validate and filter an endpoint's payload against its declared response model.
+
+	Returns the payload re-serialised through the model, so fields the model does
+	not declare are dropped. On this service that filtering is the point as much
+	as the validation is: a password hash, a reset key or an internal user id
+	added to a return dict cannot leak through an endpoint that declares its
+	shape.
+	"""
+	envelope_key = None
+	payload = res
+
+	if isinstance(res, dict):
+		if res.get("status") == "error":
+			# Error envelopes are shaped by `error_response`, not by the model.
+			return res
+		if "data" in res:
+			envelope_key = "data"
+			payload = res["data"]
+
+	if payload is None:
+		return res
+
+	try:
+		validated = adapter.validate_python(payload)
+	except PydanticValidationError as e:
+		raise ResponseValidationError(endpoint, e.errors()) from e
+
+	dumped = adapter.dump_python(validated, mode="json")
+
+	if envelope_key is None:
+		return dumped
+
+	out = dict(res)
+	out[envelope_key] = dumped
+	return out
+
+
 def api_doc(
 	summary: str | None = None,
 	description: str | None = None,
@@ -167,12 +231,32 @@ def api_doc(
 	response_model: type[BaseModel] | None = None,
 	deprecated: bool = False,
 ):
-	"""Decorator to attach OpenAPI documentation metadata to an endpoint."""
+	"""Attach OpenAPI metadata to an endpoint, and enforce `response_model` if given.
+
+	`response_model` is not documentation-only. If the endpoint returns data that
+	does not match it, the call fails with a 500 rather than serving a payload of
+	the wrong shape — the caller is better served by a clear server error than by
+	data it cannot rely on. Any pydantic-compatible type works, including
+	`list[Model]` and `Model | None`.
+
+	Place this decorator *below* `@handle_api_errors` in the stack so the raised
+	`ResponseValidationError` is caught, logged and enveloped:
+
+	    @frappe.whitelist()
+	    @validate_request(MySchema)
+	    @handle_api_errors
+	    @api_doc(summary="...", response_model=MyResponse)
+	    def my_endpoint(...): ...
+	"""
+	adapter = TypeAdapter(response_model) if response_model is not None else None
 
 	def decorator(func):
 		@wraps(func)
 		def wrapper(*args, **kwargs):
-			return func(*args, **kwargs)
+			res = func(*args, **kwargs)
+			if adapter is None:
+				return res
+			return _apply_response_model(func.__name__, adapter, res)
 
 		wrapper._api_doc = {
 			"summary": summary,
@@ -559,6 +643,8 @@ def handle_api_errors(func):
 			# Handled ahead of the generic path only because it carries a per-field
 			# `details` map no other exception has. (It subclasses ValueError, so it
 			# would otherwise resolve to 400 anyway.)
+			# 400 here must stay in step with `validate_request` — see its docstring
+			# for why this service uses 400 rather than 422.
 			errors = {}
 			for err in e.errors():
 				loc = ".".join(str(loc_item) for loc_item in err["loc"])
@@ -573,6 +659,28 @@ def handle_api_errors(func):
 				details=errors,
 				meta=resolved_meta,
 			)
+
+		except ResponseValidationError as e:
+			# Handled ahead of the generic path so the per-field errors reach the
+			# log. They are deliberately not echoed: the caller cannot act on them
+			# and they describe this service's internals.
+			_rollback()
+			frappe.local.message_log = []
+			frappe.response["http_status_code"] = 500
+			frappe.log_error(
+				title=f"Response Validation Error | {func.__name__}",
+				message=json.dumps(
+					{
+						"request_id": getattr(frappe.local, "request_id", None),
+						"endpoint": e.endpoint,
+						"errors": e.errors,
+					},
+					indent=2,
+					default=str,
+				),
+			)
+			resolved_meta = _resolve_version_meta(func)
+			return error_response(_("An unexpected error occurred"), "INTERNAL_ERROR", meta=resolved_meta)
 
 		except JWTKeyConfigurationError as e:
 			# The one 5xx whose message is safe — and necessary — to show the caller:

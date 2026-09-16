@@ -23,6 +23,9 @@ app_license = "mit"
 
 auth_hooks = ["oan_auth_service.api.middleware.validate_jwt_request"]
 
+# Register Werkzeug REST routes for Frappe API Map
+before_request = ["oan_auth_service.api.router.ensure_routes_registered"]
+
 # Revokes refresh tokens when a session ends through Frappe's own logout. Without
 # it a desk logout drops the session cookie but leaves every refresh token live
 # for its full lifetime, so a user who believes they logged out has not.

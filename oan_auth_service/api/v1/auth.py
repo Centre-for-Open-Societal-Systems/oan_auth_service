@@ -3,6 +3,33 @@
 These are whitelisted and must be listed as exempt paths by every consumer that
 registers a namespace — they are how a caller obtains the token the middleware
 demands, so requiring one here would deadlock.
+
+Two transports reach each endpoint below:
+
+  REST  POST /api/v1/auth/login          (via the @route decorator, preferred)
+  RPC   POST /api/method/...auth.login   (via the @frappe.whitelist decorator)
+
+`@route` dispatches through `frappe.call`, which does not consult whitelisting,
+so reaching an endpoint over REST does not require `@frappe.whitelist`; only RPC
+does. Retiring the RPC surface is therefore deleting the `@frappe.whitelist(...)`
+line from each endpoint here, with no other file changes. Do that once the
+Postman collection and the oan_a2c consumer have moved off `/api/method/`, which
+is what they both use today.
+
+One caveat when that day comes. `frappe.whitelist` does not only register the
+method, it also returns `validate_argument_types(fn)` — and since it is the
+outermost decorator, the name the router registers *is* that wrapper. Removing it
+therefore also drops annotation-based coercion from the REST path, because
+`@route` registers whatever function object it is handed. That is
+tolerable here because every endpoint taking arguments is covered by
+`@validate_request`, which is strictly stronger, and the three that are not
+(`get_me`, `get_public_keys`, `get_health`) take no arguments. Keep it that way:
+an endpoint added later with arguments but no `@validate_request` would lose its
+only input validation the moment RPC is retired.
+
+Note also that Frappe's guest-input sanitisation lives in `is_whitelisted`, which
+runs on the RPC path only — REST guest input has never been HTML-sanitised, so
+pydantic validators are the sole input guard there.
 """
 
 import secrets
@@ -14,6 +41,7 @@ from frappe.utils.password import passlibctx
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from oan_auth_service.api import tokens
+from oan_auth_service.api.router import prefixed
 from oan_auth_service.api.utils import (
 	SafeEmail,
 	SafePhone,
@@ -308,6 +336,10 @@ class ResetPasswordSchema(BaseModel):
 		return self
 
 
+route = prefixed("/api/v1/auth")
+
+
+@route("/login", allow_guest=True, summary="Login and obtain token pair")
 @frappe.whitelist(allow_guest=True)  # nosemgrep: frappe-semgrep-rules.rules.security.guest-whitelisted-method
 @validate_request(LoginSchema)
 @handle_api_errors
@@ -330,6 +362,8 @@ def login(usr: str, pwd: str, remember_me: bool = False, scope: str | list[str] 
 	return success_response(data=pair)
 
 
+@route("/register", allow_guest=True, summary="Register a new user account")
+@route("/user", allow_guest=True, summary="Register user (alias)")
 @frappe.whitelist(allow_guest=True)  # nosemgrep: frappe-semgrep-rules.rules.security.guest-whitelisted-method
 @validate_request(RegisterUserSchema)
 @handle_api_errors
@@ -472,6 +506,7 @@ def register_user(
 	return success_response(data=pair)
 
 
+@route("/refresh", allow_guest=True, summary="Exchange single-use refresh token")
 @frappe.whitelist(allow_guest=True)  # nosemgrep: frappe-semgrep-rules.rules.security.guest-whitelisted-method
 @validate_request(RefreshTokenSchema)
 @handle_api_errors
@@ -523,6 +558,7 @@ def refresh(refresh_token: str):
 	return success_response(data=pair)
 
 
+@route("/logout", allow_guest=True, summary="Revoke refresh token")
 @frappe.whitelist(allow_guest=True)  # nosemgrep: frappe-semgrep-rules.rules.security.guest-whitelisted-method
 @validate_request(LogoutSchema)
 @handle_api_errors
@@ -663,6 +699,8 @@ def _deliver_reset_by_email(user_doc, login_email: str) -> None:
 	user_doc._reset_password(send_email=True)
 
 
+@route("/forgot-password", allow_guest=True, summary="Initiate password recovery")
+@route("/password/forgot", allow_guest=True, summary="Initiate password recovery (alias)")
 @frappe.whitelist(allow_guest=True)  # nosemgrep: frappe-semgrep-rules.rules.security.guest-whitelisted-method
 @validate_request(ForgotPasswordSchema)
 @handle_api_errors
@@ -782,6 +820,8 @@ def _mint_reset_key(user: str) -> str:
 	return key
 
 
+@route("/reset-password", allow_guest=True, summary="Complete password reset")
+@route("/password/reset", allow_guest=True, summary="Complete password reset (alias)")
 @frappe.whitelist(allow_guest=True)  # nosemgrep: frappe-semgrep-rules.rules.security.guest-whitelisted-method
 @validate_request(ResetPasswordSchema)
 @handle_api_errors
@@ -827,3 +867,71 @@ def reset_password(new_password: str, key: str | None = None, usr: str | None = 
 		frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
 
 	return success_response(message=result)
+
+
+@route("/me", methods=("GET",), summary="Introspect current authenticated user")
+@frappe.whitelist()
+@handle_api_errors
+def get_me():
+	"""Introspect the current authenticated user and token claims."""
+	if not frappe.session.user or frappe.session.user == "Guest":
+		raise frappe.AuthenticationError(_("Authentication required"))
+
+	user_doc = frappe.get_doc("User", frappe.session.user)
+	login_email = getattr(user_doc, LOGIN_EMAIL_FIELD, None)
+	roles = tokens.resolve_roles(user_doc.name)
+	claims = getattr(frappe.local, "oan_auth_claims", {}) or {}
+
+	return success_response(
+		data={
+			"user": user_doc.name,
+			"first_name": user_doc.first_name,
+			"last_name": user_doc.last_name,
+			"full_name": user_doc.full_name,
+			"login_email": login_email,
+			"mobile_no": user_doc.mobile_no,
+			"roles": roles,
+			"claims": claims,
+		}
+	)
+
+
+@route("/keys", methods=("GET",), allow_guest=True, summary="Public key information")
+@route("/jwks", methods=("GET",), allow_guest=True, summary="Public key information (JWKS alias)")
+@frappe.whitelist(allow_guest=True)
+@handle_api_errors
+def get_public_keys():
+	"""Return public key identifiers and algorithm configuration."""
+	from oan_auth_service.api import jwt_keys
+
+	active_kid, _ = jwt_keys.get_signing_key()
+	return success_response(
+		data={
+			"issuer": settings.issuer(),
+			"algorithm": "HS256",
+			"active_kid": active_kid,
+			"keys": [
+				{
+					"kid": active_kid,
+					"kty": "oct",
+					"alg": "HS256",
+					"use": "sig",
+				}
+			],
+		}
+	)
+
+
+@route("/health", methods=("GET",), allow_guest=True, summary="Service health status")
+@route("/ping", methods=("GET",), allow_guest=True, summary="Service ping (alias)")
+@frappe.whitelist(allow_guest=True)
+@handle_api_errors
+def get_health():
+	"""Health check endpoint for the auth service."""
+	return success_response(
+		data={
+			"status": "healthy",
+			"service": "oan_auth_service",
+			"api_version": "v1",
+		}
+	)
