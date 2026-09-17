@@ -425,7 +425,7 @@ def register_user(
 			requested_roles = [default_role]
 	elif not is_admin_caller:
 		# Enforce self-registration whitelist for non-admin / guest callers
-		allowed_roles = frappe.conf.get("jwt_self_registerable_roles") or []
+		allowed_roles = settings.self_registerable_roles()
 		if not allowed_roles:
 			frappe.throw(
 				_("Role assignment is not allowed during public registration."), frappe.PermissionError
@@ -876,14 +876,24 @@ def reset_password(new_password: str, key: str | None = None, usr: str | None = 
 @frappe.whitelist()
 @handle_api_errors
 def get_me():
-	"""Introspect the current authenticated user and token claims."""
+	"""Introspect the current authenticated user and profiles.
+
+	Protected by bearer token: callers must be authenticated.
+
+	Broadcasts the `on_user_profile` hook across installed apps to collect
+	app-specific profile attributes under namespaced keys: `data.profiles[namespace]`.
+
+	Hook contract:
+	    def hook_handler(user_doc, roles: list[str]) -> tuple[str, dict | None]:
+	        # Must return (namespace: str, profile_data: dict | None)
+	        return "my_namespace", {...}
+	"""
 	if not frappe.session.user or frappe.session.user == "Guest":
 		raise frappe.AuthenticationError(_("Authentication required"))
 
 	user_doc = frappe.get_doc("User", frappe.session.user)
 	login_email = getattr(user_doc, LOGIN_EMAIL_FIELD, None)
 	roles = tokens.resolve_roles(user_doc.name)
-	claims = getattr(frappe.local, "oan_auth_claims", {}) or {}
 
 	data = {
 		"user": user_doc.name,
@@ -893,17 +903,26 @@ def get_me():
 		"login_email": login_email,
 		"mobile_no": user_doc.mobile_no,
 		"roles": roles,
-		"claims": claims,
 	}
 
 	profiles = {}
 	for hook_path in frappe.get_hooks("on_user_profile"):
 		try:
-			namespace, profile_data = frappe.get_attr(hook_path)(user_doc=user_doc, roles=roles)
-			if profile_data:
-				profiles[namespace] = profile_data
+			res = frappe.get_attr(hook_path)(user_doc=user_doc, roles=roles)
+			if isinstance(res, (tuple, list)) and len(res) == 2:
+				namespace, profile_data = res
+				if profile_data and isinstance(profile_data, dict):
+					profiles[namespace] = profile_data
+			elif res is not None:
+				frappe.log_error(
+					title=f"on_user_profile hook invalid return: {hook_path}",
+					message=f"Expected (namespace, dict | None), got {type(res).__name__}: {res!r}",
+				)
 		except Exception:
-			frappe.logger().error(f"on_user_profile hook failed: {hook_path}")
+			frappe.log_error(
+				title=f"on_user_profile hook failed: {hook_path}",
+				message=frappe.get_traceback(),
+			)
 
 	if profiles:
 		data["profiles"] = profiles
@@ -950,3 +969,45 @@ def get_health():
 			"api_version": "v1",
 		}
 	)
+
+
+# nosemgrep: guest-whitelisted-method, frappe-semgrep-rules.rules.security.guest-whitelisted-method
+@route("/metadata", methods=("GET",), allow_guest=True, summary="Aggregated form and reference metadata")
+@frappe.whitelist(allow_guest=True)
+@handle_api_errors
+def get_metadata():
+	"""Aggregate public dropdown and reference metadata across installed apps.
+
+	Broadcasts the `on_metadata` hook across installed apps.
+	Subscribers return a tuple: (namespace: str, metadata_dict: dict).
+
+	Hook contract:
+	    def hook_handler() -> tuple[str, dict | None]:
+	        # Must return (namespace: str, metadata: dict | None)
+	        return "my_namespace", {...}
+	"""
+	data = {
+		"auth": {
+			"self_registerable_roles": settings.self_registerable_roles(),
+		}
+	}
+
+	for hook_path in frappe.get_hooks("on_metadata"):
+		try:
+			res = frappe.get_attr(hook_path)()
+			if isinstance(res, (tuple, list)) and len(res) == 2:
+				namespace, meta_data = res
+				if meta_data and isinstance(meta_data, dict):
+					data[namespace] = meta_data
+			elif res is not None:
+				frappe.log_error(
+					title=f"on_metadata hook invalid return: {hook_path}",
+					message=f"Expected (namespace, dict | None), got {type(res).__name__}: {res!r}",
+				)
+		except Exception:
+			frappe.log_error(
+				title=f"on_metadata hook failed: {hook_path}",
+				message=frappe.get_traceback(),
+			)
+
+	return success_response(data=data, message=_("Metadata retrieved successfully"))

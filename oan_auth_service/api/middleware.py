@@ -90,6 +90,27 @@ def _bearer_token() -> str | None:
 	return parts[1].strip() or None
 
 
+def _clear_frappe_authorization_header() -> None:
+	"""Clear authorization_header in calling validate_auth frame if present.
+
+	Frappe's validate_auth() splits the Authorization header before auth_hooks run
+	and raises AuthenticationError if the header is present but user remains Guest.
+	On exempt paths where an invalid/expired token falls through to Guest, clearing
+	this frame local ensures Frappe treats the request as an anonymous Guest request.
+	"""
+	import sys
+
+	try:
+		frame = sys._getframe(1)
+		while frame:
+			if frame.f_code.co_name == "validate_auth" and "authorization_header" in frame.f_locals:
+				frame.f_locals["authorization_header"] = []
+				break
+			frame = frame.f_back
+	except Exception:
+		pass
+
+
 def validate_jwt_request(request=None):
 	"""Entry point registered as `auth_hooks` in hooks.py."""
 	if not _NAMESPACES:
@@ -121,31 +142,54 @@ def validate_jwt_request(request=None):
 			return
 		_reject("Missing bearer token")
 
-	try:
-		claims = tokens.decode_access_token(token)
-	except JWTKeyConfigurationError:
-		# A server misconfiguration, not a bad token. Reported separately so an
-		# operator sees "we have no keys" rather than a flood of 401s that look
-		# like clients misbehaving.
-		frappe.log_error(title="oan_auth_service: JWT key material unusable")
-		frappe.throw(_("Authentication is misconfigured on this server"), frappe.ValidationError)
-	except tokens.TokenError:
-		_reject("Invalid or expired token")
+	if is_exempt:
+		try:
+			claims = tokens.decode_access_token(token)
+		except (JWTKeyConfigurationError, tokens.TokenError):
+			_clear_frappe_authorization_header()
+			return
 
-	user = claims.get("sub")
-	if not user or not frappe.db.exists("User", user):
-		_reject("Invalid or expired token")
+		user = claims.get("sub")
+		if not user or not frappe.db.exists("User", user) or not frappe.db.get_value("User", user, "enabled"):
+			_clear_frappe_authorization_header()
+			return
 
-	if not frappe.db.get_value("User", user, "enabled"):
-		_reject("Invalid or expired token")
+		revocation_check = config.get("revocation_check")
+		if revocation_check and revocation_check(user):
+			_clear_frappe_authorization_header()
+			return
 
-	revocation_check = config.get("revocation_check")
-	if revocation_check:
-		reason = revocation_check(user)
-		if reason:
-			_reject(reason)
+		try:
+			_verify_scope_still_held(user, claims)
+		except frappe.AuthenticationError:
+			_clear_frappe_authorization_header()
+			return
+	else:
+		try:
+			claims = tokens.decode_access_token(token)
+		except JWTKeyConfigurationError:
+			# A server misconfiguration, not a bad token. Reported separately so an
+			# operator sees "we have no keys" rather than a flood of 401s that look
+			# like clients misbehaving.
+			frappe.log_error(title="oan_auth_service: JWT key material unusable")
+			frappe.throw(_("Authentication is misconfigured on this server"), frappe.ValidationError)
+		except tokens.TokenError:
+			_reject("Invalid or expired token")
 
-	_verify_scope_still_held(user, claims)
+		user = claims.get("sub")
+		if not user or not frappe.db.exists("User", user):
+			_reject("Invalid or expired token")
+
+		if not frappe.db.get_value("User", user, "enabled"):
+			_reject("Invalid or expired token")
+
+		revocation_check = config.get("revocation_check")
+		if revocation_check:
+			reason = revocation_check(user)
+			if reason:
+				_reject(reason)
+
+		_verify_scope_still_held(user, claims)
 
 	form_dict = getattr(frappe.local, "form_dict", None)
 	# Deliberately sets the authenticated request user from validated JWT claims

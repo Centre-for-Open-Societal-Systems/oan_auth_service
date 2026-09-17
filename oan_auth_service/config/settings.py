@@ -13,7 +13,8 @@ Configuration (site_config.json), all optional:
     "jwt_issuer": "oan-auth",
     "password_reset_otp_ttl": 600,
     "password_reset_otp_length": 6,
-    "password_reset_otp_max_attempts": 5
+    "password_reset_otp_max_attempts": 5,
+    "jwt_self_registerable_roles": []
 """
 
 import frappe
@@ -86,3 +87,8 @@ def issuer() -> str:
 def enforce_https() -> bool:
 	"""Whether HTTPS transport is strictly required for auth API calls."""
 	return bool(frappe.conf.get("jwt_enforce_https") or frappe.conf.get("enforce_https"))
+
+
+def self_registerable_roles() -> list[str]:
+	"""List of roles permitted for self-registration by guest callers."""
+	return list(frappe.conf.get("jwt_self_registerable_roles") or [])

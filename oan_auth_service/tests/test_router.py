@@ -131,6 +131,15 @@ class TestRESTAuthEndpoints(unittest.TestCase):
 			self.assertEqual(data_keys["data"]["algorithm"], "HS256")
 			self.assertEqual(data_keys["data"]["active_kid"], "v1")
 
+		# Public metadata endpoint
+		req_meta = make_test_request("/api/v1/auth/metadata", method="GET")
+		res_meta = frappe.api.handle(req_meta)
+		self.assertEqual(res_meta.status_code, 200)
+		data_meta = json.loads(res_meta.get_data(as_text=True))
+		self.assertEqual(data_meta["status"], "success")
+		self.assertIn("auth", data_meta["data"])
+		self.assertIn("self_registerable_roles", data_meta["data"]["auth"])
+
 	def test_rest_register_login_refresh_logout_lifecycle(self):
 		import frappe.api
 
@@ -227,8 +236,6 @@ class TestRESTAuthEndpoints(unittest.TestCase):
 
 	def test_exempt_endpoint_with_bearer_token(self):
 		"""Verify that an exempt route accepts Bearer token without raising AuthenticationError."""
-		import frappe.api
-
 		from oan_auth_service.api.middleware import validate_jwt_request
 
 		with configured_keys():
@@ -243,6 +250,71 @@ class TestRESTAuthEndpoints(unittest.TestCase):
 
 			validate_jwt_request(req)
 			self.assertEqual(frappe.session.user, "Administrator")
+
+	def test_exempt_endpoint_with_expired_token(self):
+		"""Verify that an exempt route never 401s on expired token; caller falls through to Guest."""
+		from datetime import UTC, datetime, timedelta
+
+		import jwt as pyjwt
+
+		from oan_auth_service.api.middleware import validate_jwt_request
+		from oan_auth_service.tests.test_jwt_keys import TEST_SECRETS
+
+		with configured_keys():
+			past = datetime.now(UTC) - timedelta(hours=1)
+			claims = {
+				"iss": settings.issuer(),
+				"sub": "Administrator",
+				"iat": int(past.timestamp()),
+				"exp": int((past + timedelta(minutes=1)).timestamp()),
+				"typ": tokens.ACCESS_TOKEN_TYPE,
+				"roles": ["System Manager"],
+			}
+			expired_token = pyjwt.encode(
+				claims, TEST_SECRETS["v1"], algorithm=tokens.ALGORITHM, headers={"kid": "v1"}
+			)
+			req = make_test_request(
+				"/api/v1/auth/health",
+				method="GET",
+				headers={"Authorization": f"Bearer {expired_token}"},
+			)
+			frappe.set_user("Guest")
+			frappe.local.session = frappe._dict({"user": "Guest"})
+
+			validate_jwt_request(req)
+			self.assertEqual(frappe.session.user, "Guest")
+
+	def test_exempt_endpoint_with_revoked_scope_token(self):
+		"""Verify that an exempt route falls through to Guest if scope is no longer held."""
+		from oan_auth_service.api.middleware import validate_jwt_request
+
+		with configured_keys():
+			token, _ = tokens.issue_access_token("Administrator", ["System Manager"], scope=["LostRole"])
+			req = make_test_request(
+				"/api/v1/auth/health",
+				method="GET",
+				headers={"Authorization": f"Bearer {token}"},
+			)
+			frappe.set_user("Guest")
+			frappe.local.session = frappe._dict({"user": "Guest"})
+
+			validate_jwt_request(req)
+			self.assertEqual(frappe.session.user, "Guest")
+
+	def test_exempt_endpoint_with_malformed_token(self):
+		"""Verify that an exempt route falls through to Guest if token is completely malformed."""
+		from oan_auth_service.api.middleware import validate_jwt_request
+
+		req = make_test_request(
+			"/api/v1/auth/health",
+			method="GET",
+			headers={"Authorization": "Bearer not-a-jwt-token"},
+		)
+		frappe.set_user("Guest")
+		frappe.local.session = frappe._dict({"user": "Guest"})
+
+		validate_jwt_request(req)
+		self.assertEqual(frappe.session.user, "Guest")
 
 	def test_rest_forgot_password_flow(self):
 		import random
