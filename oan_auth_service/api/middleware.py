@@ -107,17 +107,18 @@ def validate_jwt_request(request=None):
 	if config is None:
 		return
 
-	if path in config["exempt_paths"] or path.rstrip("/") in config["exempt_paths"]:
-		return
-
 	# Something earlier in validate_auth already authenticated this request (see
 	# ORDERING above). Leave it alone.
 	session = getattr(frappe.local, "session", None)
 	if session and session.user and session.user != "Guest":
 		return
 
+	is_exempt = path in config["exempt_paths"] or path.rstrip("/") in config["exempt_paths"]
+
 	token = _bearer_token()
 	if not token:
+		if is_exempt:
+			return
 		_reject("Missing bearer token")
 
 	try:

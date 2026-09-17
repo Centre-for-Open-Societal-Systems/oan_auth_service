@@ -885,18 +885,30 @@ def get_me():
 	roles = tokens.resolve_roles(user_doc.name)
 	claims = getattr(frappe.local, "oan_auth_claims", {}) or {}
 
-	return success_response(
-		data={
-			"user": user_doc.name,
-			"first_name": user_doc.first_name,
-			"last_name": user_doc.last_name,
-			"full_name": user_doc.full_name,
-			"login_email": login_email,
-			"mobile_no": user_doc.mobile_no,
-			"roles": roles,
-			"claims": claims,
-		}
-	)
+	data = {
+		"user": user_doc.name,
+		"first_name": user_doc.first_name,
+		"last_name": user_doc.last_name,
+		"full_name": user_doc.full_name,
+		"login_email": login_email,
+		"mobile_no": user_doc.mobile_no,
+		"roles": roles,
+		"claims": claims,
+	}
+
+	profiles = {}
+	for hook_path in frappe.get_hooks("on_user_profile"):
+		try:
+			namespace, profile_data = frappe.get_attr(hook_path)(user_doc=user_doc, roles=roles)
+			if profile_data:
+				profiles[namespace] = profile_data
+		except Exception:
+			frappe.logger().error(f"on_user_profile hook failed: {hook_path}")
+
+	if profiles:
+		data["profiles"] = profiles
+
+	return success_response(data=data)
 
 
 # nosemgrep: guest-whitelisted-method, frappe-semgrep-rules.rules.security.guest-whitelisted-method

@@ -7,6 +7,7 @@ import frappe
 from werkzeug.test import EnvironBuilder
 from werkzeug.wrappers import Request
 
+from oan_auth_service.api import tokens
 from oan_auth_service.api.router import (
 	ensure_routes_registered,
 	prefixed,
@@ -223,6 +224,25 @@ class TestRESTAuthEndpoints(unittest.TestCase):
 
 		with self.assertRaises(frappe.AuthenticationError):
 			validate_jwt_request(me_req)
+
+	def test_exempt_endpoint_with_bearer_token(self):
+		"""Verify that an exempt route accepts Bearer token without raising AuthenticationError."""
+		import frappe.api
+
+		from oan_auth_service.api.middleware import validate_jwt_request
+
+		with configured_keys():
+			token, _ = tokens.issue_access_token("Administrator", ["System Manager"])
+			req = make_test_request(
+				"/api/v1/auth/health",
+				method="GET",
+				headers={"Authorization": f"Bearer {token}"},
+			)
+			frappe.set_user("Guest")
+			frappe.local.session = frappe._dict({"user": "Guest"})
+
+			validate_jwt_request(req)
+			self.assertEqual(frappe.session.user, "Administrator")
 
 	def test_rest_forgot_password_flow(self):
 		import random
