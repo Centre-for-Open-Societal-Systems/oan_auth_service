@@ -234,8 +234,19 @@ class TestRESTAuthEndpoints(unittest.TestCase):
 		with self.assertRaises(frappe.AuthenticationError):
 			validate_jwt_request(me_req)
 
+	def test_exempt_endpoint_without_bearer_token(self):
+		"""Verify that an exempt route without Authorization header allows anonymous Guest access."""
+		from oan_auth_service.api.middleware import validate_jwt_request
+
+		req = make_test_request("/api/v1/auth/health", method="GET")
+		frappe.set_user("Guest")
+		frappe.local.session = frappe._dict({"user": "Guest"})
+
+		validate_jwt_request(req)
+		self.assertEqual(frappe.session.user, "Guest")
+
 	def test_exempt_endpoint_with_bearer_token(self):
-		"""Verify that an exempt route accepts Bearer token without raising AuthenticationError."""
+		"""Verify that an exempt route accepts valid Bearer token and authenticates the user."""
 		from oan_auth_service.api.middleware import validate_jwt_request
 
 		with configured_keys():
@@ -251,8 +262,8 @@ class TestRESTAuthEndpoints(unittest.TestCase):
 			validate_jwt_request(req)
 			self.assertEqual(frappe.session.user, "Administrator")
 
-	def test_exempt_endpoint_with_expired_token(self):
-		"""Verify that an exempt route never 401s on expired token; caller falls through to Guest."""
+	def test_exempt_endpoint_with_expired_token_raises_401(self):
+		"""Verify that an exempt route rejects an expired token with AuthenticationError (401)."""
 		from datetime import UTC, datetime, timedelta
 
 		import jwt as pyjwt
@@ -281,11 +292,11 @@ class TestRESTAuthEndpoints(unittest.TestCase):
 			frappe.set_user("Guest")
 			frappe.local.session = frappe._dict({"user": "Guest"})
 
-			validate_jwt_request(req)
-			self.assertEqual(frappe.session.user, "Guest")
+			with self.assertRaises(frappe.AuthenticationError):
+				validate_jwt_request(req)
 
-	def test_exempt_endpoint_with_revoked_scope_token(self):
-		"""Verify that an exempt route falls through to Guest if scope is no longer held."""
+	def test_exempt_endpoint_with_revoked_scope_token_raises_401(self):
+		"""Verify that an exempt route rejects a token with revoked scope with AuthenticationError (401)."""
 		from oan_auth_service.api.middleware import validate_jwt_request
 
 		with configured_keys():
@@ -298,11 +309,11 @@ class TestRESTAuthEndpoints(unittest.TestCase):
 			frappe.set_user("Guest")
 			frappe.local.session = frappe._dict({"user": "Guest"})
 
-			validate_jwt_request(req)
-			self.assertEqual(frappe.session.user, "Guest")
+			with self.assertRaises(frappe.AuthenticationError):
+				validate_jwt_request(req)
 
-	def test_exempt_endpoint_with_malformed_token(self):
-		"""Verify that an exempt route falls through to Guest if token is completely malformed."""
+	def test_exempt_endpoint_with_malformed_token_raises_401(self):
+		"""Verify that an exempt route rejects a malformed token with AuthenticationError (401)."""
 		from oan_auth_service.api.middleware import validate_jwt_request
 
 		req = make_test_request(
@@ -313,8 +324,8 @@ class TestRESTAuthEndpoints(unittest.TestCase):
 		frappe.set_user("Guest")
 		frappe.local.session = frappe._dict({"user": "Guest"})
 
-		validate_jwt_request(req)
-		self.assertEqual(frappe.session.user, "Guest")
+		with self.assertRaises(frappe.AuthenticationError):
+			validate_jwt_request(req)
 
 	def test_rest_forgot_password_flow(self):
 		import random
