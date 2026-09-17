@@ -20,3 +20,21 @@ def version_meta(version: str = CURRENT_VERSION) -> dict:
 	if info.get("sunset_on"):
 		meta["sunset_on"] = info["sunset_on"]
 	return meta
+
+
+from oan_auth_service.api.router import (
+	ensure_routes_registered,
+	prefixed,
+	registered_routes,
+	rest,
+)
+
+__all__ = [
+	"CURRENT_VERSION",
+	"VERSIONS",
+	"ensure_routes_registered",
+	"prefixed",
+	"registered_routes",
+	"rest",
+	"version_meta",
+]

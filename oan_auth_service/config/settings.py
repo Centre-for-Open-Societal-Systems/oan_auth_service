@@ -81,3 +81,8 @@ def issuer() -> str:
 	share code and could otherwise share a secret by deployment accident.
 	"""
 	return frappe.conf.get("jwt_issuer") or frappe.local.site
+
+
+def enforce_https() -> bool:
+	"""Whether HTTPS transport is strictly required for auth API calls."""
+	return bool(frappe.conf.get("jwt_enforce_https") or frappe.conf.get("enforce_https"))
