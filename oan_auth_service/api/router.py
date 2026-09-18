@@ -24,6 +24,7 @@ TLS, HSTS and transport security headers belong to nginx. 404/405 belong to
 Frappe's matcher. Neither appears here.
 """
 
+import threading
 from collections.abc import Callable
 from functools import wraps
 
@@ -116,6 +117,7 @@ def registered_routes() -> list[dict]:
 
 
 _REGISTERED = False
+_REGISTRATION_LOCK = threading.Lock()
 
 
 def ensure_routes_registered() -> None:
@@ -129,15 +131,29 @@ def ensure_routes_registered() -> None:
 	if _REGISTERED:
 		return
 
+	# This runs on the first request and the dev server is threaded. Two requests
+	# arriving together both found _REGISTERED unset, both walked the list, and
+	# the second add raised "url rule already bound" and answered 500.
+	with _REGISTRATION_LOCK:
+		if _REGISTERED:
+			return
+		_register()
+		_REGISTERED = True
+
+
+def _register() -> None:
 	import frappe.api
 
 	# Importing the endpoint module is what executes the `rest(...)` calls.
 	from oan_auth_service.api.v1 import auth
 
+	# An unbound copy each time: a Rule binds to one map only, and another app
+	# sharing this list may already have added it. Rules compare by pattern, so
+	# the membership check is enough to skip those.
 	for rule in _rules:
-		frappe.api.API_URL_MAP.add(rule)
+		if rule not in frappe.api.API_URL_MAP._rules:
+			frappe.api.API_URL_MAP.add(rule.empty())
 
 	# Bare paths only: the middleware already retries with the trailing slash
 	# stripped, so registering both spellings would be redundant.
 	register_namespace(prefix=NAMESPACE, exempt_paths=sorted(_exempt_paths))
-	_REGISTERED = True
