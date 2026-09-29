@@ -1,0 +1,875 @@
+# OAN Authentication Service API -- OpenAPI 3.0.3 (INTERNAL)
+# Carries internal vendor extensions (x-legacy-rpc-method).
+# Generated from generate_openapi_spec.py -- do not edit manually.
+openapi: 3.0.3
+info:
+  title: OAN Authentication Service API
+  version: 1.0.0
+  description: JWT authentication and user lifecycle service for OpenAgriNet (OAN). Provides RESTful endpoints
+    for user registration, login, token refresh, logout, password recovery, identity introspection, and
+    metadata aggregation.
+  contact:
+    name: COSS - Centre for Open Societal Systems
+servers:
+- url: http://localhost:8000
+  description: Local Frappe Bench
+- url: https://auth.openagrinet.org
+  description: Production Auth Gateway
+tags:
+- name: Authentication & Session
+  description: User login, registration, and token lifecycle
+- name: Password Recovery
+  description: Forgot password and reset flows via email or SMS OTP
+- name: Identity & Profile
+  description: User profile introspection and claims
+- name: System & Keys
+  description: Health check, public key discovery, and metadata
+paths:
+  /api/v1/auth/register:
+    post:
+      tags:
+      - Authentication & Session
+      summary: Register a new user account
+      description: Creates a User record, assigns permissible self-registration roles, fires registered
+        `on_user_registered` hooks across installed apps to link domain records, and issues an initial
+        JWT access and refresh token pair.
+      operationId: post_api_v1_auth_register
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenPairResponse'
+        '400':
+          description: Validation or Client Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      x-legacy-rpc-method: oan_auth_service.api.v1.auth.register_user
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+  /api/v1/auth/login:
+    post:
+      tags:
+      - Authentication & Session
+      summary: Login and obtain token pair
+      description: Authenticates credentials against the User repository, resolves login identifier (email,
+        mobile_no, or user ID), mitigates timing oracles, and returns a short-lived access token along
+        with a single-use refresh token.
+      operationId: post_api_v1_auth_login
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenPairResponse'
+        '400':
+          description: Validation or Client Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      x-legacy-rpc-method: oan_auth_service.api.v1.auth.login
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+  /api/v1/auth/refresh:
+    post:
+      tags:
+      - Authentication & Session
+      summary: Exchange single-use refresh token
+      description: Exchanges an active refresh token for a brand new token pair. The submitted refresh
+        token is single-use and immediately deleted to prevent replay attacks.
+      operationId: post_api_v1_auth_refresh
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenPairResponse'
+        '400':
+          description: Validation or Client Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      x-legacy-rpc-method: oan_auth_service.api.v1.auth.refresh
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshTokenRequest'
+  /api/v1/auth/logout:
+    post:
+      tags:
+      - Authentication & Session
+      summary: Revoke refresh token
+      description: Revokes an active refresh token in the database.
+      operationId: post_api_v1_auth_logout
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogoutResponse'
+        '400':
+          description: Validation or Client Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      x-legacy-rpc-method: oan_auth_service.api.v1.auth.logout
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LogoutRequest'
+  /api/v1/auth/forgot-password:
+    post:
+      tags:
+      - Password Recovery
+      summary: Initiate password recovery
+      description: Initiates password recovery. Dispatches an email reset link if the user has an email
+        address, or an SMS OTP code if the account is mobile-only. Returns a generic message to prevent
+        account enumeration.
+      operationId: post_api_v1_auth_forgot_password
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageOnlyResponse'
+        '400':
+          description: Validation or Client Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      x-legacy-rpc-method: oan_auth_service.api.v1.auth.forgot_password
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ForgotPasswordRequest'
+  /api/v1/auth/reset-password:
+    post:
+      tags:
+      - Password Recovery
+      summary: Complete password reset
+      description: Completes password reset using either an emailed `key` or (`usr` + `otp`) texted to
+        mobile. Revokes all existing refresh tokens for the user upon successful reset.
+      operationId: post_api_v1_auth_reset_password
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageOnlyResponse'
+        '400':
+          description: Validation or Client Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      x-legacy-rpc-method: oan_auth_service.api.v1.auth.reset_password
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResetPasswordRequest'
+  /api/v1/auth/me:
+    get:
+      tags:
+      - Identity & Profile
+      summary: Introspect current authenticated user
+      description: Returns canonical details, assigned roles, and namespaced profiles for the authenticated
+        user collected from `on_user_profile` hooks.
+      operationId: get_api_v1_auth_me
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserMeResponse'
+        '400':
+          description: Validation or Client Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      x-legacy-rpc-method: oan_auth_service.api.v1.auth.get_me
+      security:
+      - BearerAuth: []
+  /api/v1/auth/keys:
+    get:
+      tags:
+      - System & Keys
+      summary: Public key information
+      description: Returns active key ID (kid), algorithm (HS256), and public key metadata.
+      operationId: get_api_v1_auth_keys
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicKeysResponse'
+        '400':
+          description: Validation or Client Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      x-legacy-rpc-method: oan_auth_service.api.v1.auth.get_public_keys
+      security: []
+  /api/v1/auth/health:
+    get:
+      tags:
+      - System & Keys
+      summary: Service health status
+      description: Lightweight health check endpoint for container probes and load balancers.
+      operationId: get_api_v1_auth_health
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '400':
+          description: Validation or Client Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      x-legacy-rpc-method: oan_auth_service.api.v1.auth.get_health
+      security: []
+  /api/v1/auth/metadata:
+    get:
+      tags:
+      - System & Keys
+      summary: Aggregated form and reference metadata
+      description: Aggregates public reference metadata and registration settings across installed apps.
+      operationId: get_api_v1_auth_metadata
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MetadataResponse'
+        '400':
+          description: Validation or Client Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      x-legacy-rpc-method: oan_auth_service.api.v1.auth.get_metadata
+      security: []
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Provide access token as `Bearer <token>` in the Authorization header.
+  schemas:
+    ApiMeta:
+      type: object
+      properties:
+        api_version:
+          type: string
+          example: v1
+          description: Semantic API version
+        status:
+          type: string
+          example: current
+          description: Lifecycle status
+      required:
+      - api_version
+    StandardErrorResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: error
+          enum:
+          - error
+        message:
+          type: string
+          description: Human-readable error description
+        exception:
+          type: string
+          nullable: true
+          description: Exception class name
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              field:
+                type: string
+                nullable: true
+                description: Field causing the validation error
+              message:
+                type: string
+                description: Error message for the specific field
+          nullable: true
+          description: Structured validation errors if applicable
+        meta:
+          $ref: '#/components/schemas/ApiMeta'
+        request_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Tracing correlation ID
+      required:
+      - status
+      - message
+      description: Standard error envelope returned on 4xx/5xx responses
+    TokenPairData:
+      type: object
+      properties:
+        access_token:
+          type: string
+          description: Short-lived JWT access token
+        refresh_token:
+          type: string
+          description: Single-use cryptographically secure refresh token
+        token_type:
+          type: string
+          example: Bearer
+        expires_in:
+          type: integer
+          example: 900
+          description: Access token expiration in seconds
+        user:
+          type: string
+          example: USR-0001
+          description: Canonical user ID or synthetic email
+        roles:
+          type: array
+          items:
+            type: string
+          description: Roles assigned to this user
+        scope:
+          type: array
+          items:
+            type: string
+          nullable: true
+          description: Narrowed token scope if requested
+      required:
+      - access_token
+      - refresh_token
+      - token_type
+      - expires_in
+      - user
+      - roles
+      description: Access token and refresh token pair
+    LogoutData:
+      type: object
+      properties:
+        revoked:
+          type: boolean
+          description: Whether the refresh token was revoked
+      required:
+      - revoked
+    UserMeData:
+      type: object
+      properties:
+        user:
+          type: string
+          description: Unique User ID / internal handle
+        first_name:
+          type: string
+          nullable: true
+        last_name:
+          type: string
+          nullable: true
+        full_name:
+          type: string
+          description: Full display name
+        login_email:
+          type: string
+          format: email
+          nullable: true
+          description: Authoritative login email
+        mobile_no:
+          type: string
+          nullable: true
+          description: Primary contact mobile number
+        roles:
+          type: array
+          items:
+            type: string
+          description: List of assigned roles
+        profiles:
+          type: object
+          properties: {}
+          additionalProperties: true
+          description: App-specific profiles collected from on_user_profile hooks (e.g. grievance)
+      required:
+      - user
+      - full_name
+      - roles
+      description: Introspected user identity and profile claims
+    PublicKeyItem:
+      type: object
+      properties:
+        kid:
+          type: string
+          description: Key Identifier
+        kty:
+          type: string
+          example: oct
+          description: Key Type
+        alg:
+          type: string
+          example: HS256
+          description: Algorithm
+        use:
+          type: string
+          example: sig
+          description: Public key usage
+      required:
+      - kid
+      - kty
+      - alg
+      - use
+    PublicKeysData:
+      type: object
+      properties:
+        issuer:
+          type: string
+          description: JWT issuer string
+        algorithm:
+          type: string
+          example: HS256
+        active_kid:
+          type: string
+          description: Currently active Key ID used for signing
+        keys:
+          type: array
+          items:
+            $ref: '#/components/schemas/PublicKeyItem'
+      required:
+      - issuer
+      - algorithm
+      - active_kid
+      - keys
+      description: Public verification key information
+    HealthData:
+      type: object
+      properties:
+        status:
+          type: string
+          example: healthy
+        service:
+          type: string
+          example: oan_auth_service
+        api_version:
+          type: string
+          example: v1
+      required:
+      - status
+      - service
+      - api_version
+      description: Service health status
+    MetadataData:
+      type: object
+      properties:
+        auth:
+          type: object
+          properties:
+            self_registerable_roles:
+              type: array
+              items:
+                type: string
+              description: Roles allowed during public self-registration
+          required:
+          - self_registerable_roles
+      additionalProperties: true
+      required:
+      - auth
+      description: Aggregated reference metadata across installed apps
+    MessageOnlyData:
+      type: object
+      properties:
+        message:
+          type: string
+          description: Status confirmation message
+      required:
+      - message
+    RegisterRequest:
+      type: object
+      properties:
+        password:
+          type: string
+          format: password
+          minLength: 8
+          maxLength: 128
+          description: Password meeting complexity requirements (at least 8 characters)
+        full_name:
+          type: string
+          minLength: 1
+          maxLength: 140
+          description: Full name of user or organization
+        email:
+          type: string
+          format: email
+          nullable: true
+          description: Login email address
+        phone_number:
+          type: string
+          nullable: true
+          description: E.164 formatted phone number e.g. +251911223344
+        role:
+          type: string
+          nullable: true
+          description: Singular role to request
+        roles:
+          type: array
+          items:
+            type: string
+          nullable: true
+          description: Multiple roles to request
+      additionalProperties: true
+      required:
+      - password
+      - full_name
+      description: Payload for registering a new user account. Additional fields are forwarded to domain
+        hooks.
+    LoginRequest:
+      type: object
+      properties:
+        usr:
+          type: string
+          minLength: 1
+          description: 'Login identifier: email, mobile number, or User ID'
+        pwd:
+          type: string
+          format: password
+          minLength: 1
+          description: Account password
+        remember_me:
+          type: boolean
+          default: false
+          description: Extend refresh token lifetime to 30 days
+        scope:
+          type: string
+          nullable: true
+          description: 'Optional scope narrowing: comma-separated list of roles'
+      required:
+      - usr
+      - pwd
+      description: Credentials to authenticate and obtain token pair
+    RefreshTokenRequest:
+      type: object
+      properties:
+        refresh_token:
+          type: string
+          minLength: 1
+          description: Active single-use refresh token
+      required:
+      - refresh_token
+      description: Refresh token exchange payload
+    LogoutRequest:
+      type: object
+      properties:
+        refresh_token:
+          type: string
+          minLength: 1
+          description: Active refresh token to revoke
+      required:
+      - refresh_token
+      description: Revoke refresh token session
+    ForgotPasswordRequest:
+      type: object
+      properties:
+        usr:
+          type: string
+          minLength: 1
+          description: Login handle (email or phone number) to initiate recovery
+      required:
+      - usr
+      description: Password recovery initiation request
+    ResetPasswordRequest:
+      type: object
+      properties:
+        new_password:
+          type: string
+          format: password
+          minLength: 8
+          maxLength: 128
+          description: New account password
+        key:
+          type: string
+          nullable: true
+          description: Reset token key received via email link
+        usr:
+          type: string
+          nullable: true
+          description: Login identifier (used alongside SMS OTP)
+        otp:
+          type: string
+          nullable: true
+          description: Numeric one-time verification code received via SMS
+      required:
+      - new_password
+      description: Password reset completion payload. Provide either `key` OR (`usr` and `otp`).
+    TokenPairResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: success
+          enum:
+          - success
+        message:
+          type: string
+          nullable: true
+          description: Optional response message
+        data:
+          $ref: '#/components/schemas/TokenPairData'
+        meta:
+          $ref: '#/components/schemas/ApiMeta'
+        request_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Tracing correlation ID
+      required:
+      - status
+      - data
+      description: Token pair response
+    LogoutResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: success
+          enum:
+          - success
+        message:
+          type: string
+          nullable: true
+          description: Optional response message
+        data:
+          $ref: '#/components/schemas/LogoutData'
+        meta:
+          $ref: '#/components/schemas/ApiMeta'
+        request_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Tracing correlation ID
+      required:
+      - status
+      - data
+      description: Logout revocation response
+    UserMeResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: success
+          enum:
+          - success
+        message:
+          type: string
+          nullable: true
+          description: Optional response message
+        data:
+          $ref: '#/components/schemas/UserMeData'
+        meta:
+          $ref: '#/components/schemas/ApiMeta'
+        request_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Tracing correlation ID
+      required:
+      - status
+      - data
+      description: Authenticated user introspection response
+    PublicKeysResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: success
+          enum:
+          - success
+        message:
+          type: string
+          nullable: true
+          description: Optional response message
+        data:
+          $ref: '#/components/schemas/PublicKeysData'
+        meta:
+          $ref: '#/components/schemas/ApiMeta'
+        request_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Tracing correlation ID
+      required:
+      - status
+      - data
+      description: Public keys metadata response
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: success
+          enum:
+          - success
+        message:
+          type: string
+          nullable: true
+          description: Optional response message
+        data:
+          $ref: '#/components/schemas/HealthData'
+        meta:
+          $ref: '#/components/schemas/ApiMeta'
+        request_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Tracing correlation ID
+      required:
+      - status
+      - data
+      description: Health check response
+    MetadataResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: success
+          enum:
+          - success
+        message:
+          type: string
+          nullable: true
+          description: Optional response message
+        data:
+          $ref: '#/components/schemas/MetadataData'
+        meta:
+          $ref: '#/components/schemas/ApiMeta'
+        request_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Tracing correlation ID
+      required:
+      - status
+      - data
+      description: Reference metadata response
+    MessageOnlyResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: success
+          enum:
+          - success
+        message:
+          type: string
+          description: Action confirmation message
+        meta:
+          $ref: '#/components/schemas/ApiMeta'
+        request_id:
+          type: string
+          format: uuid
+          nullable: true
+      required:
+      - status
+      - message
+      description: Message-only confirmation response

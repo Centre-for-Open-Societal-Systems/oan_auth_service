@@ -5,6 +5,7 @@ import inspect
 import json
 import re
 import uuid
+from dataclasses import dataclass
 from functools import wraps
 from typing import Annotated
 
@@ -78,7 +79,7 @@ def validate_email_string(v: str | None) -> str | None:
 
 
 def validate_phone_string(v: str | None) -> str | None:
-	"""Validate and normalize a phone number (10 to 15 digits)."""
+	"""Validate and normalize a phone number (7 to 15 digits)."""
 	if v is None or v == "":
 		return v
 
@@ -86,8 +87,8 @@ def validate_phone_string(v: str | None) -> str | None:
 	has_plus = raw.startswith("+")
 	digits = re.sub(r"\D", "", raw)
 
-	if not (10 <= len(digits) <= 15):
-		raise ValueError("Phone number must contain between 10 and 15 digits.")
+	if not (7 <= len(digits) <= 15):
+		raise ValueError("Phone number must contain between 7 and 15 digits.")
 	if has_plus and digits.startswith("0"):
 		raise ValueError("An international (+) phone number cannot start with 0.")
 
@@ -101,10 +102,173 @@ def validate_required_phone_string(v: str | None) -> str:
 	return validate_phone_string(v)  # type: ignore
 
 
+def validate_mobile(v: str | None, fieldname: str = "contact_mobile") -> str:
+	"""Strict Frappe phone validation with country code (E.164 via libphonenumber)."""
+	from frappe.utils import validate_phone_number_with_country_code
+
+	raw = str(v or "").strip()
+	if not raw:
+		frappe.throw(_("A contact mobile number is required."), title=_("Missing Mobile"))
+	validate_phone_number_with_country_code(raw, fieldname)
+	return raw
+
+
+def split_phone_number(phone_str: str | None) -> tuple[str | None, str | None]:
+	"""Decompose an E.164 or national phone string into (country_code, national_number)."""
+	if not phone_str:
+		return None, None
+	raw = str(phone_str).strip()
+	if not raw:
+		return None, None
+	try:
+		import phonenumbers
+
+		parsed = phonenumbers.parse(raw, "ET" if not raw.startswith("+") else None)
+		if phonenumbers.is_valid_number(parsed):
+			return f"+{parsed.country_code}", str(parsed.national_number)
+	except Exception:
+		pass
+	if raw.startswith("+251"):
+		return "+251", raw[4:].lstrip("0")
+	elif raw.startswith("0") and len(raw) == 10:
+		return "+251", raw[1:]
+	return None, raw
+
+
+def assemble_phone_number(phone: str | None, country_code: str | None = None) -> str | None:
+	"""Assemble split country code and phone number into normalized string."""
+	if not phone:
+		return None
+	raw_phone = str(phone).strip()
+	if not raw_phone:
+		return None
+	if country_code and not raw_phone.startswith("+"):
+		clean_cc = "+" + str(country_code).lstrip("+").strip()
+		clean_phone = raw_phone.lstrip("0").strip()
+		return f"{clean_cc}{clean_phone}"
+	return raw_phone
+
+
 SafeDate = Annotated[str | None, BeforeValidator(validate_date_string)]
 SafeEmail = Annotated[str | None, BeforeValidator(validate_email_string)]
 SafePhone = Annotated[str | None, BeforeValidator(validate_phone_string)]
 RequiredPhone = Annotated[str, BeforeValidator(validate_required_phone_string)]
+
+
+# ---------------------------------------------------------------------------
+# Multipart Upload Extraction
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class UploadedFile:
+	"""A normalized parsed file from a multipart/form-data request."""
+
+	file_name: str
+	content: bytes
+
+	@property
+	def size_bytes(self) -> int:
+		return len(self.content)
+
+
+def get_uploaded_files(
+	key: str | None = None,
+	allow_empty: bool = False,
+	max_count: int | None = None,
+	max_size_bytes: int | None = None,
+) -> list[UploadedFile]:
+	"""Extract multipart files from frappe.request.files.
+
+	Supports single or multiple files under a specific key or any keys.
+	Validates presence and non-empty content.
+
+	:param key: Optional specific multipart field key to extract (e.g. 'file' or 'files').
+	:param allow_empty: Whether 0-byte files are permitted without raising an error.
+	:param max_count: Maximum number of files permitted in this request.
+	:param max_size_bytes: Maximum allowed size per file in bytes.
+	"""
+	req = getattr(frappe, "request", None)
+	files = getattr(req, "files", None) if req else None
+	if not files:
+		frappe.throw(
+			_("No file was uploaded. Send it as multipart form data under the key 'file' or 'files'."),
+			title=_("No File"),
+		)
+
+	file_objects = []
+	if key:
+		if hasattr(files, "getlist"):
+			file_objects = [item for item in files.getlist(key) if item]
+		elif isinstance(files, dict) and key in files:
+			val = files[key]
+			file_objects = list(val) if isinstance(val, (list, tuple)) else ([val] if val else [])
+	else:
+		if hasattr(files, "getlist"):
+			for k in files.keys():
+				for item in files.getlist(k):
+					if item:
+						file_objects.append(item)
+		elif isinstance(files, dict):
+			for val in files.values():
+				if isinstance(val, (list, tuple)):
+					file_objects.extend(item for item in val if item)
+				elif val:
+					file_objects.append(val)
+		elif isinstance(files, (list, tuple)):
+			file_objects.extend(item for item in files if item)
+
+	if not file_objects:
+		frappe.throw(
+			_("No file was uploaded. Send it as multipart form data under the key 'file' or 'files'."),
+			title=_("No File"),
+		)
+
+	if max_count and len(file_objects) > max_count:
+		frappe.throw(
+			_("Too many files. Maximum {0} files allowed.").format(max_count),
+			title=_("Too Many Files"),
+		)
+
+	uploads: list[UploadedFile] = []
+	for upload in file_objects:
+		filename = getattr(upload, "filename", None) or getattr(upload, "file_name", None) or "unnamed"
+		stream = getattr(upload, "stream", None)
+		if stream:
+			try:
+				stream.seek(0)
+			except Exception:
+				pass
+			content = stream.read()
+		elif hasattr(upload, "read"):
+			content = upload.read()
+		elif hasattr(upload, "content"):
+			content = upload.content
+		elif isinstance(upload, bytes):
+			content = upload
+		else:
+			content = b""
+
+		if not content and not allow_empty:
+			if len(file_objects) == 1:
+				frappe.throw(_("The uploaded file is empty."), title=_("Empty File"))
+			else:
+				frappe.throw(
+					_("The uploaded file {0} is empty.").format(frappe.bold(filename)),
+					title=_("Empty File"),
+				)
+
+		if max_size_bytes and len(content) > max_size_bytes:
+			frappe.throw(
+				_("File {0} exceeds maximum allowed size of {1} bytes.").format(
+					frappe.bold(filename), max_size_bytes
+				),
+				title=_("File Too Large"),
+			)
+
+		uploads.append(UploadedFile(file_name=filename, content=content))
+
+	return uploads
 
 
 # ---------------------------------------------------------------------------
@@ -623,6 +787,9 @@ def handle_api_errors(func):
 			res = func(*args, **kwargs)
 
 			if getattr(frappe.local, "response", None) and frappe.local.response.get("type") == "download":
+				return res
+
+			if isinstance(res, dict) and res.get("status") == "error":
 				return res
 
 			message = "Success"

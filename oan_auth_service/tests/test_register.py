@@ -214,3 +214,37 @@ class TestUserRegistration(unittest.TestCase):
 			self.assertEqual(res["status"], "error")
 			self.assertEqual(res["code"], "VALIDATION_ERROR")
 			self.assertIn("email", res.get("details", {}))
+
+	def test_register_user_with_split_phone_number_and_country_code(self):
+		from oan_auth_service.api.v1.auth import get_me
+
+		with configured_keys(), override_conf(jwt_self_registerable_roles=["Customer"]):
+			national_no = _random_phone()
+			res = register_user(
+				email=None,
+				password="SecurePassword123!",
+				full_name="Split Phone User",
+				country_code="+251",
+				phone=national_no,
+				role="Customer",
+			)
+			self.assertEqual(res["status"], "success")
+			user_id = res["data"]["user"]
+			self.created_users.append(user_id)
+
+			user_doc = frappe.get_doc("User", user_id)
+			self.assertEqual(user_doc.mobile_no, f"+251{national_no}")
+
+			# Test get_me returns decomposed phone representation
+			frappe.set_user(user_id)
+			try:
+				me_res = get_me()
+				self.assertEqual(me_res["status"], "success")
+				me_data = me_res["data"]
+				self.assertEqual(me_data["mobile_no"], f"+251{national_no}")
+				self.assertEqual(me_data["country_code"], "+251")
+				self.assertEqual(me_data["phone_number"], national_no)
+				self.assertNotIn("phone_country_code", me_data)
+				self.assertNotIn("phone_national_number", me_data)
+			finally:
+				frappe.set_user("Administrator")

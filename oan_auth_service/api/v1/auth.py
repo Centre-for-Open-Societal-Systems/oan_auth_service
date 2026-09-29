@@ -45,9 +45,11 @@ from oan_auth_service.api.router import prefixed
 from oan_auth_service.api.utils import (
 	SafeEmail,
 	SafePhone,
+	assemble_phone_number,
 	check_rate_limit,
 	handle_api_errors,
 	parse_multi_value,
+	split_phone_number,
 	success_response,
 	validate_password_complexity,
 	validate_request,
@@ -276,6 +278,8 @@ class RegisterUserSchema(BaseModel):
 	password: str = Field(..., min_length=8, max_length=128)
 	full_name: str = Field(..., min_length=1, max_length=140)
 	phone_number: SafePhone | None = None
+	country_code: str | None = None
+	phone: SafePhone | None = None
 	role: str | None = None
 	roles: list[str] | str | None = None
 
@@ -384,6 +388,12 @@ def register_user(
 	- Authenticated administrators (e.g. System Manager) can assign any valid role.
 	- Broadcasts `on_user_registered` hooks for consuming apps to initialize and link domain DocTypes.
 	"""
+	# Support split phone number (country_code + phone/phone_number) or single phone_number/phone
+	incoming_phone = phone_number or kwargs.get("phone")
+	country_code = kwargs.get("country_code")
+	if incoming_phone:
+		phone_number = assemble_phone_number(incoming_phone, country_code=country_code)
+
 	if email and str(email).strip():
 		# Lowercased because this is a login handle and the resolver matches it
 		# exactly. Frappe normalises the case of `User.email` in `autoname`
@@ -894,6 +904,7 @@ def get_me():
 	user_doc = frappe.get_doc("User", frappe.session.user)
 	login_email = getattr(user_doc, LOGIN_EMAIL_FIELD, None)
 	roles = tokens.resolve_roles(user_doc.name)
+	phone_cc, phone_nat = split_phone_number(user_doc.mobile_no)
 
 	data = {
 		"user": user_doc.name,
@@ -902,6 +913,8 @@ def get_me():
 		"full_name": user_doc.full_name,
 		"login_email": login_email,
 		"mobile_no": user_doc.mobile_no,
+		"country_code": phone_cc,
+		"phone_number": phone_nat,
 		"roles": roles,
 	}
 
