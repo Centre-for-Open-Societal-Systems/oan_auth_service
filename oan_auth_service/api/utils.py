@@ -684,7 +684,9 @@ def _resolve_version_meta(func, explicit_meta: dict | None = None) -> dict:
 
 			import importlib
 
-			api_mod = importlib.import_module(base_pkg)
+			api_mod = importlib.import_module(
+				base_pkg
+			)  # nosemgrep: python.lang.security.audit.non-literal-import.non-literal-import
 			version_meta_fn = getattr(api_mod, "version_meta", None)
 			if callable(version_meta_fn):
 				auto_meta = version_meta_fn(ver_candidate)

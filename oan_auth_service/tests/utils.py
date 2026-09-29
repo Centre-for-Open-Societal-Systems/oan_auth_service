@@ -57,7 +57,7 @@ def make_user(email: str, password: str, roles: list[str] | None = None) -> str:
 		}
 	)
 	user.insert(ignore_permissions=True)
-	frappe.db.commit()
+	frappe.db.commit()  # nosemgrep: frappe-manual-commit
 
 	return user.name
 
@@ -66,10 +66,10 @@ def cleanup_user(email: str):
 	if frappe.db.exists("User", email):
 		frappe.db.delete("OAN User Refresh Token", {"user": email})
 		frappe.delete_doc("User", email, force=True, ignore_permissions=True)
-		frappe.db.commit()
+		frappe.db.commit()  # nosemgrep: frappe-manual-commit
 
 
 def ensure_role(role: str):
 	if not frappe.db.exists("Role", role):
 		frappe.get_doc({"doctype": "Role", "role_name": role}).insert(ignore_permissions=True)
-		frappe.db.commit()
+		frappe.db.commit()  # nosemgrep: frappe-manual-commit

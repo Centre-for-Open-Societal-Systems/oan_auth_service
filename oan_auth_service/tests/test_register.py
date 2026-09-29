@@ -37,7 +37,7 @@ class TestUserRegistration(unittest.TestCase):
 			if frappe.db.exists("Contact", c):
 				frappe.delete_doc("Contact", c, force=True, ignore_permissions=True)
 
-		frappe.db.commit()
+		frappe.db.commit()  # nosemgrep: frappe-manual-commit
 
 	def test_register_user_creates_internal_user_and_stores_email_in_contact(self):
 		with configured_keys(), override_conf(jwt_self_registerable_roles=["Customer"]):

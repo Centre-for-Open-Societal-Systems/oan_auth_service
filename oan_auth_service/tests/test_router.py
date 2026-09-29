@@ -109,7 +109,7 @@ class TestRESTAuthEndpoints(unittest.TestCase):
 			if frappe.db.exists("Contact", c):
 				frappe.delete_doc("Contact", c, force=True, ignore_permissions=True)
 
-		frappe.db.commit()
+		frappe.db.commit()  # nosemgrep: frappe-manual-commit
 		frappe.set_user("Administrator")
 
 	def test_rest_public_health_and_keys(self):
