@@ -233,7 +233,7 @@ class TestUserRegistration(unittest.TestCase):
 				password="SecurePassword123!",
 				full_name="Split Phone User",
 				country_code="+251",
-				phone=national_no,
+				phone_number=national_no,
 				role="Customer",
 			)
 			self.assertEqual(res["status"], "success")
@@ -267,7 +267,7 @@ class TestUserRegistration(unittest.TestCase):
 				password="SecurePassword123!",
 				full_name="Indian Split Phone User",
 				country_code="+91",
-				phone=national_no,
+				phone_number=national_no,
 				role="Customer",
 			)
 			self.assertEqual(res["status"], "success")
@@ -296,14 +296,14 @@ class TestUserRegistration(unittest.TestCase):
 				password="SecurePassword123!",
 				full_name="Bad Phone User",
 				country_code="+251",
-				phone="12345",
+				phone_number="12345",
 				role="Customer",
 			)
 			self.assertEqual(res["status"], "error")
 			self.assertEqual(res["code"], "VALIDATION_ERROR")
 
 	def test_national_number_starting_with_country_code_digits_is_kept_whole(self):
-		# Indian mobiles can start with 91; with country_code="+91" the phone is
+		# Indian mobiles can start with 91; with country_code="+91" the phone_number is
 		# still the national number and must not be read as already prefixed.
 		with configured_keys(), override_conf(jwt_self_registerable_roles=["Customer"]):
 			national_no = "91" + "".join(random.choices("0123456789", k=8))
@@ -312,7 +312,7 @@ class TestUserRegistration(unittest.TestCase):
 				password="SecurePassword123!",
 				full_name="Indian 91 Prefix User",
 				country_code="+91",
-				phone=national_no,
+				phone_number=national_no,
 				role="Customer",
 			)
 			self.assertEqual(res["status"], "success")
@@ -330,7 +330,7 @@ class TestUserRegistration(unittest.TestCase):
 				password="SecurePassword123!",
 				full_name="Trunk Zero User",
 				country_code="+251",
-				phone=f"0{national_no}",
+				phone_number=f"0{national_no}",
 				role="Customer",
 			)
 			self.assertEqual(res["status"], "success")
@@ -339,7 +339,7 @@ class TestUserRegistration(unittest.TestCase):
 			self.assertEqual(frappe.db.get_value("User", user_id, "mobile_no"), f"+251{national_no}")
 
 	def test_country_code_repeated_inside_phone_is_rejected(self):
-		# With country_code given, phone is national only; a full number there
+		# With country_code given, phone_number is national only; a full number there
 		# becomes +251251… and fails validation instead of being guessed at.
 		with configured_keys(), override_conf(jwt_self_registerable_roles=["Customer"]):
 			res = register_user(
@@ -347,7 +347,7 @@ class TestUserRegistration(unittest.TestCase):
 				password="SecurePassword123!",
 				full_name="Double Prefix User",
 				country_code="+251",
-				phone=f"251{_random_ethiopian_national_phone()}",
+				phone_number=f"251{_random_ethiopian_national_phone()}",
 				role="Customer",
 			)
 			self.assertEqual(res["status"], "error")

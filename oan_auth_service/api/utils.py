@@ -5,7 +5,6 @@ import inspect
 import json
 import re
 import uuid
-from dataclasses import dataclass
 from functools import wraps
 from typing import Annotated
 
@@ -81,20 +80,21 @@ def validate_email_string(v: str | None) -> str | None:
 def validate_mobile(v: str | None, fieldname: str = "phone_number") -> str:
 	"""Strict phone validation with country code (E.164 via libphonenumber)."""
 	raw = str(v or "").strip()
+	label = fieldname.replace("_", " ")
 	if not raw:
-		frappe.throw(_("Phone number is required."), frappe.ValidationError)
+		frappe.throw(_("{0} is required.").format(label.capitalize()), frappe.ValidationError)
 	try:
 		import phonenumbers
 
 		candidate = raw if raw.startswith("+") else f"+{raw}"
 		parsed = phonenumbers.parse(candidate, None)
 		if not phonenumbers.is_valid_number(parsed):
-			frappe.throw(_("Invalid phone number: {0}").format(raw), frappe.ValidationError)
+			frappe.throw(_("Invalid {0}: {1}").format(label, raw), frappe.ValidationError)
 		return phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.E164)
 	except Exception as e:
 		if isinstance(e, frappe.ValidationError):
 			raise
-		frappe.throw(_("Invalid phone number format: {0}").format(raw), frappe.ValidationError)
+		frappe.throw(_("Invalid {0} format: {1}").format(label, raw), frappe.ValidationError)
 
 
 def split_phone_number(

@@ -30,14 +30,8 @@ paths:
       tags:
       - Authentication & Session
       summary: Login and obtain token pair
-      description: 'Authenticate and issue an access token plus a refresh token.
-
-
-        `scope` is optional and may only narrow — see `_narrow_to_scope`. Roles are
-
-        always resolved server-side from the authenticated user; nothing the caller
-
-        sends can widen them.'
+      description: Authenticate with user credentials (email, phone number, or username) and password
+        to receive an access token and single-use refresh token.
       operationId: post_api_v1_auth_login
       responses:
         '200':
@@ -71,17 +65,10 @@ paths:
       tags:
       - Authentication & Session
       summary: Register a new user account
-      description: 'Create a User and its role assignment, trigger registered hooks, and issue the first
-        token pair.
-
-
-        - Guest callers can self-assign roles listed in `jwt_self_registerable_roles` in site_config.json.
-
-        - If no role is requested, `jwt_default_registration_role` is assigned (if configured).
-
-        - Authenticated administrators (e.g. System Manager) can assign any valid role.
-
-        - Broadcasts `on_user_registered` hooks for consuming apps to initialize and link domain DocTypes.'
+      description: Register a new user account with password, full name, and either email or phone_number.
+        When country_code is omitted, phone_number must be in full E.164 format (e.g. +251911223344).
+        When country_code is provided (e.g. +251), phone_number is treated as the national subscriber
+        number.
       operationId: post_api_v1_auth_register
       responses:
         '200':
@@ -115,12 +102,8 @@ paths:
       tags:
       - Authentication & Session
       summary: Exchange single-use refresh token
-      description: 'Exchange a refresh token for a new pair, rotating the stored row.
-
-
-        The presented token is single-use: the row backing it is deleted whether the
-
-        exchange succeeds or fails, so a replayed token cannot mint a second pair.'
+      description: Exchange a valid single-use refresh token for a new access token and rotated refresh
+        token.
       operationId: post_api_v1_auth_refresh
       responses:
         '200':
@@ -154,7 +137,7 @@ paths:
       tags:
       - Authentication & Session
       summary: Revoke refresh token
-      description: Revoke a refresh token. Access tokens expire on their own.
+      description: Revoke an active refresh token session.
       operationId: post_api_v1_auth_logout
       responses:
         '200':
@@ -188,44 +171,7 @@ paths:
       tags:
       - Password Recovery
       summary: Initiate password recovery
-      description: 'Start a reset over whichever channel the account actually has.
-
-
-        One endpoint, two deliveries. An account with a login email gets a link; a
-
-        phone-only account gets a numeric code by SMS, because on this schema the
-
-        link would otherwise be mailed to a synthetic address with no mailbox behind
-
-        it. The caller does not choose, and is not told which happened: the client
-
-        knows which kind of identifier its user typed, so it can show the right next
-
-        screen without the server confirming that an account exists.
-
-
-        Every path returns the same message and the same status. Frappe''s own
-
-        `reset_password` is careful about this (user/user.py:1150-1152) and so is
-
-        this: an unknown identifier, a disabled account, a site with no SMS gateway
-
-        and a successful send are indistinguishable *in the response*.
-
-
-        They are not indistinguishable in timing, and this deliberately does not try
-
-        to be. The three paths cost wildly different amounts — a synchronous
-
-        `sendmail`, a pbkdf2 hash, an immediate return — and flattening that would
-
-        mean padding every request to the slowest one, which hands an attacker a
-
-        cheap way to tie up workers. The rate limit below is the control that makes
-
-        the remaining timing signal impractical to harvest; it is not zero, and
-
-        should not be described as such.'
+      description: Initiate password recovery for an account via email reset link or SMS OTP code.
       operationId: post_api_v1_auth_forgot_password
       responses:
         '200':
@@ -259,18 +205,8 @@ paths:
       tags:
       - Password Recovery
       summary: Complete password reset
-      description: 'Complete a reset from either channel, and revoke live sessions.
-
-
-        Takes the `key` from an emailed link, or `usr` plus the `otp` texted to a
-
-        phone-only account. The schema guarantees exactly one of the two arrived. The
-
-        OTP path exchanges a verified code for a freshly minted key and then follows
-
-        the identical path, so there is only one place where a password is actually
-
-        changed.'
+      description: Complete password reset using either an emailed reset key or a phone SMS OTP code with
+        a new password.
       operationId: post_api_v1_auth_reset_password
       responses:
         '200':
@@ -304,12 +240,8 @@ paths:
       tags:
       - Identity & Profile
       summary: Introspect current authenticated user
-      description: "Introspect the current authenticated user and profiles.\n\nProtected by bearer token:\
-        \ callers must be authenticated.\n\nBroadcasts the `on_user_profile` hook across installed apps\
-        \ to collect\napp-specific profile attributes under namespaced keys: `data.profiles[namespace]`.\n\
-        \nHook contract:\n    def hook_handler(user_doc, roles: list[str]) -> tuple[str, dict | None]:\n\
-        \        # Must return (namespace: str, profile_data: dict | None)\n        return \"my_namespace\"\
-        , {...}"
+      description: Introspect identity details, contact information, assigned roles, and app-specific
+        profiles for the authenticated user.
       operationId: get_api_v1_auth_me
       responses:
         '200':
@@ -344,7 +276,7 @@ paths:
       tags:
       - System & Keys
       summary: Public key information
-      description: Return public key identifiers and algorithm configuration.
+      description: Retrieve public JWT signing key identifiers and algorithm configuration.
       operationId: get_api_v1_auth_keys
       responses:
         '200':
@@ -400,11 +332,7 @@ paths:
       tags:
       - System & Keys
       summary: Aggregated form and reference metadata
-      description: "Aggregate public dropdown and reference metadata across installed apps.\n\nBroadcasts\
-        \ the `on_metadata` hook across installed apps.\nSubscribers return a tuple: (namespace: str,\
-        \ metadata_dict: dict).\n\nHook contract:\n    def hook_handler() -> tuple[str, dict | None]:\n\
-        \        # Must return (namespace: str, metadata: dict | None)\n        return \"my_namespace\"\
-        , {...}"
+      description: Aggregate public dropdown and reference metadata across installed apps.
       operationId: get_api_v1_auth_metadata
       responses:
         '200':
@@ -694,17 +622,14 @@ components:
         phone_number:
           type: string
           nullable: true
-          description: E.164 formatted phone number e.g. +251911223344
+          description: Phone number. Can be full international E.164 format (e.g. +251911223344) or national
+            subscriber digits when country_code is provided.
         country_code:
           type: string
           example: '+251'
           nullable: true
-          description: Country dialing code e.g. +251, +91, +1
-        phone:
-          type: string
-          example: '911223344'
-          nullable: true
-          description: National subscriber phone number
+          description: Optional country dialing code (e.g. +251, +91). When provided, phone_number is
+            treated as national digits.
         role:
           type: string
           nullable: true
@@ -719,8 +644,9 @@ components:
       required:
       - password
       - full_name
-      description: Payload for registering a new user account. Additional fields are forwarded to domain
-        hooks.
+      description: Payload for registering a new user account with email or phone_number. When country_code
+        is provided, phone_number is treated as the national subscriber number; otherwise, it must be
+        in full international E.164 format.
     LoginRequest:
       type: object
       properties:

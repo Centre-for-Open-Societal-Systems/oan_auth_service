@@ -255,17 +255,21 @@ REQ["RegisterRequest"] = OBJ(
 		),
 		"full_name": S(minLength=1, maxLength=140, description="Full name of user or organization"),
 		"email": S(format="email", nullable=True, description="Login email address"),
-		"phone_number": S(nullable=True, description="E.164 formatted phone number e.g. +251911223344"),
-		"country_code": S(
-			example="+251", nullable=True, description="Country dialing code e.g. +251, +91, +1"
+		"phone_number": S(
+			nullable=True,
+			description="Phone number. Can be full international E.164 format (e.g. +251911223344) or national subscriber digits when country_code is provided.",
 		),
-		"phone": S(example="911223344", nullable=True, description="National subscriber phone number"),
+		"country_code": S(
+			example="+251",
+			nullable=True,
+			description="Optional country dialing code (e.g. +251, +91). When provided, phone_number is treated as national digits.",
+		),
 		"role": S(nullable=True, description="Singular role to request"),
 		"roles": ARR(S(), nullable=True, description="Multiple roles to request"),
 	},
 	required=["password", "full_name"],
 	additionalProperties=True,
-	description="Payload for registering a new user account. Additional fields are forwarded to domain hooks.",
+	description="Payload for registering a new user account with email or phone_number. When country_code is provided, phone_number is treated as the national subscriber number; otherwise, it must be in full international E.164 format.",
 )
 
 REQ["LoginRequest"] = OBJ(
@@ -515,7 +519,12 @@ def build_openapi() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
 			or api_doc_info.get("summary")
 			or (inner_fn.__doc__ or "").strip().split("\n")[0]
 		)
-		description = api_doc_info.get("description") or (inner_fn.__doc__ or "").strip() or summary
+		description = (
+			route_info.get("description")
+			or api_doc_info.get("description")
+			or route_info.get("summary")
+			or summary
+		)
 
 		tag = _determine_tag(openapi_path, func_name, api_doc_info.get("tags"))
 		req_schema_name = _determine_request_schema(endpoint_fn, inner_fn, func_name)

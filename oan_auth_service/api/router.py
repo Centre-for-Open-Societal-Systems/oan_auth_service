@@ -48,6 +48,7 @@ def rest(
 	allow_guest: bool = False,
 	status: int = 200,
 	summary: str | None = None,
+	description: str | None = None,
 ) -> Callable:
 	"""Expose `fn` at `path`, and return `fn` unchanged.
 
@@ -95,6 +96,7 @@ def rest(
 			"path": path,
 			"methods": tuple(m.upper() for m in methods),
 			"summary": summary,
+			"description": description,
 			"allow_guest": allow_guest,
 			"status": status,
 			"fn": fn,
