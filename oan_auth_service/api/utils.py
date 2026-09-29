@@ -77,34 +77,77 @@ def validate_email_string(v: str | None) -> str | None:
 	return v
 
 
-def validate_phone_string(v: str | None) -> str | None:
-	"""Validate and normalize a phone number (10 to 15 digits)."""
-	if v is None or v == "":
-		return v
+def validate_mobile(v: str | None, fieldname: str = "phone_number") -> str:
+	"""Strict phone validation with country code (E.164 via libphonenumber)."""
+	raw = str(v or "").strip()
+	label = fieldname.replace("_", " ")
+	if not raw:
+		frappe.throw(_("{0} is required.").format(label.capitalize()), frappe.ValidationError)
+	try:
+		import phonenumbers
 
-	raw = str(v).strip()
-	has_plus = raw.startswith("+")
-	digits = re.sub(r"\D", "", raw)
+		candidate = raw if raw.startswith("+") else f"+{raw}"
+		parsed = phonenumbers.parse(candidate, None)
+		if not phonenumbers.is_valid_number(parsed):
+			frappe.throw(_("Invalid {0}: {1}").format(label, raw), frappe.ValidationError)
+		return phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.E164)
+	except Exception as e:
+		if isinstance(e, frappe.ValidationError):
+			raise
+		frappe.throw(_("Invalid {0} format: {1}").format(label, raw), frappe.ValidationError)
 
-	if not (10 <= len(digits) <= 15):
-		raise ValueError("Phone number must contain between 10 and 15 digits.")
-	if has_plus and digits.startswith("0"):
-		raise ValueError("An international (+) phone number cannot start with 0.")
 
-	return f"+{digits}" if has_plus else digits
+def split_phone_number(
+	phone_str: str | None, default_region: str | None = None
+) -> tuple[str | None, str | None]:
+	"""Decompose an E.164 or national phone string into (country_code, national_number) via libphonenumber.
+
+	Returns (country_code, national_number) if valid, or (None, None) if invalid or unparseable.
+	"""
+	if not phone_str or not str(phone_str).strip():
+		return None, None
+	raw = str(phone_str).strip()
+	try:
+		import phonenumbers
+
+		candidate = raw if raw.startswith("+") else (f"+{raw}" if not default_region else raw)
+		parsed = phonenumbers.parse(candidate, default_region if not raw.startswith("+") else None)
+		if phonenumbers.is_valid_number(parsed):
+			# national_significant_number keeps a leading zero that belongs to the
+			# number (Italian `06…`); `parsed.national_number` is an int and drops it.
+			return f"+{parsed.country_code}", phonenumbers.national_significant_number(parsed)
+	except Exception:
+		pass
+	return None, None
 
 
-def validate_required_phone_string(v: str | None) -> str:
-	"""Validate that a mandatory phone number is present and valid."""
-	if v is None or str(v).strip() == "":
-		raise ValueError("Phone number is required.")
-	return validate_phone_string(v)  # type: ignore
+def assemble_phone_number(phone: str | None, country_code: str | None = None) -> str | None:
+	"""Join a split country code and national number into one `+<cc><national>` string.
+
+	The two input shapes never mix:
+	- `country_code` given: `phone` is always the national number. It is never
+	  inspected for an embedded country code, so a national number that happens
+	  to start with the same digits (e.g. Indian `91…` with `+91`) is kept whole.
+	  A leading trunk `0` is left in place: libphonenumber, via `validate_mobile`,
+	  drops it where it is a trunk prefix (`+2510911…` → `+251911…`) and keeps it
+	  where it belongs to the number (Italian `+3906…`).
+	- `country_code` absent: `phone` must already be in international form and
+	  is returned unchanged.
+
+	No validity check here; callers run `validate_mobile` on the result.
+	"""
+	if not phone or not str(phone).strip():
+		return None
+	raw_phone = str(phone).strip()
+	if not country_code:
+		return raw_phone
+	cc_digits = re.sub(r"\D", "", str(country_code))
+	national_digits = re.sub(r"\D", "", raw_phone)
+	return f"+{cc_digits}{national_digits}"
 
 
 SafeDate = Annotated[str | None, BeforeValidator(validate_date_string)]
 SafeEmail = Annotated[str | None, BeforeValidator(validate_email_string)]
-SafePhone = Annotated[str | None, BeforeValidator(validate_phone_string)]
-RequiredPhone = Annotated[str, BeforeValidator(validate_required_phone_string)]
 
 
 # ---------------------------------------------------------------------------
@@ -520,6 +563,7 @@ def _resolve_version_meta(func, explicit_meta: dict | None = None) -> dict:
 
 			import importlib
 
+			# nosemgrep: non-literal-import, python.lang.security.audit.non-literal-import.non-literal-import
 			api_mod = importlib.import_module(base_pkg)
 			version_meta_fn = getattr(api_mod, "version_meta", None)
 			if callable(version_meta_fn):
@@ -623,6 +667,9 @@ def handle_api_errors(func):
 			res = func(*args, **kwargs)
 
 			if getattr(frappe.local, "response", None) and frappe.local.response.get("type") == "download":
+				return res
+
+			if isinstance(res, dict) and res.get("status") == "error":
 				return res
 
 			message = "Success"

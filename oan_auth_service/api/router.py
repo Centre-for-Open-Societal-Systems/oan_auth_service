@@ -29,6 +29,7 @@ from collections.abc import Callable
 from functools import wraps
 
 import frappe
+from werkzeug.exceptions import NotFound
 from werkzeug.routing import Rule
 from werkzeug.wrappers import Response
 
@@ -48,6 +49,7 @@ def rest(
 	allow_guest: bool = False,
 	status: int = 200,
 	summary: str | None = None,
+	description: str | None = None,
 ) -> Callable:
 	"""Expose `fn` at `path`, and return `fn` unchanged.
 
@@ -63,6 +65,9 @@ def rest(
 	def decorator(fn: Callable) -> Callable:
 		@wraps(fn)
 		def endpoint(**path_args):
+			if "oan_auth_service" not in frappe.get_installed_apps():
+				raise NotFound()
+
 			params = {**frappe.form_dict, **path_args}
 			params.pop("cmd", None)
 			filtered_args = frappe.get_newargs(fn, params)
@@ -92,8 +97,12 @@ def rest(
 			"path": path,
 			"methods": tuple(m.upper() for m in methods),
 			"summary": summary,
+			"description": description,
 			"allow_guest": allow_guest,
+			"status": status,
+			"fn": fn,
 		}
+		endpoint._fn = fn
 		_rules.append(Rule(path, endpoint=endpoint, methods=[m.upper() for m in methods]))
 		if allow_guest:
 			_exempt_paths.add(path)
@@ -143,6 +152,9 @@ def ensure_routes_registered() -> None:
 
 def _register() -> None:
 	import frappe.api
+
+	if "oan_auth_service" not in frappe.get_installed_apps():
+		return
 
 	# Importing the endpoint module is what executes the `rest(...)` calls.
 	from oan_auth_service.api.v1 import auth

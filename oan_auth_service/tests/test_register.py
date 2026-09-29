@@ -10,8 +10,16 @@ from oan_auth_service.api.v1.auth import register_user
 from oan_auth_service.tests.utils import configured_keys, ensure_role, override_conf
 
 
-def _random_phone() -> str:
+def _random_ethiopian_national_phone() -> str:
+	return "91" + "".join(random.choices("0123456789", k=7))
+
+
+def _random_indian_national_phone() -> str:
 	return "98" + "".join(random.choices("0123456789", k=8))
+
+
+def _random_phone() -> str:
+	return f"+251{_random_ethiopian_national_phone()}"
 
 
 class TestUserRegistration(unittest.TestCase):
@@ -37,7 +45,7 @@ class TestUserRegistration(unittest.TestCase):
 			if frappe.db.exists("Contact", c):
 				frappe.delete_doc("Contact", c, force=True, ignore_permissions=True)
 
-		frappe.db.commit()
+		frappe.db.commit()  # nosemgrep: frappe-manual-commit
 
 	def test_register_user_creates_internal_user_and_stores_email_in_contact(self):
 		with configured_keys(), override_conf(jwt_self_registerable_roles=["Customer"]):
@@ -214,3 +222,133 @@ class TestUserRegistration(unittest.TestCase):
 			self.assertEqual(res["status"], "error")
 			self.assertEqual(res["code"], "VALIDATION_ERROR")
 			self.assertIn("email", res.get("details", {}))
+
+	def test_register_user_with_split_phone_number_and_country_code(self):
+		from oan_auth_service.api.v1.auth import get_me
+
+		with configured_keys(), override_conf(jwt_self_registerable_roles=["Customer"]):
+			national_no = _random_ethiopian_national_phone()
+			res = register_user(
+				email=None,
+				password="SecurePassword123!",
+				full_name="Split Phone User",
+				country_code="+251",
+				phone_number=national_no,
+				role="Customer",
+			)
+			self.assertEqual(res["status"], "success")
+			user_id = res["data"]["user"]
+			self.created_users.append(user_id)
+
+			user_doc = frappe.get_doc("User", user_id)
+			self.assertEqual(user_doc.mobile_no, f"+251{national_no}")
+
+			# Test get_me returns decomposed phone representation
+			frappe.set_user(user_id)
+			try:
+				me_res = get_me()
+				self.assertEqual(me_res["status"], "success")
+				me_data = me_res["data"]
+				self.assertEqual(me_data["mobile_no"], f"+251{national_no}")
+				self.assertEqual(me_data["country_code"], "+251")
+				self.assertEqual(me_data["phone_number"], national_no)
+				self.assertNotIn("phone_country_code", me_data)
+				self.assertNotIn("phone_national_number", me_data)
+			finally:
+				frappe.set_user("Administrator")
+
+	def test_register_user_with_indian_split_phone_number(self):
+		from oan_auth_service.api.v1.auth import get_me
+
+		with configured_keys(), override_conf(jwt_self_registerable_roles=["Customer"]):
+			national_no = _random_indian_national_phone()
+			res = register_user(
+				email=None,
+				password="SecurePassword123!",
+				full_name="Indian Split Phone User",
+				country_code="+91",
+				phone_number=national_no,
+				role="Customer",
+			)
+			self.assertEqual(res["status"], "success")
+			user_id = res["data"]["user"]
+			self.created_users.append(user_id)
+
+			user_doc = frappe.get_doc("User", user_id)
+			self.assertEqual(user_doc.mobile_no, f"+91{national_no}")
+
+			frappe.set_user(user_id)
+			try:
+				me_res = get_me()
+				self.assertEqual(me_res["status"], "success")
+				me_data = me_res["data"]
+				self.assertEqual(me_data["mobile_no"], f"+91{national_no}")
+				self.assertEqual(me_data["country_code"], "+91")
+				self.assertEqual(me_data["phone_number"], national_no)
+			finally:
+				frappe.set_user("Administrator")
+
+	def test_register_user_with_invalid_phone_rejected(self):
+		with configured_keys(), override_conf(jwt_self_registerable_roles=["Customer"]):
+			# 5 digits is invalid for any country
+			res = register_user(
+				email=None,
+				password="SecurePassword123!",
+				full_name="Bad Phone User",
+				country_code="+251",
+				phone_number="12345",
+				role="Customer",
+			)
+			self.assertEqual(res["status"], "error")
+			self.assertEqual(res["code"], "VALIDATION_ERROR")
+
+	def test_national_number_starting_with_country_code_digits_is_kept_whole(self):
+		# Indian mobiles can start with 91; with country_code="+91" the phone_number is
+		# still the national number and must not be read as already prefixed.
+		with configured_keys(), override_conf(jwt_self_registerable_roles=["Customer"]):
+			national_no = "91" + "".join(random.choices("0123456789", k=8))
+			res = register_user(
+				email=None,
+				password="SecurePassword123!",
+				full_name="Indian 91 Prefix User",
+				country_code="+91",
+				phone_number=national_no,
+				role="Customer",
+			)
+			self.assertEqual(res["status"], "success")
+			user_id = res["data"]["user"]
+			self.created_users.append(user_id)
+			self.assertEqual(frappe.db.get_value("User", user_id, "mobile_no"), f"+91{national_no}")
+
+	def test_trunk_zero_in_national_number_is_dropped(self):
+		# Ethiopians write mobiles as 09…; libphonenumber knows 0 is ET's trunk
+		# prefix and stores the E.164 form without it.
+		with configured_keys(), override_conf(jwt_self_registerable_roles=["Customer"]):
+			national_no = _random_ethiopian_national_phone()
+			res = register_user(
+				email=None,
+				password="SecurePassword123!",
+				full_name="Trunk Zero User",
+				country_code="+251",
+				phone_number=f"0{national_no}",
+				role="Customer",
+			)
+			self.assertEqual(res["status"], "success")
+			user_id = res["data"]["user"]
+			self.created_users.append(user_id)
+			self.assertEqual(frappe.db.get_value("User", user_id, "mobile_no"), f"+251{national_no}")
+
+	def test_country_code_repeated_inside_phone_is_rejected(self):
+		# With country_code given, phone_number is national only; a full number there
+		# becomes +251251… and fails validation instead of being guessed at.
+		with configured_keys(), override_conf(jwt_self_registerable_roles=["Customer"]):
+			res = register_user(
+				email=None,
+				password="SecurePassword123!",
+				full_name="Double Prefix User",
+				country_code="+251",
+				phone_number=f"251{_random_ethiopian_national_phone()}",
+				role="Customer",
+			)
+			self.assertEqual(res["status"], "error")
+			self.assertEqual(res["code"], "VALIDATION_ERROR")

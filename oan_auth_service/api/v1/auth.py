@@ -32,6 +32,7 @@ runs on the RPC path only — REST guest input has never been HTML-sanitised, so
 pydantic validators are the sole input guard there.
 """
 
+import re
 import secrets
 
 import frappe
@@ -44,11 +45,13 @@ from oan_auth_service.api import tokens
 from oan_auth_service.api.router import prefixed
 from oan_auth_service.api.utils import (
 	SafeEmail,
-	SafePhone,
+	assemble_phone_number,
 	check_rate_limit,
 	handle_api_errors,
 	parse_multi_value,
+	split_phone_number,
 	success_response,
+	validate_mobile,
 	validate_password_complexity,
 	validate_request,
 )
@@ -275,7 +278,14 @@ class RegisterUserSchema(BaseModel):
 	email: SafeEmail | None = None
 	password: str = Field(..., min_length=8, max_length=128)
 	full_name: str = Field(..., min_length=1, max_length=140)
-	phone_number: SafePhone | None = None
+	phone_number: str | None = Field(
+		default=None,
+		description="Phone number. Can be full international E.164 format (e.g. +251911223344) or national subscriber digits when country_code is provided.",
+	)
+	country_code: str | None = Field(
+		default=None,
+		description="Optional country dialing code (e.g. +251, +91). When provided, phone_number is treated as national digits.",
+	)
 	role: str | None = None
 	roles: list[str] | str | None = None
 
@@ -283,6 +293,17 @@ class RegisterUserSchema(BaseModel):
 	@classmethod
 	def validate_password(cls, v: str) -> str:
 		return validate_password_complexity(v)
+
+	@field_validator("country_code")
+	@classmethod
+	def validate_cc(cls, v: str | None) -> str | None:
+		if v is not None and str(v).strip():
+			clean = str(v).strip()
+			digits = re.sub(r"\D", "", clean)
+			if not (1 <= len(digits) <= 4):
+				raise ValueError("Country code must be between 1 and 4 digits (e.g. +251).")
+			return f"+{digits}"
+		return None
 
 
 class RefreshTokenSchema(BaseModel):
@@ -340,7 +361,12 @@ route = prefixed("/api/v1/auth")
 
 
 # nosemgrep: guest-whitelisted-method, frappe-semgrep-rules.rules.security.guest-whitelisted-method
-@route("/login", allow_guest=True, summary="Login and obtain token pair")
+@route(
+	"/login",
+	allow_guest=True,
+	summary="Login and obtain token pair",
+	description="Authenticate with user credentials (email, phone number, or username) and password to receive an access token and single-use refresh token.",
+)
 @frappe.whitelist(allow_guest=True)
 @validate_request(LoginSchema)
 @handle_api_errors
@@ -364,7 +390,12 @@ def login(usr: str, pwd: str, remember_me: bool = False, scope: str | list[str] 
 
 
 # nosemgrep: guest-whitelisted-method, frappe-semgrep-rules.rules.security.guest-whitelisted-method
-@route("/register", allow_guest=True, summary="Register a new user account")
+@route(
+	"/register",
+	allow_guest=True,
+	summary="Register a new user account",
+	description="Register a new user account with password, full name, and either email or phone_number. When country_code is omitted, phone_number must be in full E.164 format (e.g. +251911223344). When country_code is provided (e.g. +251), phone_number is treated as the national subscriber number.",
+)
 @frappe.whitelist(allow_guest=True)
 @validate_request(RegisterUserSchema)
 @handle_api_errors
@@ -373,6 +404,7 @@ def register_user(
 	full_name: str,
 	email: str | None = None,
 	phone_number: str | None = None,
+	country_code: str | None = None,
 	role: str | None = None,
 	roles: list[str] | str | None = None,
 	**kwargs,
@@ -384,6 +416,12 @@ def register_user(
 	- Authenticated administrators (e.g. System Manager) can assign any valid role.
 	- Broadcasts `on_user_registered` hooks for consuming apps to initialize and link domain DocTypes.
 	"""
+	if phone_number:
+		assembled = assemble_phone_number(phone_number, country_code=country_code)
+		phone_number = validate_mobile(assembled, fieldname="phone_number")
+	else:
+		phone_number = None
+
 	if email and str(email).strip():
 		# Lowercased because this is a login handle and the resolver matches it
 		# exactly. Frappe normalises the case of `User.email` in `autoname`
@@ -492,7 +530,9 @@ def register_user(
 	# registration that half-succeeded — an account with a role but no linked
 	# record, and a token pair already in the caller's hands — is worse than one
 	# that visibly failed and can be retried.
-	hook_kwargs = {k: v for k, v in kwargs.items() if k != "cmd"}
+	hook_kwargs = {k: v for k, v in kwargs.items() if k not in ("cmd", "phone", "country_code")}
+	if phone_number:
+		hook_kwargs["phone_number"] = phone_number
 	for hook_path in frappe.get_hooks("on_user_registered"):
 		try:
 			fn = frappe.get_attr(hook_path)
@@ -508,7 +548,12 @@ def register_user(
 
 
 # nosemgrep: guest-whitelisted-method, frappe-semgrep-rules.rules.security.guest-whitelisted-method
-@route("/refresh", allow_guest=True, summary="Exchange single-use refresh token")
+@route(
+	"/refresh",
+	allow_guest=True,
+	summary="Exchange single-use refresh token",
+	description="Exchange a valid single-use refresh token for a new access token and rotated refresh token.",
+)
 @frappe.whitelist(allow_guest=True)
 @validate_request(RefreshTokenSchema)
 @handle_api_errors
@@ -561,7 +606,12 @@ def refresh(refresh_token: str):
 
 
 # nosemgrep: guest-whitelisted-method, frappe-semgrep-rules.rules.security.guest-whitelisted-method
-@route("/logout", allow_guest=True, summary="Revoke refresh token")
+@route(
+	"/logout",
+	allow_guest=True,
+	summary="Revoke refresh token",
+	description="Revoke an active refresh token session.",
+)
 @frappe.whitelist(allow_guest=True)
 @validate_request(LogoutSchema)
 @handle_api_errors
@@ -703,7 +753,12 @@ def _deliver_reset_by_email(user_doc, login_email: str) -> None:
 
 
 # nosemgrep: guest-whitelisted-method, frappe-semgrep-rules.rules.security.guest-whitelisted-method
-@route("/forgot-password", allow_guest=True, summary="Initiate password recovery")
+@route(
+	"/forgot-password",
+	allow_guest=True,
+	summary="Initiate password recovery",
+	description="Initiate password recovery for an account via email reset link or SMS OTP code.",
+)
 @frappe.whitelist(allow_guest=True)
 @validate_request(ForgotPasswordSchema)
 @handle_api_errors
@@ -824,7 +879,12 @@ def _mint_reset_key(user: str) -> str:
 
 
 # nosemgrep: guest-whitelisted-method, frappe-semgrep-rules.rules.security.guest-whitelisted-method
-@route("/reset-password", allow_guest=True, summary="Complete password reset")
+@route(
+	"/reset-password",
+	allow_guest=True,
+	summary="Complete password reset",
+	description="Complete password reset using either an emailed reset key or a phone SMS OTP code with a new password.",
+)
 @frappe.whitelist(allow_guest=True)
 @validate_request(ResetPasswordSchema)
 @handle_api_errors
@@ -872,7 +932,12 @@ def reset_password(new_password: str, key: str | None = None, usr: str | None = 
 	return success_response(message=result)
 
 
-@route("/me", methods=("GET",), summary="Introspect current authenticated user")
+@route(
+	"/me",
+	methods=("GET",),
+	summary="Introspect current authenticated user",
+	description="Introspect identity details, contact information, assigned roles, and app-specific profiles for the authenticated user.",
+)
 @frappe.whitelist()
 @handle_api_errors
 def get_me():
@@ -894,6 +959,7 @@ def get_me():
 	user_doc = frappe.get_doc("User", frappe.session.user)
 	login_email = getattr(user_doc, LOGIN_EMAIL_FIELD, None)
 	roles = tokens.resolve_roles(user_doc.name)
+	phone_cc, phone_nat = split_phone_number(user_doc.mobile_no)
 
 	data = {
 		"user": user_doc.name,
@@ -902,6 +968,8 @@ def get_me():
 		"full_name": user_doc.full_name,
 		"login_email": login_email,
 		"mobile_no": user_doc.mobile_no,
+		"country_code": phone_cc,
+		"phone_number": phone_nat,
 		"roles": roles,
 	}
 
@@ -931,7 +999,13 @@ def get_me():
 
 
 # nosemgrep: guest-whitelisted-method, frappe-semgrep-rules.rules.security.guest-whitelisted-method
-@route("/keys", methods=("GET",), allow_guest=True, summary="Public key information")
+@route(
+	"/keys",
+	methods=("GET",),
+	allow_guest=True,
+	summary="Public key information",
+	description="Retrieve public JWT signing key identifiers and algorithm configuration.",
+)
 @frappe.whitelist(allow_guest=True)
 @handle_api_errors
 def get_public_keys():
@@ -957,7 +1031,13 @@ def get_public_keys():
 
 
 # nosemgrep: guest-whitelisted-method, frappe-semgrep-rules.rules.security.guest-whitelisted-method
-@route("/health", methods=("GET",), allow_guest=True, summary="Service health status")
+@route(
+	"/health",
+	methods=("GET",),
+	allow_guest=True,
+	summary="Service health status",
+	description="Health check endpoint for the auth service.",
+)
 @frappe.whitelist(allow_guest=True)
 @handle_api_errors
 def get_health():
@@ -972,7 +1052,13 @@ def get_health():
 
 
 # nosemgrep: guest-whitelisted-method, frappe-semgrep-rules.rules.security.guest-whitelisted-method
-@route("/metadata", methods=("GET",), allow_guest=True, summary="Aggregated form and reference metadata")
+@route(
+	"/metadata",
+	methods=("GET",),
+	allow_guest=True,
+	summary="Aggregated form and reference metadata",
+	description="Aggregate public dropdown and reference metadata across installed apps.",
+)
 @frappe.whitelist(allow_guest=True)
 @handle_api_errors
 def get_metadata():
