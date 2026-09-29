@@ -1,0 +1,65 @@
+rules:
+  - id: oan-api-missing-error-handler
+    message: "REST endpoints decorated with @route or @rest must include @handle_api_errors to guarantee standardized JSON error envelopes and correlation IDs."
+    languages: [python]
+    severity: ERROR
+    patterns:
+      - pattern-either:
+          - pattern-inside: |
+              @route(...)
+              def $FUNC(...):
+                ...
+          - pattern-inside: |
+              @rest(...)
+              def $FUNC(...):
+                ...
+          - pattern-inside: |
+              @root_route(...)
+              def $FUNC(...):
+                ...
+      - pattern-not-inside: |
+          @handle_api_errors
+          def $FUNC(...):
+            ...
+      - pattern: |
+          def $FUNC(...):
+            ...
+
+  - id: oan-translatable-throw-messages
+    message: "User-facing message passed to frappe.throw() must be wrapped in _(...) for translatability."
+    languages: [python]
+    severity: ERROR
+    paths:
+      exclude:
+        - "**/tests/**"
+    patterns:
+      - pattern: frappe.throw("$MSG", ...)
+      - pattern-not: frappe.throw(_("$MSG"), ...)
+
+  - id: oan-db-sql-formatted-string
+    message: "frappe.db.sql() must use parameterized query arguments instead of Python f-strings, format(), or string concatenation to prevent SQL injection."
+    languages: [python]
+    severity: ERROR
+    paths:
+      exclude:
+        - "**/tests/**"
+    patterns:
+      - pattern-either:
+          - pattern: frappe.db.sql(f"...", ...)
+          - pattern: frappe.db.sql("..." + $VAR, ...)
+          - pattern: frappe.db.sql($VAR + "...", ...)
+          - pattern: frappe.db.sql("...".format(...), ...)
+          - pattern: frappe.db.sql("..." % (...), ...)
+
+  - id: oan-no-print-in-production-code
+    message: "Avoid using print() in application code. Use frappe.logger() or frappe.log_error() instead."
+    languages: [python]
+    severity: WARNING
+    paths:
+      exclude:
+        - "**/tests/**"
+        - "**/openapi/**"
+        - "**/kong/**"
+        - "**/setup/**"
+    patterns:
+      - pattern: print(...)

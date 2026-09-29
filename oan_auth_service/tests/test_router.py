@@ -14,6 +14,7 @@ from oan_auth_service.api.router import (
 	registered_routes,
 	rest,
 )
+from oan_auth_service.api.utils import handle_api_errors
 from oan_auth_service.config import settings
 from oan_auth_service.tests.utils import configured_keys, ensure_role, override_conf
 
@@ -53,6 +54,7 @@ def make_test_request(
 class TestWerkzeugRESTRouter(unittest.TestCase):
 	def test_rest_decorator_registration(self):
 		@rest("/api/v1/test_dummy_route", methods=("GET", "POST"), allow_guest=True, summary="Test Route")
+		@handle_api_errors
 		def dummy_route():
 			return {"message": "hello"}
 
@@ -67,6 +69,7 @@ class TestWerkzeugRESTRouter(unittest.TestCase):
 		my_route = prefixed("/api/v1/sample")
 
 		@my_route("/action", methods=("POST",))
+		@handle_api_errors
 		def sample_action():
 			return {"action": "ok"}
 
@@ -333,7 +336,7 @@ class TestRESTAuthEndpoints(unittest.TestCase):
 		import frappe.api
 
 		with configured_keys(), override_conf(jwt_self_registerable_roles=["Customer"]):
-			phone = "98" + "".join(random.choices("0123456789", k=8))
+			phone = "+9198" + "".join(random.choices("0123456789", k=8))
 			pwd = "SuperSecretPassword123!"
 
 			# Register with phone

@@ -24,7 +24,7 @@ Comprehensive API documentation for the **OAN Authentication Service** (`oan_aut
 - [Identity & Profile Endpoints](#identity--profile-endpoints)
   - [7. Introspect User (`GET /api/v1/auth/me`)](#7-introspect-user-get-apiv1authme)
 - [System & Discovery Endpoints](#system--discovery-endpoints)
-  - [8. Public Key Discovery (`GET /api/v1/auth/keys`)](#8-public-key-discovery-get-apiv1authkeys)
+  - [8. Key Metadata Discovery (`GET /api/v1/auth/keys`)](#8-key-metadata-discovery-get-apiv1authkeys)
   - [9. Health Check (`GET /api/v1/auth/health`)](#9-health-check-get-apiv1authhealth)
   - [10. Public Metadata (`GET /api/v1/auth/metadata`)](#10-public-metadata-get-apiv1authmetadata)
 
@@ -153,7 +153,7 @@ HTTP Status: `400`, `401`, `403`, `404`, `429`, or `500`
 | `POST` | `/api/v1/auth/forgot-password` | Initiate password recovery (SMS / Email)       | Public / Guest   | 10 req / hour / IP     |
 | `POST` | `/api/v1/auth/reset-password`  | Complete password reset (Email Key or SMS OTP) | Public / Guest   | 20 OTP req / hour / IP |
 | `GET`  | `/api/v1/auth/me`              | Current user profile & claims introspection    | `Bearer <token>` | No                     |
-| `GET`  | `/api/v1/auth/keys`            | Public JWT signing key metadata                | Public / Guest   | No                     |
+| `GET`  | `/api/v1/auth/keys`            | JWT signing key ID & algorithm metadata        | Public / Guest   | No                     |
 | `GET`  | `/api/v1/auth/health`          | Health check endpoint                          | Public / Guest   | No                     |
 | `GET`  | `/api/v1/auth/metadata`        | Aggregated app metadata & public roles         | Public / Guest   | No                     |
 
@@ -172,23 +172,41 @@ Registers a new user, creates canonical `User` and `Contact` records, triggers `
 
 #### Request Body Parameters
 
-| Field          | Type                        | Required   | Constraints            | Description                                                                                       |
-| :------------- | :-------------------------- | :--------- | :--------------------- | :------------------------------------------------------------------------------------------------ |
-| `full_name`    | `string`                    | **Yes**    | 1 – 140 chars          | Full name of user or organization.                                                                |
-| `password`     | `string`                    | **Yes**    | 8 – 128 chars          | Account password. Must meet complexity: at least 1 letter, 1 number, and 1 special character.     |
-| `email`        | `string`                    | Optional\* | Valid email format     | User login email. (\*Note: Either `email` or `phone_number` must be provided).                    |
-| `phone_number` | `string`                    | Optional\* | 10 – 15 digits / E.164 | Mobile number (e.g. `+251911223344`).                                                             |
-| `role`         | `string`                    | Optional   | Valid role name        | Single role to request. Must be in `jwt_self_registerable_roles` configuration for guest callers. |
-| `roles`        | `array[string]` \| `string` | Optional   | Valid role names       | List of roles to request. Must be in `jwt_self_registerable_roles`.                               |
-| `...kwargs`    | `any`                       | Optional   | —                      | Extra arbitrary domain fields passed through to installed app `on_user_registered` hooks.         |
+| Field          | Type                        | Required   | Constraints                | Description                                                                                                        |
+| :------------- | :-------------------------- | :--------- | :------------------------- | :----------------------------------------------------------------------------------------------------------------- |
+| `full_name`    | `string`                    | **Yes**    | 1 – 140 chars              | Full name of user or organization.                                                                                 |
+| `password`     | `string`                    | **Yes**    | 8 – 128 chars              | Account password. Must meet complexity: at least 1 letter, 1 number, and 1 special character.                      |
+| `email`        | `string`                    | Optional\* | Valid email format         | User login email. (\*Note: At least one of `email`, `phone_number`, or `country_code` + `phone` must be provided). |
+| `phone_number` | `string`                    | Optional\* | 10 – 15 digits / E.164     | Full international mobile number with country calling code (e.g. `+251911223344`).                                 |
+| `country_code` | `string`                    | Optional\* | `+` and 1 – 4 digits       | Country calling code prefix (e.g. `+251`). Used in combination with `phone`.                                       |
+| `phone`        | `string`                    | Optional\* | National subscriber number | National/local phone number (e.g. `911223344`). Used in combination with `country_code`.                           |
+| `role`         | `string`                    | Optional   | Valid role name            | Single role to request. Must be in `jwt_self_registerable_roles` configuration for guest callers.                  |
+| `roles`        | `array[string]` \| `string` | Optional   | Valid role names           | List of roles to request. Must be in `jwt_self_registerable_roles`.                                                |
+| `...kwargs`    | `any`                       | Optional   | —                          | Extra arbitrary domain fields passed through to installed app `on_user_registered` hooks.                          |
 
-#### Request Body Example
+#### Request Body Examples
+
+**Example A: Complete E.164 `phone_number`**
 
 ```json
 {
   "full_name": "Abebe Bikila",
   "email": "abebe@example.com",
   "phone_number": "+251911223344",
+  "password": "SecurePassword123!",
+  "role": "Farmer",
+  "district": "Arsi"
+}
+```
+
+**Example B: Split `country_code` and `phone`**
+
+```json
+{
+  "full_name": "Abebe Bikila",
+  "email": "abebe@example.com",
+  "country_code": "+251",
+  "phone": "911223344",
   "password": "SecurePassword123!",
   "role": "Farmer",
   "district": "Arsi"
@@ -426,12 +444,12 @@ Completes password reset using either verification method. Upon successful passw
 
 Must provide **either** `key` (Email flow) **OR** (`usr` + `otp`) (SMS flow), but **not both**.
 
-| Field          | Type     | Required    | Constraints   | Description                                                                        |
-| :------------- | :------- | :---------- | :------------ | :--------------------------------------------------------------------------------- |
-| `new_password` | `string` | **Yes**     | 8 – 128 chars | New password satisfying complexity rules (upper, lower, digit, symbol).            |
-| `key`          | `string` | Conditional | Email Flow    | The reset token key received from the email link.                                  |
-| `usr`          | `string` | Conditional | SMS Flow      | Login handle (email or phone number).                                              |
-| `otp`          | `string` | Conditional | SMS Flow      | Numeric one-time password received via SMS. Valid for 10 minutes (max 5 attempts). |
+| Field          | Type     | Required    | Constraints   | Description                                                                               |
+| :------------- | :------- | :---------- | :------------ | :---------------------------------------------------------------------------------------- |
+| `new_password` | `string` | **Yes**     | 8 – 128 chars | New password. Must meet complexity: at least 1 letter, 1 number, and 1 special character. |
+| `key`          | `string` | Conditional | Email Flow    | The reset token key received from the email link.                                         |
+| `usr`          | `string` | Conditional | SMS Flow      | Login handle (email or phone number).                                                     |
+| `otp`          | `string` | Conditional | SMS Flow      | Numeric one-time password received via SMS. Valid for 10 minutes (max 5 attempts).        |
 
 #### Request Body Examples
 
@@ -496,6 +514,8 @@ Returns the profile, identity attributes, and assigned roles of the currently au
     "full_name": "Abebe Bikila",
     "login_email": "abebe@example.com",
     "mobile_no": "+251911223344",
+    "country_code": "+251",
+    "phone_number": "911223344",
     "roles": ["Farmer"],
     "profiles": {
       "grievance": {
@@ -514,24 +534,26 @@ Returns the profile, identity attributes, and assigned roles of the currently au
 
 #### Response Fields (`data`)
 
-| Field         | Type               | Description                                            |
-| :------------ | :----------------- | :----------------------------------------------------- |
-| `user`        | `string`           | Unique User ID / internal handle.                      |
-| `first_name`  | `string` \| `null` | First name.                                            |
-| `last_name`   | `string` \| `null` | Last name.                                             |
-| `full_name`   | `string`           | Display name.                                          |
-| `login_email` | `string` \| `null` | Authoritative login email address.                     |
-| `mobile_no`   | `string` \| `null` | Registered phone number.                               |
-| `roles`       | `array[string]`    | Active roles assigned to the user.                     |
-| `profiles`    | `object`           | Namespaced domain profiles supplied by installed apps. |
+| Field          | Type               | Description                                                                  |
+| :------------- | :----------------- | :--------------------------------------------------------------------------- |
+| `user`         | `string`           | Unique User ID / internal handle.                                            |
+| `first_name`   | `string` \| `null` | First name.                                                                  |
+| `last_name`    | `string` \| `null` | Last name.                                                                   |
+| `full_name`    | `string`           | Display name.                                                                |
+| `login_email`  | `string` \| `null` | Authoritative login email address.                                           |
+| `mobile_no`    | `string` \| `null` | Complete international mobile number (E.164 format).                         |
+| `country_code` | `string` \| `null` | Extracted country calling code (e.g. `+251`).                                |
+| `phone_number` | `string` \| `null` | Extracted national subscriber phone number (e.g. `911223344`).               |
+| `roles`        | `array[string]`    | Active roles assigned to the user.                                           |
+| `profiles`     | `object`           | Namespaced domain profiles supplied by installed apps via `on_user_profile`. |
 
 ---
 
 ## System & Discovery Endpoints
 
-### 8. Public Key Discovery (`GET /api/v1/auth/keys`)
+### 8. Key Metadata Discovery (`GET /api/v1/auth/keys`)
 
-Returns the active signing key ID (`kid`), algorithm configuration (`HS256`), and issuer identity.
+Returns the active HMAC signing key ID (`kid`), algorithm configuration (`HS256`), and issuer identity. Symmetric `HS256` secret bytes are never exposed over the API; this endpoint provides key identification metadata for gateway routing and downstream token verification tracking.
 
 - **HTTP Method**: `GET`
 - **Path**: `/api/v1/auth/keys`

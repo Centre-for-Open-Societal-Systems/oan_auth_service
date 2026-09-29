@@ -19,7 +19,9 @@ services:
   - name: cors
     config:
       origins:
-      - '*'
+      - http://localhost:8000
+      - https://app.openagrinet.org
+      - https://auth.openagrinet.org
       methods:
       - GET
       - POST
@@ -44,11 +46,11 @@ services:
       latency_metrics: true
       bandwidth_metrics: true
   routes:
-  - name: post-api-v1-auth-register
+  - name: post-api-v1-auth-login
     methods:
     - POST
     paths:
-    - ~/api/v1/auth/register$
+    - ~/api/v1/auth/login$
     strip_path: false
     regex_priority: 4
     tags:
@@ -67,11 +69,11 @@ services:
         policy: redis
         fault_tolerant: true
         hide_client_headers: false
-  - name: post-api-v1-auth-login
+  - name: post-api-v1-auth-register
     methods:
     - POST
     paths:
-    - ~/api/v1/auth/login$
+    - ~/api/v1/auth/register$
     strip_path: false
     regex_priority: 4
     tags:
@@ -125,14 +127,14 @@ services:
     - auth
     - v1
     - d01
-    - authenticated-core
+    - public-auth
     - public
     plugins:
     - name: rate-limiting
       config:
-        minute: 120
-        hour: 4000
-        limit_by: consumer
+        minute: 5
+        hour: 30
+        limit_by: ip
         policy: redis
         fault_tolerant: true
         hide_client_headers: false
@@ -289,7 +291,7 @@ consumers:
   - issuer
   jwt_secrets:
   - algorithm: HS256
-    key: https://auth.openagrinet.org
+    key: oan-auth
     secret: REPLACE_WITH_OAN_AUTH_JWT_SECRET
 - username: oan-web-client
   tags:

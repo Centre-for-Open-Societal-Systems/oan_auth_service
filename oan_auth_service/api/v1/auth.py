@@ -32,6 +32,7 @@ runs on the RPC path only — REST guest input has never been HTML-sanitised, so
 pydantic validators are the sole input guard there.
 """
 
+import re
 import secrets
 
 import frappe
@@ -44,13 +45,13 @@ from oan_auth_service.api import tokens
 from oan_auth_service.api.router import prefixed
 from oan_auth_service.api.utils import (
 	SafeEmail,
-	SafePhone,
 	assemble_phone_number,
 	check_rate_limit,
 	handle_api_errors,
 	parse_multi_value,
 	split_phone_number,
 	success_response,
+	validate_mobile,
 	validate_password_complexity,
 	validate_request,
 )
@@ -277,9 +278,9 @@ class RegisterUserSchema(BaseModel):
 	email: SafeEmail | None = None
 	password: str = Field(..., min_length=8, max_length=128)
 	full_name: str = Field(..., min_length=1, max_length=140)
-	phone_number: SafePhone | None = None
+	phone_number: str | None = None
 	country_code: str | None = None
-	phone: SafePhone | None = None
+	phone: str | None = None
 	role: str | None = None
 	roles: list[str] | str | None = None
 
@@ -287,6 +288,17 @@ class RegisterUserSchema(BaseModel):
 	@classmethod
 	def validate_password(cls, v: str) -> str:
 		return validate_password_complexity(v)
+
+	@field_validator("country_code")
+	@classmethod
+	def validate_cc(cls, v: str | None) -> str | None:
+		if v is not None and str(v).strip():
+			clean = str(v).strip()
+			digits = re.sub(r"\D", "", clean)
+			if not (1 <= len(digits) <= 4):
+				raise ValueError("Country code must be between 1 and 4 digits (e.g. +251).")
+			return f"+{digits}"
+		return None
 
 
 class RefreshTokenSchema(BaseModel):
@@ -377,6 +389,7 @@ def register_user(
 	full_name: str,
 	email: str | None = None,
 	phone_number: str | None = None,
+	country_code: str | None = None,
 	role: str | None = None,
 	roles: list[str] | str | None = None,
 	**kwargs,
@@ -390,9 +403,12 @@ def register_user(
 	"""
 	# Support split phone number (country_code + phone/phone_number) or single phone_number/phone
 	incoming_phone = phone_number or kwargs.get("phone")
-	country_code = kwargs.get("country_code")
+	incoming_cc = country_code or kwargs.get("country_code")
 	if incoming_phone:
-		phone_number = assemble_phone_number(incoming_phone, country_code=country_code)
+		assembled = assemble_phone_number(incoming_phone, country_code=incoming_cc)
+		phone_number = validate_mobile(assembled, fieldname="phone_number")
+	else:
+		phone_number = None
 
 	if email and str(email).strip():
 		# Lowercased because this is a login handle and the resolver matches it
@@ -502,7 +518,9 @@ def register_user(
 	# registration that half-succeeded — an account with a role but no linked
 	# record, and a token pair already in the caller's hands — is worse than one
 	# that visibly failed and can be retried.
-	hook_kwargs = {k: v for k, v in kwargs.items() if k != "cmd"}
+	hook_kwargs = {k: v for k, v in kwargs.items() if k not in ("cmd", "phone", "country_code")}
+	if phone_number:
+		hook_kwargs["phone_number"] = phone_number
 	for hook_path in frappe.get_hooks("on_user_registered"):
 		try:
 			fn = frappe.get_attr(hook_path)

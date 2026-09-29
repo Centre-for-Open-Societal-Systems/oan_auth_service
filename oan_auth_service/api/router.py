@@ -64,13 +64,6 @@ def rest(
 		@wraps(fn)
 		def endpoint(**path_args):
 			if "oan_auth_service" not in frappe.get_installed_apps():
-				if "oan_a2c" in frappe.get_installed_apps() and getattr(frappe.local, "request", None):
-					try:
-						import oan_a2c.api.router as a2c_router
-
-						return a2c_router.dispatch_rest_request(frappe.local.request)
-					except Exception:
-						pass
 				raise NotFound()
 
 			params = {**frappe.form_dict, **path_args}
@@ -103,7 +96,10 @@ def rest(
 			"methods": tuple(m.upper() for m in methods),
 			"summary": summary,
 			"allow_guest": allow_guest,
+			"status": status,
+			"fn": fn,
 		}
+		endpoint._fn = fn
 		_rules.append(Rule(path, endpoint=endpoint, methods=[m.upper() for m in methods]))
 		if allow_guest:
 			_exempt_paths.add(path)

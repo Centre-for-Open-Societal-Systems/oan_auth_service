@@ -10,8 +10,16 @@ from oan_auth_service.api.v1.auth import register_user
 from oan_auth_service.tests.utils import configured_keys, ensure_role, override_conf
 
 
-def _random_phone() -> str:
+def _random_ethiopian_national_phone() -> str:
+	return "91" + "".join(random.choices("0123456789", k=7))
+
+
+def _random_indian_national_phone() -> str:
 	return "98" + "".join(random.choices("0123456789", k=8))
+
+
+def _random_phone() -> str:
+	return f"+251{_random_ethiopian_national_phone()}"
 
 
 class TestUserRegistration(unittest.TestCase):
@@ -219,7 +227,7 @@ class TestUserRegistration(unittest.TestCase):
 		from oan_auth_service.api.v1.auth import get_me
 
 		with configured_keys(), override_conf(jwt_self_registerable_roles=["Customer"]):
-			national_no = _random_phone()
+			national_no = _random_ethiopian_national_phone()
 			res = register_user(
 				email=None,
 				password="SecurePassword123!",
@@ -248,3 +256,48 @@ class TestUserRegistration(unittest.TestCase):
 				self.assertNotIn("phone_national_number", me_data)
 			finally:
 				frappe.set_user("Administrator")
+
+	def test_register_user_with_indian_split_phone_number(self):
+		from oan_auth_service.api.v1.auth import get_me
+
+		with configured_keys(), override_conf(jwt_self_registerable_roles=["Customer"]):
+			national_no = _random_indian_national_phone()
+			res = register_user(
+				email=None,
+				password="SecurePassword123!",
+				full_name="Indian Split Phone User",
+				country_code="+91",
+				phone=national_no,
+				role="Customer",
+			)
+			self.assertEqual(res["status"], "success")
+			user_id = res["data"]["user"]
+			self.created_users.append(user_id)
+
+			user_doc = frappe.get_doc("User", user_id)
+			self.assertEqual(user_doc.mobile_no, f"+91{national_no}")
+
+			frappe.set_user(user_id)
+			try:
+				me_res = get_me()
+				self.assertEqual(me_res["status"], "success")
+				me_data = me_res["data"]
+				self.assertEqual(me_data["mobile_no"], f"+91{national_no}")
+				self.assertEqual(me_data["country_code"], "+91")
+				self.assertEqual(me_data["phone_number"], national_no)
+			finally:
+				frappe.set_user("Administrator")
+
+	def test_register_user_with_invalid_phone_rejected(self):
+		with configured_keys(), override_conf(jwt_self_registerable_roles=["Customer"]):
+			# 5 digits is invalid for any country
+			res = register_user(
+				email=None,
+				password="SecurePassword123!",
+				full_name="Bad Phone User",
+				country_code="+251",
+				phone="12345",
+				role="Customer",
+			)
+			self.assertEqual(res["status"], "error")
+			self.assertEqual(res["code"], "VALIDATION_ERROR")

@@ -24,49 +24,19 @@ tags:
 - name: System & Keys
   description: Health check, public key discovery, and metadata
 paths:
-  /api/v1/auth/register:
-    post:
-      tags:
-      - Authentication & Session
-      summary: Register a new user account
-      description: Creates a User record, assigns permissible self-registration roles, fires registered
-        `on_user_registered` hooks across installed apps to link domain records, and issues an initial
-        JWT access and refresh token pair.
-      operationId: post_api_v1_auth_register
-      responses:
-        '200':
-          description: Success
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/TokenPairResponse'
-        '400':
-          description: Validation or Client Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/StandardErrorResponse'
-        '500':
-          description: Internal Server Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/StandardErrorResponse'
-      security: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/RegisterRequest'
   /api/v1/auth/login:
     post:
       tags:
       - Authentication & Session
       summary: Login and obtain token pair
-      description: Authenticates credentials against the User repository, resolves login identifier (email,
-        mobile_no, or user ID), mitigates timing oracles, and returns a short-lived access token along
-        with a single-use refresh token.
+      description: 'Authenticate and issue an access token plus a refresh token.
+
+
+        `scope` is optional and may only narrow — see `_narrow_to_scope`. Roles are
+
+        always resolved server-side from the authenticated user; nothing the caller
+
+        sends can widen them.'
       operationId: post_api_v1_auth_login
       responses:
         '200':
@@ -94,13 +64,60 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/LoginRequest'
+  /api/v1/auth/register:
+    post:
+      tags:
+      - Authentication & Session
+      summary: Register a new user account
+      description: 'Create a User and its role assignment, trigger registered hooks, and issue the first
+        token pair.
+
+
+        - Guest callers can self-assign roles listed in `jwt_self_registerable_roles` in site_config.json.
+
+        - If no role is requested, `jwt_default_registration_role` is assigned (if configured).
+
+        - Authenticated administrators (e.g. System Manager) can assign any valid role.
+
+        - Broadcasts `on_user_registered` hooks for consuming apps to initialize and link domain DocTypes.'
+      operationId: post_api_v1_auth_register
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenPairResponse'
+        '400':
+          description: Validation or Client Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
   /api/v1/auth/refresh:
     post:
       tags:
       - Authentication & Session
       summary: Exchange single-use refresh token
-      description: Exchanges an active refresh token for a brand new token pair. The submitted refresh
-        token is single-use and immediately deleted to prevent replay attacks.
+      description: 'Exchange a refresh token for a new pair, rotating the stored row.
+
+
+        The presented token is single-use: the row backing it is deleted whether the
+
+        exchange succeeds or fails, so a replayed token cannot mint a second pair.'
       operationId: post_api_v1_auth_refresh
       responses:
         '200':
@@ -133,7 +150,7 @@ paths:
       tags:
       - Authentication & Session
       summary: Revoke refresh token
-      description: Revokes an active refresh token in the database.
+      description: Revoke a refresh token. Access tokens expire on their own.
       operationId: post_api_v1_auth_logout
       responses:
         '200':
@@ -166,9 +183,44 @@ paths:
       tags:
       - Password Recovery
       summary: Initiate password recovery
-      description: Initiates password recovery. Dispatches an email reset link if the user has an email
-        address, or an SMS OTP code if the account is mobile-only. Returns a generic message to prevent
-        account enumeration.
+      description: 'Start a reset over whichever channel the account actually has.
+
+
+        One endpoint, two deliveries. An account with a login email gets a link; a
+
+        phone-only account gets a numeric code by SMS, because on this schema the
+
+        link would otherwise be mailed to a synthetic address with no mailbox behind
+
+        it. The caller does not choose, and is not told which happened: the client
+
+        knows which kind of identifier its user typed, so it can show the right next
+
+        screen without the server confirming that an account exists.
+
+
+        Every path returns the same message and the same status. Frappe''s own
+
+        `reset_password` is careful about this (user/user.py:1150-1152) and so is
+
+        this: an unknown identifier, a disabled account, a site with no SMS gateway
+
+        and a successful send are indistinguishable *in the response*.
+
+
+        They are not indistinguishable in timing, and this deliberately does not try
+
+        to be. The three paths cost wildly different amounts — a synchronous
+
+        `sendmail`, a pbkdf2 hash, an immediate return — and flattening that would
+
+        mean padding every request to the slowest one, which hands an attacker a
+
+        cheap way to tie up workers. The rate limit below is the control that makes
+
+        the remaining timing signal impractical to harvest; it is not zero, and
+
+        should not be described as such.'
       operationId: post_api_v1_auth_forgot_password
       responses:
         '200':
@@ -201,8 +253,18 @@ paths:
       tags:
       - Password Recovery
       summary: Complete password reset
-      description: Completes password reset using either an emailed `key` or (`usr` + `otp`) texted to
-        mobile. Revokes all existing refresh tokens for the user upon successful reset.
+      description: 'Complete a reset from either channel, and revoke live sessions.
+
+
+        Takes the `key` from an emailed link, or `usr` plus the `otp` texted to a
+
+        phone-only account. The schema guarantees exactly one of the two arrived. The
+
+        OTP path exchanges a verified code for a freshly minted key and then follows
+
+        the identical path, so there is only one place where a password is actually
+
+        changed.'
       operationId: post_api_v1_auth_reset_password
       responses:
         '200':
@@ -235,8 +297,12 @@ paths:
       tags:
       - Identity & Profile
       summary: Introspect current authenticated user
-      description: Returns canonical details, assigned roles, and namespaced profiles for the authenticated
-        user collected from `on_user_profile` hooks.
+      description: "Introspect the current authenticated user and profiles.\n\nProtected by bearer token:\
+        \ callers must be authenticated.\n\nBroadcasts the `on_user_profile` hook across installed apps\
+        \ to collect\napp-specific profile attributes under namespaced keys: `data.profiles[namespace]`.\n\
+        \nHook contract:\n    def hook_handler(user_doc, roles: list[str]) -> tuple[str, dict | None]:\n\
+        \        # Must return (namespace: str, profile_data: dict | None)\n        return \"my_namespace\"\
+        , {...}"
       operationId: get_api_v1_auth_me
       responses:
         '200':
@@ -257,6 +323,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/StandardErrorResponse'
+        '401':
+          description: Unauthorized / Authentication Required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
       security:
       - BearerAuth: []
   /api/v1/auth/keys:
@@ -264,7 +336,7 @@ paths:
       tags:
       - System & Keys
       summary: Public key information
-      description: Returns active key ID (kid), algorithm (HS256), and public key metadata.
+      description: Return public key identifiers and algorithm configuration.
       operationId: get_api_v1_auth_keys
       responses:
         '200':
@@ -291,7 +363,7 @@ paths:
       tags:
       - System & Keys
       summary: Service health status
-      description: Lightweight health check endpoint for container probes and load balancers.
+      description: Health check endpoint for the auth service.
       operationId: get_api_v1_auth_health
       responses:
         '200':
@@ -318,7 +390,11 @@ paths:
       tags:
       - System & Keys
       summary: Aggregated form and reference metadata
-      description: Aggregates public reference metadata and registration settings across installed apps.
+      description: "Aggregate public dropdown and reference metadata across installed apps.\n\nBroadcasts\
+        \ the `on_metadata` hook across installed apps.\nSubscribers return a tuple: (namespace: str,\
+        \ metadata_dict: dict).\n\nHook contract:\n    def hook_handler() -> tuple[str, dict | None]:\n\
+        \        # Must return (namespace: str, metadata: dict | None)\n        return \"my_namespace\"\
+        , {...}"
       operationId: get_api_v1_auth_metadata
       responses:
         '200':
@@ -471,7 +547,17 @@ components:
         mobile_no:
           type: string
           nullable: true
-          description: Primary contact mobile number
+          description: Primary contact mobile number in E.164 format
+        country_code:
+          type: string
+          example: '+251'
+          nullable: true
+          description: E.164 country dialing code
+        phone_number:
+          type: string
+          example: '911223344'
+          nullable: true
+          description: National subscriber phone number
         roles:
           type: array
           items:
@@ -504,7 +590,7 @@ components:
         use:
           type: string
           example: sig
-          description: Public key usage
+          description: Key usage
       required:
       - kid
       - kty
@@ -515,7 +601,7 @@ components:
       properties:
         issuer:
           type: string
-          description: JWT issuer string
+          description: JWT issuer identifier
         algorithm:
           type: string
           example: HS256
@@ -531,7 +617,7 @@ components:
       - algorithm
       - active_kid
       - keys
-      description: Public verification key information
+      description: Active HMAC signing key ID (kid) and algorithm configuration
     HealthData:
       type: object
       properties:
@@ -582,7 +668,8 @@ components:
           format: password
           minLength: 8
           maxLength: 128
-          description: Password meeting complexity requirements (at least 8 characters)
+          description: Password meeting complexity requirements (at least 8 characters with letters, numbers,
+            and special characters)
         full_name:
           type: string
           minLength: 1
@@ -597,6 +684,16 @@ components:
           type: string
           nullable: true
           description: E.164 formatted phone number e.g. +251911223344
+        country_code:
+          type: string
+          example: '+251'
+          nullable: true
+          description: Country dialing code e.g. +251, +91, +1
+        phone:
+          type: string
+          example: '911223344'
+          nullable: true
+          description: National subscriber phone number
         role:
           type: string
           nullable: true
@@ -628,7 +725,7 @@ components:
         remember_me:
           type: boolean
           default: false
-          description: Extend refresh token lifetime to 30 days
+          description: Extend refresh token lifetime to 90 days
         scope:
           type: string
           nullable: true
@@ -675,7 +772,7 @@ components:
           format: password
           minLength: 8
           maxLength: 128
-          description: New account password
+          description: New account password (min 8 chars, letters, numbers, symbols)
         key:
           type: string
           nullable: true
