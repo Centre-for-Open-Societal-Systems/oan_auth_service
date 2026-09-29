@@ -301,3 +301,54 @@ class TestUserRegistration(unittest.TestCase):
 			)
 			self.assertEqual(res["status"], "error")
 			self.assertEqual(res["code"], "VALIDATION_ERROR")
+
+	def test_national_number_starting_with_country_code_digits_is_kept_whole(self):
+		# Indian mobiles can start with 91; with country_code="+91" the phone is
+		# still the national number and must not be read as already prefixed.
+		with configured_keys(), override_conf(jwt_self_registerable_roles=["Customer"]):
+			national_no = "91" + "".join(random.choices("0123456789", k=8))
+			res = register_user(
+				email=None,
+				password="SecurePassword123!",
+				full_name="Indian 91 Prefix User",
+				country_code="+91",
+				phone=national_no,
+				role="Customer",
+			)
+			self.assertEqual(res["status"], "success")
+			user_id = res["data"]["user"]
+			self.created_users.append(user_id)
+			self.assertEqual(frappe.db.get_value("User", user_id, "mobile_no"), f"+91{national_no}")
+
+	def test_trunk_zero_in_national_number_is_dropped(self):
+		# Ethiopians write mobiles as 09…; libphonenumber knows 0 is ET's trunk
+		# prefix and stores the E.164 form without it.
+		with configured_keys(), override_conf(jwt_self_registerable_roles=["Customer"]):
+			national_no = _random_ethiopian_national_phone()
+			res = register_user(
+				email=None,
+				password="SecurePassword123!",
+				full_name="Trunk Zero User",
+				country_code="+251",
+				phone=f"0{national_no}",
+				role="Customer",
+			)
+			self.assertEqual(res["status"], "success")
+			user_id = res["data"]["user"]
+			self.created_users.append(user_id)
+			self.assertEqual(frappe.db.get_value("User", user_id, "mobile_no"), f"+251{national_no}")
+
+	def test_country_code_repeated_inside_phone_is_rejected(self):
+		# With country_code given, phone is national only; a full number there
+		# becomes +251251… and fails validation instead of being guessed at.
+		with configured_keys(), override_conf(jwt_self_registerable_roles=["Customer"]):
+			res = register_user(
+				email=None,
+				password="SecurePassword123!",
+				full_name="Double Prefix User",
+				country_code="+251",
+				phone=f"251{_random_ethiopian_national_phone()}",
+				role="Customer",
+			)
+			self.assertEqual(res["status"], "error")
+			self.assertEqual(res["code"], "VALIDATION_ERROR")

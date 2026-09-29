@@ -113,44 +113,37 @@ def split_phone_number(
 		candidate = raw if raw.startswith("+") else (f"+{raw}" if not default_region else raw)
 		parsed = phonenumbers.parse(candidate, default_region if not raw.startswith("+") else None)
 		if phonenumbers.is_valid_number(parsed):
-			return f"+{parsed.country_code}", str(parsed.national_number)
+			# national_significant_number keeps a leading zero that belongs to the
+			# number (Italian `06…`); `parsed.national_number` is an int and drops it.
+			return f"+{parsed.country_code}", phonenumbers.national_significant_number(parsed)
 	except Exception:
 		pass
 	return None, None
 
 
 def assemble_phone_number(phone: str | None, country_code: str | None = None) -> str | None:
-	"""Assemble split country code and phone number into valid E.164 string."""
+	"""Join a split country code and national number into one `+<cc><national>` string.
+
+	The two input shapes never mix:
+	- `country_code` given: `phone` is always the national number. It is never
+	  inspected for an embedded country code, so a national number that happens
+	  to start with the same digits (e.g. Indian `91…` with `+91`) is kept whole.
+	  A leading trunk `0` is left in place: libphonenumber, via `validate_mobile`,
+	  drops it where it is a trunk prefix (`+2510911…` → `+251911…`) and keeps it
+	  where it belongs to the number (Italian `+3906…`).
+	- `country_code` absent: `phone` must already be in international form and
+	  is returned unchanged.
+
+	No validity check here; callers run `validate_mobile` on the result.
+	"""
 	if not phone or not str(phone).strip():
 		return None
 	raw_phone = str(phone).strip()
-	if country_code:
-		cc_digits = re.sub(r"\D", "", str(country_code))
-		phone_digits = re.sub(r"\D", "", raw_phone).lstrip("0")
-		if cc_digits and phone_digits:
-			if phone_digits.startswith(cc_digits):
-				candidate = f"+{phone_digits}"
-			else:
-				candidate = f"+{cc_digits}{phone_digits}"
-			try:
-				import phonenumbers
-
-				parsed = phonenumbers.parse(candidate, None)
-				if phonenumbers.is_valid_number(parsed):
-					return phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.E164)
-			except Exception:
-				pass
-			return candidate
-	if raw_phone.startswith("+"):
-		try:
-			import phonenumbers
-
-			parsed = phonenumbers.parse(raw_phone, None)
-			if phonenumbers.is_valid_number(parsed):
-				return phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.E164)
-		except Exception:
-			pass
-	return raw_phone
+	if not country_code:
+		return raw_phone
+	cc_digits = re.sub(r"\D", "", str(country_code))
+	national_digits = re.sub(r"\D", "", raw_phone)
+	return f"+{cc_digits}{national_digits}"
 
 
 SafeDate = Annotated[str | None, BeforeValidator(validate_date_string)]
