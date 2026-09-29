@@ -28,12 +28,11 @@ Kong operates in front of the auth service:
 The API routing configuration is managed declaratively through `kong.yml`:
 
 ```bash
-# 1. Regenerate OpenAPI spec (run inside bench or with bench python)
-bench --site <site> execute openapi.generate_openapi_spec.main
-# or: ../../env/bin/python3 ../openapi/generate_openapi_spec.py
+# 1. Regenerate OpenAPI spec (from the kong/ directory)
+../../../env/bin/python ../openapi/generate_openapi_spec.py
 
 # 2. Regenerate Kong declarative config
-python3 generate_kong_config_from_spec.py
+../../../env/bin/python generate_kong_config_from_spec.py
 
 # 3. Validate configuration
 deck validate -s kong.yml

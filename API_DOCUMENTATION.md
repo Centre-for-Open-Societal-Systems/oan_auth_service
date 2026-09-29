@@ -172,17 +172,16 @@ Registers a new user, creates canonical `User` and `Contact` records, triggers `
 
 #### Request Body Parameters
 
-| Field          | Type                        | Required   | Constraints                | Description                                                                                                        |
-| :------------- | :-------------------------- | :--------- | :------------------------- | :----------------------------------------------------------------------------------------------------------------- |
-| `full_name`    | `string`                    | **Yes**    | 1 – 140 chars              | Full name of user or organization.                                                                                 |
-| `password`     | `string`                    | **Yes**    | 8 – 128 chars              | Account password. Must meet complexity: at least 1 letter, 1 number, and 1 special character.                      |
-| `email`        | `string`                    | Optional\* | Valid email format         | User login email. (\*Note: At least one of `email`, `phone_number`, or `country_code` + `phone` must be provided). |
-| `phone_number` | `string`                    | Optional\* | 10 – 15 digits / E.164     | Full international mobile number with country calling code (e.g. `+251911223344`).                                 |
-| `country_code` | `string`                    | Optional\* | `+` and 1 – 4 digits       | Country calling code prefix (e.g. `+251`). Used in combination with `phone`.                                       |
-| `phone`        | `string`                    | Optional\* | National subscriber number | National/local phone number (e.g. `911223344`). Used in combination with `country_code`.                           |
-| `role`         | `string`                    | Optional   | Valid role name            | Single role to request. Must be in `jwt_self_registerable_roles` configuration for guest callers.                  |
-| `roles`        | `array[string]` \| `string` | Optional   | Valid role names           | List of roles to request. Must be in `jwt_self_registerable_roles`.                                                |
-| `...kwargs`    | `any`                       | Optional   | —                          | Extra arbitrary domain fields passed through to installed app `on_user_registered` hooks.                          |
+| Field          | Type                        | Required   | Constraints             | Description                                                                                                                    |
+| :------------- | :-------------------------- | :--------- | :---------------------- | :----------------------------------------------------------------------------------------------------------------------------- |
+| `full_name`    | `string`                    | **Yes**    | 1 – 140 chars           | Full name of user or organization.                                                                                             |
+| `password`     | `string`                    | **Yes**    | 8 – 128 chars           | Account password. Must meet complexity: at least 1 letter, 1 number, and 1 special character.                                  |
+| `email`        | `string`                    | Optional\* | Valid email format      | User login email. (\*Note: At least one of `email` or `phone_number` must be provided).                                        |
+| `phone_number` | `string`                    | Optional\* | E.164 / National number | Phone number. Full international E.164 string (e.g. `+251911223344`) or national subscriber digits when `country_code` is set. |
+| `country_code` | `string`                    | Optional   | `+` and 1 – 4 digits    | Optional country calling code prefix (e.g. `+251`, `+91`). When provided, `phone_number` is treated as national digits.        |
+| `role`         | `string`                    | Optional   | Valid role name         | Single role to request. Must be in `jwt_self_registerable_roles` configuration for guest callers.                              |
+| `roles`        | `array[string]` \| `string` | Optional   | Valid role names        | List of roles to request. Must be in `jwt_self_registerable_roles`.                                                            |
+| `...kwargs`    | `any`                       | Optional   | —                       | Extra arbitrary domain fields passed through to installed app `on_user_registered` hooks.                                      |
 
 #### Request Body Examples
 
@@ -199,14 +198,14 @@ Registers a new user, creates canonical `User` and `Contact` records, triggers `
 }
 ```
 
-**Example B: Split `country_code` and `phone`**
+**Example B: Split `country_code` and `phone_number`**
 
 ```json
 {
   "full_name": "Abebe Bikila",
   "email": "abebe@example.com",
   "country_code": "+251",
-  "phone": "911223344",
+  "phone_number": "911223344",
   "password": "SecurePassword123!",
   "role": "Farmer",
   "district": "Arsi"
