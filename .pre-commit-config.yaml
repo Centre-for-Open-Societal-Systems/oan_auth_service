@@ -58,6 +58,11 @@ repos:
                 .*boilerplate.*
             )$
 
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.21.2
+    hooks:
+      - id: gitleaks
+
 ci:
     autoupdate_schedule: weekly
     skip: []
