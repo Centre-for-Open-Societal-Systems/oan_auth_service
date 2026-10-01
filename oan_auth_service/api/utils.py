@@ -3,6 +3,7 @@
 import ast
 import inspect
 import json
+import math
 import re
 import uuid
 from functools import wraps
@@ -10,7 +11,7 @@ from typing import Annotated
 
 import frappe
 from frappe import _
-from pydantic import BaseModel, BeforeValidator, TypeAdapter
+from pydantic import BaseModel, BeforeValidator, Field, TypeAdapter
 from pydantic import ValidationError as PydanticValidationError
 
 from oan_auth_service.api.jwt_keys import JWTKeyConfigurationError
@@ -180,8 +181,15 @@ def check_rate_limit(key: str, limit: int, window: int):
 # ---------------------------------------------------------------------------
 
 
-def validate_request(schema: type[BaseModel]):
+def validate_request(schema: type[BaseModel], exclude_unset: bool = False):
 	"""Decorator to validate whitelisted API inputs using a Pydantic schema.
+
+	`cmd` is dropped before validation: Frappe's RPC path (`/api/method/...`) adds it
+	to the form dict, and it would otherwise trip schemas that forbid extra fields.
+
+	`exclude_unset=True` is for PATCH endpoints. The handler receives only the fields
+	the client actually sent; without it, every omitted optional field would arrive as
+	None and read as "set to null".
 
 	Schema failures are reported as **400 with code VALIDATION_ERROR**, not 422.
 	Both are defensible and much of the ecosystem (FastAPI among them) picks 422;
@@ -206,6 +214,7 @@ def validate_request(schema: type[BaseModel]):
 					params.update(v)
 				else:
 					params[k] = v
+			params.pop("cmd", None)
 
 			try:
 				validated = schema(**params)
@@ -219,7 +228,7 @@ def validate_request(schema: type[BaseModel]):
 				frappe.local.message_log = []
 				return error_response(message=_("Validation failed"), code="VALIDATION_ERROR", details=errors)
 
-			validated_dict = validated.model_dump()
+			validated_dict = validated.model_dump(exclude_unset=exclude_unset)
 			return func(**validated_dict)
 
 		wrapper._request_schema = schema
@@ -500,6 +509,35 @@ def get_error_message(e: Exception, default_msg: str = "Validation Error") -> st
 			return " | ".join(parsed_msgs)
 
 	return error_msg or default_msg
+
+
+# ---------------------------------------------------------------------------
+# Pagination
+# ---------------------------------------------------------------------------
+
+
+class PageParams(BaseModel):
+	"""Page window for list endpoints. Subclass it in a list schema to add filters."""
+
+	page: int = Field(default=1, ge=1, description="Page number, 1-indexed")
+	page_size: int = Field(default=20, ge=1, le=100, description="Items per page")
+
+	@property
+	def start(self) -> int:
+		return (self.page - 1) * self.page_size
+
+
+def page_meta(total_count: int, page: int, page_size: int) -> dict:
+	"""The `pagination` block of a list response, for `success_response(pagination=...)`."""
+	total_pages = math.ceil(total_count / page_size) if total_count > 0 and page_size > 0 else 1
+	return {
+		"page": page,
+		"page_size": page_size,
+		"total_count": total_count,
+		"total_pages": total_pages,
+		"has_next": page < total_pages,
+		"has_prev": page > 1,
+	}
 
 
 def success_response(data=None, message="Success", meta=None, pagination=None) -> dict:
