@@ -63,7 +63,8 @@ Counters use `policy: redis` to ensure shared rate limits across all distributed
 Before syncing `kong.yml` to production, populate:
 
 1. **Upstream URL:** Replace `AUTH_UPSTREAM_URL` (defaults to `http://oan-auth.internal.svc:8000`) with your production service address.
-2. **JWT Issuer & Secret:** In `consumers[0].jwt_secrets`:
+2. **JWT Issuer & Public Key:** In `consumers[0].jwt_secrets`:
    - **Key (`key`):** Must equal the site's `jwt_issuer` (the `iss` claim in issued JWTs). When `jwt_issuer` is omitted from `site_config.json`, the service falls back to the site name (e.g. `mysite.localhost`). If `key` and `iss` do not match, Kong's JWT plugin cannot match the consumer and will reject `/me` requests with `401 Unauthorized`.
-   - **Secret (`secret`):** Set to the active HMAC secret matching `jwt_secret` (or `jwt_secrets[current_kid]`) in `site_config.json`.
+   - **Public key (`rsa_public_key`):** Set to the PEM public key of `jwt_private_keys[jwt_current_kid]` in `site_config.json`. Extract it with `openssl pkey -in jwt_v1.pem -pubout`. Kong only ever holds the public half, so it can verify tokens but never mint them.
+   - **Rotation:** Kong's `jwt` plugin matches one credential per `iss` and cannot fetch a JWKS, so it verifies against a single public key. When `jwt_current_kid` changes, update `rsa_public_key` at the same time; tokens signed under the previous kid are rejected at Kong until they expire (at most `jwt_access_token_ttl`).
 3. **Redis Host/Port:** Ensure Kong's rate-limiting plugin references your central Redis instance in production environments.

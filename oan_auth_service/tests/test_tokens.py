@@ -4,16 +4,17 @@ import unittest
 from datetime import UTC, datetime, timedelta
 
 import jwt as pyjwt
+from cryptography.hazmat.primitives import serialization
 
 from oan_auth_service.api import tokens
-from oan_auth_service.tests.utils import TEST_SECRETS, configured_keys, override_conf
+from oan_auth_service.tests.utils import TEST_PRIVATE_KEYS, configured_keys, generate_rsa_pem, override_conf
 
 
-def _encode(claims: dict, kid: str = "v1", secret: str | None = None) -> str:
+def _encode(claims: dict, kid: str = "v1", private_key: str | None = None) -> str:
 	"""Hand-roll a token so tests can produce ones the codec would never mint."""
 	return pyjwt.encode(
 		claims,
-		secret or TEST_SECRETS[kid],
+		private_key or TEST_PRIVATE_KEYS[kid],
 		algorithm=tokens.ALGORITHM,
 		headers={"kid": kid},
 	)
@@ -115,18 +116,18 @@ class TestAccessTokenRejection(unittest.TestCase):
 
 	def test_signed_with_a_key_we_do_not_hold(self):
 		with configured_keys():
-			self.assert_rejected(_encode(_valid_claims(), secret="an-entirely-different-secret-value"))
+			self.assert_rejected(_encode(_valid_claims(), private_key=generate_rsa_pem()))
 
 	def test_unknown_kid(self):
 		with configured_keys():
 			token = pyjwt.encode(
-				_valid_claims(), TEST_SECRETS["v1"], algorithm=tokens.ALGORITHM, headers={"kid": "v9"}
+				_valid_claims(), TEST_PRIVATE_KEYS["v1"], algorithm=tokens.ALGORITHM, headers={"kid": "v9"}
 			)
 			self.assert_rejected(token)
 
 	def test_no_kid_header(self):
 		with configured_keys():
-			token = pyjwt.encode(_valid_claims(), TEST_SECRETS["v1"], algorithm=tokens.ALGORITHM)
+			token = pyjwt.encode(_valid_claims(), TEST_PRIVATE_KEYS["v1"], algorithm=tokens.ALGORITHM)
 			self.assert_rejected(token)
 
 	def test_issuer_mismatch(self):
@@ -150,6 +151,37 @@ class TestAccessTokenRejection(unittest.TestCase):
 		with configured_keys():
 			token = pyjwt.encode(_valid_claims(), key="", algorithm="none", headers={"kid": "v1"})
 			self.assert_rejected(token)
+
+	def test_hs256_signed_with_the_public_key_is_refused(self):
+		"""Algorithm confusion: the public key is public, so as an HMAC secret it forges.
+
+		Hand-built because PyJWT itself refuses to HMAC with a PEM key.
+		"""
+		import base64
+		import hashlib
+		import hmac
+		import json
+
+		from oan_auth_service.api import jwt_keys
+
+		def b64(raw: bytes) -> str:
+			return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+		with configured_keys():
+			public_pem = jwt_keys.get_verification_key("v1").public_bytes(
+				serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+			)
+			claims = _valid_claims()
+			claims["iat"] = int(claims["iat"].timestamp())
+			claims["exp"] = int(claims["exp"].timestamp())
+			signing_input = (
+				b64(json.dumps({"alg": "HS256", "typ": "JWT", "kid": "v1"}).encode())
+				+ "."
+				+ b64(json.dumps(claims).encode())
+			)
+			signature = hmac.new(public_pem, signing_input.encode(), hashlib.sha256).digest()
+
+			self.assert_rejected(f"{signing_input}.{b64(signature)}")
 
 
 class TestRefreshTokens(unittest.TestCase):

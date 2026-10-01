@@ -28,10 +28,8 @@ from datetime import UTC, datetime, timedelta
 import frappe
 import jwt
 
-from oan_auth_service.api.jwt_keys import get_signing_key, get_verification_key
+from oan_auth_service.api.jwt_keys import ALGORITHM, get_signing_key, get_verification_key
 from oan_auth_service.config import settings
-
-ALGORITHM = "HS256"
 
 ACCESS_TOKEN_TYPE = "access"
 
@@ -56,7 +54,7 @@ def issue_access_token(user: str, roles: list[str], scope: list[str] | None = No
 	given, is the narrowed subset the token is issued under — see `api/v1/auth.py`
 	for what that does and, more importantly, what it does not do.
 	"""
-	kid, secret = get_signing_key()
+	kid, private_key = get_signing_key()
 	ttl = settings.access_token_ttl()
 	now = datetime.now(UTC)
 
@@ -77,7 +75,7 @@ def issue_access_token(user: str, roles: list[str], scope: list[str] | None = No
 	if scope is not None:
 		claims["scope"] = scope
 
-	token = jwt.encode(claims, secret, algorithm=ALGORITHM, headers={"kid": kid})
+	token = jwt.encode(claims, private_key, algorithm=ALGORITHM, headers={"kid": kid})
 	return token, ttl
 
 
@@ -94,14 +92,17 @@ def decode_access_token(token: str) -> dict:
 	except jwt.PyJWTError:
 		raise TokenError("Malformed token header")
 
-	secret = get_verification_key(kid)
-	if not secret:
+	public_key = get_verification_key(kid)
+	if not public_key:
 		raise TokenError("Token names an unknown signing key")
 
 	try:
 		claims = jwt.decode(
 			token,
-			secret,
+			public_key,
+			# Pinned, never read from the header: accepting the header's `alg`
+			# is what lets an HS256 token signed with the *public* key as an
+			# HMAC secret pass verification.
 			algorithms=[ALGORITHM],
 			issuer=settings.issuer(),
 			options={"require": ["exp", "iat", "sub", "iss"]},

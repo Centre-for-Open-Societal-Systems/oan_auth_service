@@ -1003,29 +1003,22 @@ def get_me():
 	"/keys",
 	methods=("GET",),
 	allow_guest=True,
-	summary="Public key information",
-	description="Retrieve public JWT signing key identifiers and algorithm configuration.",
+	summary="Public signing keys",
+	description="Retrieve the RS256 public keys (JWKS) that verify access tokens, and the active kid.",
 )
 @frappe.whitelist(allow_guest=True)
 @handle_api_errors
 def get_public_keys():
-	"""Return public key identifiers and algorithm configuration."""
+	"""Return the JWKS verifiers use, plus which kid currently signs."""
 	from oan_auth_service.api import jwt_keys
 
 	active_kid, _ = jwt_keys.get_signing_key()
 	return success_response(
 		data={
 			"issuer": settings.issuer(),
-			"algorithm": "HS256",
+			"algorithm": jwt_keys.ALGORITHM,
 			"active_kid": active_kid,
-			"keys": [
-				{
-					"kid": active_kid,
-					"kty": "oct",
-					"alg": "HS256",
-					"use": "sig",
-				}
-			],
+			"keys": jwt_keys.get_public_jwks(),
 		}
 	)
 

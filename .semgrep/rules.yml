@@ -1,6 +1,6 @@
 rules:
   - id: oan-api-missing-error-handler
-    message: "REST endpoints decorated with @route or @rest must include @handle_api_errors to guarantee standardized JSON error envelopes and correlation IDs."
+    message: "REST endpoints decorated with @route, @rest, or @root_route must include @handle_api_errors to guarantee standardized JSON error envelopes and correlation IDs."
     languages: [python]
     severity: ERROR
     patterns:
@@ -19,6 +19,70 @@ rules:
                 ...
       - pattern-not-inside: |
           @handle_api_errors
+          def $FUNC(...):
+            ...
+      - pattern: |
+          def $FUNC(...):
+            ...
+
+  - id: oan-no-raw-sql-in-api-layer
+    message: "Raw SQL queries (frappe.db.sql) are forbidden in the API layer. Encapsulate data access in DocType controllers or domain services."
+    languages: [python]
+    severity: ERROR
+    paths:
+      include:
+        - "**/api/**"
+      exclude:
+        - "**/tests/**"
+    patterns:
+      - pattern: frappe.db.sql(...)
+
+  - id: oan-get-doc-in-loop
+    message: "Calling frappe.get_doc or frappe.db.get_value inside a loop causes N+1 query latency. Batch-fetch records using frappe.get_all or frappe.get_list."
+    languages: [python]
+    severity: WARNING
+    paths:
+      include:
+        - "**/api/**"
+      exclude:
+        - "**/tests/**"
+        - "**/patches/**"
+    patterns:
+      - pattern-either:
+          - pattern: frappe.get_doc($DOCTYPE, $NAME, ...)
+          - pattern: frappe.db.get_value(...)
+      - pattern-not: frappe.get_doc({...}, ...)
+      - pattern-either:
+          - pattern-inside: |
+              for $X in $Y:
+                ...
+          - pattern-inside: |
+              [$CALL for $X in $Y]
+
+  - id: oan-dangling-frappe-whitelist
+    message: "Do not define naked @frappe.whitelist() methods in API controllers. Register routes via @route, @rest, or @root_route on Frappe's URL Map."
+    languages: [python]
+    severity: WARNING
+    paths:
+      include:
+        - "**/api/**"
+      exclude:
+        - "**/tests/**"
+    patterns:
+      - pattern-inside: |
+          @frappe.whitelist(...)
+          def $FUNC(...):
+            ...
+      - pattern-not-inside: |
+          @route(...)
+          def $FUNC(...):
+            ...
+      - pattern-not-inside: |
+          @rest(...)
+          def $FUNC(...):
+            ...
+      - pattern-not-inside: |
+          @root_route(...)
           def $FUNC(...):
             ...
       - pattern: |
