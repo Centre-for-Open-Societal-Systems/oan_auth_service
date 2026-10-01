@@ -226,9 +226,9 @@ def build_config(routes):
 			"tags": ["oan", "auth", "issuer"],
 			"jwt_secrets": [
 				{
-					"algorithm": "HS256",
+					"algorithm": "RS256",
 					"key": "oan-auth",
-					"secret": "REPLACE_WITH_OAN_AUTH_JWT_SECRET",
+					"rsa_public_key": "REPLACE_WITH_OAN_AUTH_JWT_PUBLIC_KEY_PEM",
 				}
 			],
 		},

@@ -275,8 +275,8 @@ paths:
     get:
       tags:
       - System & Keys
-      summary: Public key information
-      description: Retrieve public JWT signing key identifiers and algorithm configuration.
+      summary: Public signing keys
+      description: Retrieve the RS256 public keys (JWKS) that verify access tokens, and the active kid.
       operationId: get_api_v1_auth_keys
       responses:
         '200':
@@ -520,21 +520,30 @@ components:
           description: Key Identifier
         kty:
           type: string
-          example: oct
+          example: RSA
           description: Key Type
         alg:
           type: string
-          example: HS256
+          example: RS256
           description: Algorithm
         use:
           type: string
           example: sig
           description: Key usage
+        n:
+          type: string
+          description: RSA modulus, base64url
+        e:
+          type: string
+          example: AQAB
+          description: RSA public exponent, base64url
       required:
       - kid
       - kty
       - alg
       - use
+      - n
+      - e
     PublicKeysData:
       type: object
       properties:
@@ -543,7 +552,7 @@ components:
           description: JWT issuer identifier
         algorithm:
           type: string
-          example: HS256
+          example: RS256
         active_kid:
           type: string
           description: Currently active Key ID used for signing
@@ -556,7 +565,7 @@ components:
       - algorithm
       - active_kid
       - keys
-      description: Active HMAC signing key ID (kid) and algorithm configuration
+      description: RS256 public keys (JWKS) that verify access tokens, and the active signing kid
     HealthData:
       type: object
       properties:

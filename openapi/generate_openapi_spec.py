@@ -177,11 +177,13 @@ data(
 	OBJ(
 		{
 			"kid": S(description="Key Identifier"),
-			"kty": S(example="oct", description="Key Type"),
-			"alg": S(example="HS256", description="Algorithm"),
+			"kty": S(example="RSA", description="Key Type"),
+			"alg": S(example="RS256", description="Algorithm"),
 			"use": S(example="sig", description="Key usage"),
+			"n": S(description="RSA modulus, base64url"),
+			"e": S(example="AQAB", description="RSA public exponent, base64url"),
 		},
-		required=["kid", "kty", "alg", "use"],
+		required=["kid", "kty", "alg", "use", "n", "e"],
 	),
 )
 
@@ -190,12 +192,12 @@ data(
 	OBJ(
 		{
 			"issuer": S(description="JWT issuer identifier"),
-			"algorithm": S(example="HS256"),
+			"algorithm": S(example="RS256"),
 			"active_kid": S(description="Currently active Key ID used for signing"),
 			"keys": ARR(REF("PublicKeyItem")),
 		},
 		required=["issuer", "algorithm", "active_kid", "keys"],
-		description="Active HMAC signing key ID (kid) and algorithm configuration",
+		description="RS256 public keys (JWKS) that verify access tokens, and the active signing kid",
 	),
 )
 
