@@ -3,14 +3,16 @@
 import ast
 import inspect
 import json
+import math
 import re
 import uuid
 from functools import wraps
 from typing import Annotated
 
 import frappe
+import phonenumbers
 from frappe import _
-from pydantic import BaseModel, BeforeValidator, TypeAdapter
+from pydantic import BaseModel, BeforeValidator, Field, TypeAdapter
 from pydantic import ValidationError as PydanticValidationError
 
 from oan_auth_service.api.jwt_keys import JWTKeyConfigurationError
@@ -77,24 +79,35 @@ def validate_email_string(v: str | None) -> str | None:
 	return v
 
 
-def validate_mobile(v: str | None, fieldname: str = "phone_number") -> str:
-	"""Strict phone validation with country code (E.164 via libphonenumber)."""
-	raw = str(v or "").strip()
-	label = fieldname.replace("_", " ")
-	if not raw:
-		frappe.throw(_("{0} is required.").format(label.capitalize()), frappe.ValidationError)
-	try:
-		import phonenumbers
+# Phone-only accounts recover their password by SMS, so a landline would be an
+# account that can never be recovered. FIXED_LINE_OR_MOBILE covers regions (US,
+# Canada) whose numbering plan does not distinguish the two.
+_MOBILE_TYPES = {
+	phonenumbers.PhoneNumberType.MOBILE,
+	phonenumbers.PhoneNumberType.FIXED_LINE_OR_MOBILE,
+}
 
-		candidate = raw if raw.startswith("+") else f"+{raw}"
-		parsed = phonenumbers.parse(candidate, None)
-		if not phonenumbers.is_valid_number(parsed):
-			frappe.throw(_("Invalid {0}: {1}").format(label, raw), frappe.ValidationError)
-		return phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.E164)
-	except Exception as e:
-		if isinstance(e, frappe.ValidationError):
-			raise
-		frappe.throw(_("Invalid {0} format: {1}").format(label, raw), frappe.ValidationError)
+
+def validate_mobile(v: str | None) -> str:
+	"""Validate an international mobile number and return it in E.164.
+
+	`parse` with no default region rejects anything without a leading `+` and a
+	known country code. `number_type` returns UNKNOWN for any number that is not
+	valid, so the mobile check also covers `is_valid_number`.
+	"""
+	raw = str(v or "").strip()
+	try:
+		parsed = phonenumbers.parse(raw, None)
+	except phonenumbers.NumberParseException:
+		parsed = None
+
+	if parsed is None or phonenumbers.number_type(parsed) not in _MOBILE_TYPES:
+		frappe.throw(
+			_("Enter a mobile number in international format, e.g. +251911223344: {0}").format(raw),
+			frappe.ValidationError,
+		)
+
+	return phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.E164)
 
 
 def split_phone_number(
@@ -108,8 +121,6 @@ def split_phone_number(
 		return None, None
 	raw = str(phone_str).strip()
 	try:
-		import phonenumbers
-
 		candidate = raw if raw.startswith("+") else (f"+{raw}" if not default_region else raw)
 		parsed = phonenumbers.parse(candidate, default_region if not raw.startswith("+") else None)
 		if phonenumbers.is_valid_number(parsed):
@@ -180,8 +191,15 @@ def check_rate_limit(key: str, limit: int, window: int):
 # ---------------------------------------------------------------------------
 
 
-def validate_request(schema: type[BaseModel]):
+def validate_request(schema: type[BaseModel], exclude_unset: bool = False):
 	"""Decorator to validate whitelisted API inputs using a Pydantic schema.
+
+	`cmd` is dropped before validation: Frappe's RPC path (`/api/method/...`) adds it
+	to the form dict, and it would otherwise trip schemas that forbid extra fields.
+
+	`exclude_unset=True` is for PATCH endpoints. The handler receives only the fields
+	the client actually sent; without it, every omitted optional field would arrive as
+	None and read as "set to null".
 
 	Schema failures are reported as **400 with code VALIDATION_ERROR**, not 422.
 	Both are defensible and much of the ecosystem (FastAPI among them) picks 422;
@@ -206,6 +224,7 @@ def validate_request(schema: type[BaseModel]):
 					params.update(v)
 				else:
 					params[k] = v
+			params.pop("cmd", None)
 
 			try:
 				validated = schema(**params)
@@ -219,7 +238,7 @@ def validate_request(schema: type[BaseModel]):
 				frappe.local.message_log = []
 				return error_response(message=_("Validation failed"), code="VALIDATION_ERROR", details=errors)
 
-			validated_dict = validated.model_dump()
+			validated_dict = validated.model_dump(exclude_unset=exclude_unset)
 			return func(**validated_dict)
 
 		wrapper._request_schema = schema
@@ -500,6 +519,35 @@ def get_error_message(e: Exception, default_msg: str = "Validation Error") -> st
 			return " | ".join(parsed_msgs)
 
 	return error_msg or default_msg
+
+
+# ---------------------------------------------------------------------------
+# Pagination
+# ---------------------------------------------------------------------------
+
+
+class PageParams(BaseModel):
+	"""Page window for list endpoints. Subclass it in a list schema to add filters."""
+
+	page: int = Field(default=1, ge=1, description="Page number, 1-indexed")
+	page_size: int = Field(default=20, ge=1, le=100, description="Items per page")
+
+	@property
+	def start(self) -> int:
+		return (self.page - 1) * self.page_size
+
+
+def page_meta(total_count: int, page: int, page_size: int) -> dict:
+	"""The `pagination` block of a list response, for `success_response(pagination=...)`."""
+	total_pages = math.ceil(total_count / page_size) if total_count > 0 and page_size > 0 else 1
+	return {
+		"page": page,
+		"page_size": page_size,
+		"total_count": total_count,
+		"total_pages": total_pages,
+		"has_next": page < total_pages,
+		"has_prev": page > 1,
+	}
 
 
 def success_response(data=None, message="Success", meta=None, pagination=None) -> dict:

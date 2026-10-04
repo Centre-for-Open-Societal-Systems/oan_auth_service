@@ -25,7 +25,6 @@ def version_meta(version: str = CURRENT_VERSION) -> dict:
 from oan_auth_service.api.router import (
 	ensure_routes_registered,
 	prefixed,
-	registered_routes,
 	rest,
 )
 
@@ -34,7 +33,6 @@ __all__ = [
 	"VERSIONS",
 	"ensure_routes_registered",
 	"prefixed",
-	"registered_routes",
 	"rest",
 	"version_meta",
 ]

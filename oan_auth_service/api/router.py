@@ -63,23 +63,21 @@ def rest(
 	"""
 
 	def decorator(fn: Callable) -> Callable:
-		@wraps(fn)
+		@wraps(fn)  # gives readable debug names
 		def endpoint(**path_args):
+			# The only installed-app check needed: API_URL_MAP is shared by every
+			# site a worker serves, so these rules match on sites without this app.
 			if "oan_auth_service" not in frappe.get_installed_apps():
 				raise NotFound()
 
 			params = {**frappe.form_dict, **path_args}
-			params.pop("cmd", None)
 			filtered_args = frappe.get_newargs(fn, params)
 			result = fn(**filtered_args)
 
 			if isinstance(result, Response):
 				return result
 
-			code = status
-			response = getattr(frappe.local, "response", None)
-			if response and response.get("http_status_code"):
-				code = response.pop("http_status_code")
+			code = frappe.local.response.pop("http_status_code", None) or status
 
 			res = Response(
 				frappe.as_json(result, indent=None),
@@ -100,9 +98,7 @@ def rest(
 			"description": description,
 			"allow_guest": allow_guest,
 			"status": status,
-			"fn": fn,
 		}
-		endpoint._fn = fn
 		_rules.append(Rule(path, endpoint=endpoint, methods=[m.upper() for m in methods]))
 		if allow_guest:
 			_exempt_paths.add(path)
@@ -120,11 +116,6 @@ def prefixed(prefix: str) -> Callable:
 	return bound
 
 
-def registered_routes() -> list[dict]:
-	"""Metadata for every declared route. For diagnostics and spec generation."""
-	return [rule.endpoint._route for rule in _rules]
-
-
 _REGISTERED = False
 _REGISTRATION_LOCK = threading.Lock()
 
@@ -134,7 +125,8 @@ def ensure_routes_registered() -> None:
 
 	Wired as a `before_request` hook. The rule list and the middleware registry
 	are per-process in-memory state, so this has to run in each worker rather
-	than once at install time.
+	than once at install time. Frappe only runs hooks of apps installed on the
+	current site, so no installed-app check is needed here.
 	"""
 	global _REGISTERED
 	if _REGISTERED:
@@ -146,26 +138,20 @@ def ensure_routes_registered() -> None:
 	with _REGISTRATION_LOCK:
 		if _REGISTERED:
 			return
-		_register()
+
+		import frappe.api
+
+		# Importing the endpoint module is what executes the `rest(...)` calls.
+		from oan_auth_service.api.v1 import auth
+
+		# An unbound copy each time: a Rule binds to one map only, and another app
+		# sharing this list may already have added it. Rules compare by pattern, so
+		# the membership check is enough to skip those.
+		for rule in _rules:
+			if rule not in frappe.api.API_URL_MAP._rules:
+				frappe.api.API_URL_MAP.add(rule.empty())
+
+		# Bare paths only: the middleware already retries with the trailing slash
+		# stripped, so registering both spellings would be redundant.
+		register_namespace(prefix=NAMESPACE, exempt_paths=sorted(_exempt_paths))
 		_REGISTERED = True
-
-
-def _register() -> None:
-	import frappe.api
-
-	if "oan_auth_service" not in frappe.get_installed_apps():
-		return
-
-	# Importing the endpoint module is what executes the `rest(...)` calls.
-	from oan_auth_service.api.v1 import auth
-
-	# An unbound copy each time: a Rule binds to one map only, and another app
-	# sharing this list may already have added it. Rules compare by pattern, so
-	# the membership check is enough to skip those.
-	for rule in _rules:
-		if rule not in frappe.api.API_URL_MAP._rules:
-			frappe.api.API_URL_MAP.add(rule.empty())
-
-	# Bare paths only: the middleware already retries with the trailing slash
-	# stripped, so registering both spellings would be redundant.
-	register_namespace(prefix=NAMESPACE, exempt_paths=sorted(_exempt_paths))

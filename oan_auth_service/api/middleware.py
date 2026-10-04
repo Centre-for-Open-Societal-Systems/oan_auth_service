@@ -92,9 +92,8 @@ def _bearer_token() -> str | None:
 
 def validate_jwt_request(request=None):
 	"""Entry point registered as `auth_hooks` in hooks.py."""
-	if not _NAMESPACES or "oan_auth_service" not in frappe.get_installed_apps():
-		return
-
+	# No installed-app check: Frappe only runs auth_hooks of apps installed on
+	# the current site.
 	request = request or getattr(frappe.local, "request", None)
 	if request is None:
 		return

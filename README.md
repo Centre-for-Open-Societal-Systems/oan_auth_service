@@ -21,7 +21,7 @@ refresh-token storage are shared, app-ness is forced.
 Consumers share **code, not identity**. Each deployment has its own site, its
 own database, its own `User` table and its own signing keys. A token minted by
 one deployment is not valid at another — see the note in `api/jwt_keys.py` on
-why HS256 makes shared key material a mistake rather than a shortcut.
+how tokens are signed RS256 so verifiers never hold a key that can mint.
 
 ## Three kinds of versioning
 

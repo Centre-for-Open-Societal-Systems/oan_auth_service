@@ -3,10 +3,25 @@
 import contextlib
 
 import frappe
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 
-TEST_SECRETS = {
-	"v1": "test-secret-v1-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-	"v2": "test-secret-v2-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+
+def generate_rsa_pem(bits: int = 2048) -> str:
+	"""Return a fresh unencrypted PEM private key, in the form site_config holds."""
+	key = rsa.generate_private_key(public_exponent=65537, key_size=bits)
+	return key.private_bytes(
+		serialization.Encoding.PEM,
+		serialization.PrivateFormat.PKCS8,
+		serialization.NoEncryption(),
+	).decode()
+
+
+# Generated once per test run: RSA keygen is slow enough to matter per test, and
+# no test depends on the specific key, only on which kid holds it.
+TEST_PRIVATE_KEYS = {
+	"v1": generate_rsa_pem(),
+	"v2": generate_rsa_pem(),
 }
 
 
@@ -36,7 +51,9 @@ def override_conf(**values):
 @contextlib.contextmanager
 def configured_keys(current_kid="v1"):
 	"""A site with usable JWT key material."""
-	with override_conf(jwt_secrets=dict(TEST_SECRETS), jwt_current_kid=current_kid, jwt_issuer="test-issuer"):
+	with override_conf(
+		jwt_private_keys=dict(TEST_PRIVATE_KEYS), jwt_current_kid=current_kid, jwt_issuer="test-issuer"
+	):
 		yield
 
 

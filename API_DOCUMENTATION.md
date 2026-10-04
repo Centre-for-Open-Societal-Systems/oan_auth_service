@@ -37,7 +37,7 @@ Comprehensive API documentation for the **OAN Authentication Service** (`oan_aut
 ### Token Architecture
 
 - **Access Token (JWT)**:
-  - Signed using `HS256` with a rotating Key ID (`kid`).
+  - Signed using `RS256` with a rotating Key ID (`kid`). Verify with the public keys from `GET /api/v1/auth/keys`.
   - Self-contained claims (`sub`, `roles`, `iss`, `iat`, `exp`, `jti`, optional `scope`).
   - Validated statelessly with zero database I/O.
   - Short-lived: **15 minutes** (900 seconds) by default.
@@ -552,7 +552,7 @@ Returns the profile, identity attributes, and assigned roles of the currently au
 
 ### 8. Key Metadata Discovery (`GET /api/v1/auth/keys`)
 
-Returns the active HMAC signing key ID (`kid`), algorithm configuration (`HS256`), and issuer identity. Symmetric `HS256` secret bytes are never exposed over the API; this endpoint provides key identification metadata for gateway routing and downstream token verification tracking.
+Returns the RS256 public keys (as JWKs) that verify access tokens, the kid currently used for signing, and the issuer identity. Every kid still accepted for verification is listed, not only the active one, so a verifier that caches this response can still check tokens minted before a rotation. Match a token to its key by the `kid` in the token header. Private key material is never exposed.
 
 - **HTTP Method**: `GET`
 - **Path**: `/api/v1/auth/keys`
@@ -566,14 +566,16 @@ Returns the active HMAC signing key ID (`kid`), algorithm configuration (`HS256`
   "message": "Success",
   "data": {
     "issuer": "oan-auth",
-    "algorithm": "HS256",
+    "algorithm": "RS256",
     "active_kid": "prod-key-2026a",
     "keys": [
       {
         "kid": "prod-key-2026a",
-        "kty": "oct",
-        "alg": "HS256",
-        "use": "sig"
+        "kty": "RSA",
+        "alg": "RS256",
+        "use": "sig",
+        "n": "0vx7agoebGcQSuuPiLJXZptN9nndrQmbXEps2aiAFbWhM78LhWx4...",
+        "e": "AQAB"
       }
     ]
   },

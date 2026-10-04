@@ -290,9 +290,9 @@ consumers:
   - auth
   - issuer
   jwt_secrets:
-  - algorithm: HS256
+  - algorithm: RS256
     key: oan-auth
-    secret: REPLACE_WITH_OAN_AUTH_JWT_SECRET
+    rsa_public_key: REPLACE_WITH_OAN_AUTH_JWT_PUBLIC_KEY_PEM
 - username: oan-web-client
   tags:
   - oan

@@ -9,9 +9,9 @@ from werkzeug.wrappers import Request
 
 from oan_auth_service.api import tokens
 from oan_auth_service.api.router import (
+	_rules,
 	ensure_routes_registered,
 	prefixed,
-	registered_routes,
 	rest,
 )
 from oan_auth_service.api.utils import handle_api_errors
@@ -49,6 +49,11 @@ def make_test_request(
 	frappe.local.response = frappe._dict({})
 
 	return req
+
+
+def registered_routes() -> list[dict]:
+	"""Metadata `rest` attached to every declared route."""
+	return [rule.endpoint._route for rule in _rules]
 
 
 class TestWerkzeugRESTRouter(unittest.TestCase):
@@ -131,8 +136,10 @@ class TestRESTAuthEndpoints(unittest.TestCase):
 			res_keys = frappe.api.handle(req_keys)
 			self.assertEqual(res_keys.status_code, 200)
 			data_keys = json.loads(res_keys.get_data(as_text=True))
-			self.assertEqual(data_keys["data"]["algorithm"], "HS256")
+			self.assertEqual(data_keys["data"]["algorithm"], "RS256")
 			self.assertEqual(data_keys["data"]["active_kid"], "v1")
+			self.assertEqual([k["kid"] for k in data_keys["data"]["keys"]], ["v1", "v2"])
+			self.assertTrue(all(k["kty"] == "RSA" and "d" not in k for k in data_keys["data"]["keys"]))
 
 		# Public metadata endpoint
 		req_meta = make_test_request("/api/v1/auth/metadata", method="GET")
@@ -272,7 +279,7 @@ class TestRESTAuthEndpoints(unittest.TestCase):
 		import jwt as pyjwt
 
 		from oan_auth_service.api.middleware import validate_jwt_request
-		from oan_auth_service.tests.test_jwt_keys import TEST_SECRETS
+		from oan_auth_service.tests.utils import TEST_PRIVATE_KEYS
 
 		with configured_keys():
 			past = datetime.now(UTC) - timedelta(hours=1)
@@ -285,7 +292,7 @@ class TestRESTAuthEndpoints(unittest.TestCase):
 				"roles": ["System Manager"],
 			}
 			expired_token = pyjwt.encode(
-				claims, TEST_SECRETS["v1"], algorithm=tokens.ALGORITHM, headers={"kid": "v1"}
+				claims, TEST_PRIVATE_KEYS["v1"], algorithm=tokens.ALGORITHM, headers={"kid": "v1"}
 			)
 			req = make_test_request(
 				"/api/v1/auth/health",
