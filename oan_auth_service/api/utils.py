@@ -10,6 +10,7 @@ from functools import wraps
 from typing import Annotated
 
 import frappe
+import phonenumbers
 from frappe import _
 from pydantic import BaseModel, BeforeValidator, Field, TypeAdapter
 from pydantic import ValidationError as PydanticValidationError
@@ -78,24 +79,35 @@ def validate_email_string(v: str | None) -> str | None:
 	return v
 
 
-def validate_mobile(v: str | None, fieldname: str = "phone_number") -> str:
-	"""Strict phone validation with country code (E.164 via libphonenumber)."""
-	raw = str(v or "").strip()
-	label = fieldname.replace("_", " ")
-	if not raw:
-		frappe.throw(_("{0} is required.").format(label.capitalize()), frappe.ValidationError)
-	try:
-		import phonenumbers
+# Phone-only accounts recover their password by SMS, so a landline would be an
+# account that can never be recovered. FIXED_LINE_OR_MOBILE covers regions (US,
+# Canada) whose numbering plan does not distinguish the two.
+_MOBILE_TYPES = {
+	phonenumbers.PhoneNumberType.MOBILE,
+	phonenumbers.PhoneNumberType.FIXED_LINE_OR_MOBILE,
+}
 
-		candidate = raw if raw.startswith("+") else f"+{raw}"
-		parsed = phonenumbers.parse(candidate, None)
-		if not phonenumbers.is_valid_number(parsed):
-			frappe.throw(_("Invalid {0}: {1}").format(label, raw), frappe.ValidationError)
-		return phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.E164)
-	except Exception as e:
-		if isinstance(e, frappe.ValidationError):
-			raise
-		frappe.throw(_("Invalid {0} format: {1}").format(label, raw), frappe.ValidationError)
+
+def validate_mobile(v: str | None) -> str:
+	"""Validate an international mobile number and return it in E.164.
+
+	`parse` with no default region rejects anything without a leading `+` and a
+	known country code. `number_type` returns UNKNOWN for any number that is not
+	valid, so the mobile check also covers `is_valid_number`.
+	"""
+	raw = str(v or "").strip()
+	try:
+		parsed = phonenumbers.parse(raw, None)
+	except phonenumbers.NumberParseException:
+		parsed = None
+
+	if parsed is None or phonenumbers.number_type(parsed) not in _MOBILE_TYPES:
+		frappe.throw(
+			_("Enter a mobile number in international format, e.g. +251911223344: {0}").format(raw),
+			frappe.ValidationError,
+		)
+
+	return phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.E164)
 
 
 def split_phone_number(
@@ -109,8 +121,6 @@ def split_phone_number(
 		return None, None
 	raw = str(phone_str).strip()
 	try:
-		import phonenumbers
-
 		candidate = raw if raw.startswith("+") else (f"+{raw}" if not default_region else raw)
 		parsed = phonenumbers.parse(candidate, default_region if not raw.startswith("+") else None)
 		if phonenumbers.is_valid_number(parsed):

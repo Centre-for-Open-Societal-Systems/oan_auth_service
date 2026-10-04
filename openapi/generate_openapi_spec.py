@@ -501,11 +501,7 @@ def build_openapi() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
 
 		methods = [m.upper() for m in rule.methods if m.upper() not in ("HEAD", "OPTIONS")]
 		endpoint_fn = rule.endpoint
-		unwrapped = inspect.unwrap(endpoint_fn)
-		if hasattr(endpoint_fn, "_fn"):
-			inner_fn = inspect.unwrap(endpoint_fn._fn)
-		else:
-			inner_fn = unwrapped
+		inner_fn = inspect.unwrap(endpoint_fn)
 
 		func_name = inner_fn.__name__
 		legacy_target = f"{inner_fn.__module__}.{func_name}"

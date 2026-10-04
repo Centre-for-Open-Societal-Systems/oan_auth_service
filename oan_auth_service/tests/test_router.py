@@ -9,9 +9,9 @@ from werkzeug.wrappers import Request
 
 from oan_auth_service.api import tokens
 from oan_auth_service.api.router import (
+	_rules,
 	ensure_routes_registered,
 	prefixed,
-	registered_routes,
 	rest,
 )
 from oan_auth_service.api.utils import handle_api_errors
@@ -49,6 +49,11 @@ def make_test_request(
 	frappe.local.response = frappe._dict({})
 
 	return req
+
+
+def registered_routes() -> list[dict]:
+	"""Metadata `rest` attached to every declared route."""
+	return [rule.endpoint._route for rule in _rules]
 
 
 class TestWerkzeugRESTRouter(unittest.TestCase):

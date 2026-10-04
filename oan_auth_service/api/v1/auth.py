@@ -62,7 +62,7 @@ REFRESH_TOKEN_DOCTYPE = "OAN User Refresh Token"
 
 # A precomputed hash of a value no password can equal, verified against on the
 # user-not-found path so that path costs the same as the wrong-password path.
-# See _authenticate() for why. Computed once at import: doing it per call would
+# See login() for why. Computed once at import: doing it per call would
 # add the cost of *hashing* on top of the cost of verifying, making the miss
 # path measurably slower than the hit path and reopening the oracle in the
 # opposite direction.
@@ -142,60 +142,6 @@ def set_login_email(user: str, email: str | None) -> None:
 	contact_doc = frappe.get_doc("Contact", contact)
 	contact_doc.set("email_ids", [{"email_id": email, "is_primary": 1}] if email else [])
 	contact_doc.save(ignore_permissions=True)
-
-
-def _authenticate(usr: str, pwd: str) -> str:
-	"""Validate credentials and return the canonical user id, or throw.
-
-	Goes through Frappe's `LoginManager.authenticate()` rather than calling
-	`check_password()` directly. That method owns the per-IP and per-user
-	`LoginAttemptTracker` lockout, the disabled-user check and the 2FA
-	interaction; reimplementing the credential check here would silently opt out
-	of all three, and would keep opting out of whatever gets added to it later.
-
-	`LoginManager.__init__` is bypassed deliberately. Its constructor either runs
-	a full interactive login or resumes a desk session depending on the request
-	path, and neither is what a token endpoint wants — we need the credential
-	check on its own, without a session cookie being created as a side effect.
-
-	The dummy-hash step closes a user-enumeration oracle in Frappe itself.
-	`User.find_by_credentials` (frappe/core/doctype/user/user.py:844-846) returns
-	early when no user row matches, so `check_password` — and its deliberately
-	expensive pbkdf2_sha256 verify — never runs. An unknown user therefore
-	answers in about a millisecond while a known user with a bad password takes
-	tens. That gap is trivially measurable across a network and turns this
-	endpoint into a "does this email have an account here?" lookup. Burning one
-	equivalent verify on the miss path flattens it.
-
-	Resolving the identifier first is what makes that defence exact rather than
-	approximate. Frappe is handed the canonical `User.name`, so its own lookup
-	always hits and always reaches `check_password`; the only path that skips the
-	verify is the one this function pays for explicitly. The previous form
-	guessed at existence with `frappe.db.exists("User", {"name": usr})`, which was
-	right only while the typed identifier *was* the primary key — it would have
-	answered "unknown" for every phone and every login-email sign-in and burned a
-	second verify on top of a real one.
-	"""
-	from frappe.auth import LoginManager
-
-	user = _resolve_login_identifier(usr)
-
-	if user is None:
-		try:
-			passlibctx.verify("", _DUMMY_PASSWORD_HASH)
-		except Exception:
-			# Timing hygiene, not a control. If it fails the caller still gets
-			# their AuthenticationError rather than a 500 that announces the
-			# measure went wrong.
-			pass
-		raise frappe.AuthenticationError(_("Invalid login credentials"))
-
-	# __new__ without __init__: we want authenticate() alone. LoginManager sets
-	# only `self.user` in that method and reads nothing else it does not set.
-	login_manager = LoginManager.__new__(LoginManager)
-	login_manager.authenticate(user=user, pwd=pwd)
-
-	return login_manager.user
 
 
 def _narrow_to_scope(roles: list[str], requested: str | list[str] | None) -> list[str] | None:
@@ -294,17 +240,6 @@ class RegisterUserSchema(BaseModel):
 	def validate_password(cls, v: str) -> str:
 		return validate_password_complexity(v)
 
-	@field_validator("country_code")
-	@classmethod
-	def validate_cc(cls, v: str | None) -> str | None:
-		if v is not None and str(v).strip():
-			clean = str(v).strip()
-			digits = re.sub(r"\D", "", clean)
-			if not (1 <= len(digits) <= 4):
-				raise ValueError("Country code must be between 1 and 4 digits (e.g. +251).")
-			return f"+{digits}"
-		return None
-
 
 class RefreshTokenSchema(BaseModel):
 	refresh_token: str = Field(..., min_length=1)
@@ -377,7 +312,26 @@ def login(usr: str, pwd: str, remember_me: bool = False, scope: str | list[str] 
 	always resolved server-side from the authenticated user; nothing the caller
 	sends can widen them.
 	"""
-	user = _authenticate(usr, pwd)
+	from frappe.auth import LoginManager
+
+	user = _resolve_login_identifier(usr)
+
+	if user is None:
+		# Frappe returns early for an unknown user and skips the slow pbkdf2
+		# verify, so "no such account" would answer measurably faster than "wrong
+		# password". Burning one dummy verify closes that enumeration oracle.
+		try:
+			passlibctx.verify("", _DUMMY_PASSWORD_HASH)
+		except Exception:
+			# Timing hygiene, not a control: still answer 401, never 500.
+			pass
+		raise frappe.AuthenticationError(_("Invalid login credentials"))
+
+	# LoginManager.authenticate() owns lockout, the disabled-user check and 2FA.
+	# __new__ skips __init__, which would start a desk session and set a cookie.
+	login_manager = LoginManager.__new__(LoginManager)
+	login_manager.authenticate(user=user, pwd=pwd)
+	user = login_manager.user
 
 	roles = tokens.resolve_roles(user)
 	narrowed = _narrow_to_scope(roles, scope)
@@ -418,7 +372,7 @@ def register_user(
 	"""
 	if phone_number:
 		assembled = assemble_phone_number(phone_number, country_code=country_code)
-		phone_number = validate_mobile(assembled, fieldname="phone_number")
+		phone_number = validate_mobile(assembled)
 	else:
 		phone_number = None
 
