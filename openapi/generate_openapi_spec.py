@@ -21,56 +21,25 @@ import sys
 from pathlib import Path
 from typing import Any
 
-import yaml
+from oan_auth_service.openapi_spec import (
+	ARR,
+	OBJ,
+	REF,
+	B,
+	I,
+	S,
+	dump_spec,
+	make_envelope,
+	query_parameters,
+	request_model,
+	request_schema,
+	strip_extensions,
+)
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 INTERNAL_SPEC_OUTPUT = SCRIPT_DIR / "openapi_v1.yaml"
 PUBLIC_SPEC_OUTPUT = SCRIPT_DIR / "openapi_v1.public.yaml"
-
-
-# ---------------------------------------------------------------------------
-# Schema building helper functions
-# ---------------------------------------------------------------------------
-def S(**kw: Any) -> dict[str, Any]:
-	return {"type": "string", **kw}
-
-
-def I(**kw: Any) -> dict[str, Any]:  # noqa: E743
-	return {"type": "integer", **kw}
-
-
-def N(**kw: Any) -> dict[str, Any]:
-	return {"type": "number", **kw}
-
-
-def B(**kw: Any) -> dict[str, Any]:
-	return {"type": "boolean", **kw}
-
-
-def ARR(items: Any, **kw: Any) -> dict[str, Any]:
-	return {"type": "array", "items": items, **kw}
-
-
-def OBJ(
-	props: dict[str, Any],
-	required: list[str] | None = None,
-	description: str | None = None,
-	confidence: str | None = None,
-	**kw: Any,
-) -> dict[str, Any]:
-	d: dict[str, Any] = {"type": "object", "properties": props, **kw}
-	if required:
-		d["required"] = required
-	if description:
-		d["description"] = description
-	if confidence:
-		d["x-schema-confidence"] = confidence
-	return d
-
-
-def REF(name: str) -> dict[str, str]:
-	return {"$ref": f"#/components/schemas/{name}"}
 
 
 # ---------------------------------------------------------------------------
@@ -243,107 +212,10 @@ data(
 
 
 # ---------------------------------------------------------------------------
-# Request Body Schemas
+# Request Schemas
 # ---------------------------------------------------------------------------
+# Derived from each route's @validate_request model by build_openapi().
 REQ: dict[str, Any] = {}
-
-REQ["RegisterRequest"] = OBJ(
-	{
-		"password": S(
-			format="password",
-			minLength=8,
-			maxLength=128,
-			description="Password meeting complexity requirements (at least 8 characters with letters, numbers, and special characters)",
-		),
-		"full_name": S(minLength=1, maxLength=140, description="Full name of user or organization"),
-		"email": S(format="email", nullable=True, description="Login email address"),
-		"phone_number": S(
-			nullable=True,
-			description="Phone number. Can be full international E.164 format (e.g. +251911223344) or national subscriber digits when country_code is provided.",
-		),
-		"country_code": S(
-			example="+251",
-			nullable=True,
-			description="Optional country dialing code (e.g. +251, +91). When provided, phone_number is treated as national digits.",
-		),
-		"role": S(nullable=True, description="Singular role to request"),
-		"roles": ARR(S(), nullable=True, description="Multiple roles to request"),
-	},
-	required=["password", "full_name"],
-	additionalProperties=True,
-	description="Payload for registering a new user account with email or phone_number. When country_code is provided, phone_number is treated as the national subscriber number; otherwise, it must be in full international E.164 format.",
-)
-
-REQ["LoginRequest"] = OBJ(
-	{
-		"usr": S(minLength=1, description="Login identifier: email, mobile number, or User ID"),
-		"pwd": S(format="password", minLength=1, description="Account password"),
-		"remember_me": B(default=False, description="Extend refresh token lifetime to 90 days"),
-		"scope": S(nullable=True, description="Optional scope narrowing: comma-separated list of roles"),
-	},
-	required=["usr", "pwd"],
-	description="Credentials to authenticate and obtain token pair",
-)
-
-REQ["RefreshTokenRequest"] = OBJ(
-	{
-		"refresh_token": S(minLength=1, description="Active single-use refresh token"),
-	},
-	required=["refresh_token"],
-	description="Refresh token exchange payload",
-)
-
-REQ["LogoutRequest"] = OBJ(
-	{
-		"refresh_token": S(minLength=1, description="Active refresh token to revoke"),
-	},
-	required=["refresh_token"],
-	description="Revoke refresh token session",
-)
-
-REQ["ForgotPasswordRequest"] = OBJ(
-	{
-		"usr": S(minLength=1, description="Login handle (email or phone number) to initiate recovery"),
-	},
-	required=["usr"],
-	description="Password recovery initiation request",
-)
-
-REQ["ResetPasswordRequest"] = OBJ(
-	{
-		"new_password": S(
-			format="password",
-			minLength=8,
-			maxLength=128,
-			description="New account password (min 8 chars, letters, numbers, symbols)",
-		),
-		"key": S(nullable=True, description="Reset token key received via email link"),
-		"usr": S(nullable=True, description="Login identifier (used alongside SMS OTP)"),
-		"otp": S(nullable=True, description="Numeric one-time verification code received via SMS"),
-	},
-	required=["new_password"],
-	description="Password reset completion payload. Provide either `key` OR (`usr` and `otp`).",
-)
-
-
-# ---------------------------------------------------------------------------
-# Envelope Builder Helper
-# ---------------------------------------------------------------------------
-def make_envelope(
-	data_ref: str, is_list: bool = False, description: str = "Successful response"
-) -> dict[str, Any]:
-	data_prop = ARR(REF(data_ref)) if is_list else REF(data_ref)
-	return OBJ(
-		{
-			"status": S(example="success", enum=["success"]),
-			"message": S(nullable=True, description="Optional response message"),
-			"data": data_prop,
-			"meta": REF("ApiMeta"),
-			"request_id": S(format="uuid", nullable=True, description="Tracing correlation ID"),
-		},
-		required=["status", "data"],
-		description=description,
-	)
 
 
 # Envelope Schemas
@@ -448,41 +320,6 @@ def _determine_response_schema(
 	return None
 
 
-def _determine_request_schema(endpoint_fn: Any, unwrapped: Any, func_name: str) -> str | None:
-	schema_cls = getattr(endpoint_fn, "_request_schema", None) or getattr(unwrapped, "_request_schema", None)
-	if schema_cls:
-		schema_name = getattr(schema_cls, "__name__", "")
-		class_mapping = {
-			"RegisterUserSchema": "RegisterRequest",
-			"LoginSchema": "LoginRequest",
-			"RefreshTokenSchema": "RefreshTokenRequest",
-			"LogoutSchema": "LogoutRequest",
-			"ForgotPasswordSchema": "ForgotPasswordRequest",
-			"ResetPasswordSchema": "ResetPasswordRequest",
-		}
-		if schema_name in class_mapping:
-			return class_mapping[schema_name]
-		if schema_name in REQ:
-			return schema_name
-		if hasattr(schema_cls, "model_json_schema"):
-			try:
-				js = schema_cls.model_json_schema()
-				DATA_SCHEMAS[schema_name] = js
-				return schema_name
-			except Exception:
-				pass
-
-	mapping = {
-		"register_user": "RegisterRequest",
-		"login": "LoginRequest",
-		"refresh": "RefreshTokenRequest",
-		"logout": "LogoutRequest",
-		"forgot_password": "ForgotPasswordRequest",
-		"reset_password": "ResetPasswordRequest",
-	}
-	return mapping.get(func_name)
-
-
 # ---------------------------------------------------------------------------
 # Build Document
 # ---------------------------------------------------------------------------
@@ -525,7 +362,9 @@ def build_openapi() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
 		)
 
 		tag = _determine_tag(openapi_path, func_name, api_doc_info.get("tags"))
-		req_schema_name = _determine_request_schema(endpoint_fn, inner_fn, func_name)
+		req_model = request_model(endpoint_fn)
+		req_schema_name = req_model.__name__ if req_model else None
+		req_schema = request_schema(req_model, path_param_names, REQ) if req_model else None
 		response_schema_name = _determine_response_schema(
 			func_name, openapi_path, methods[0] if methods else "GET", api_doc_info.get("response_model")
 		)
@@ -551,6 +390,9 @@ def build_openapi() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
 						"description": f"{p.replace('_', ' ').title()} parameter",
 					}
 				)
+
+			if method == "GET" and req_schema:
+				parameters.extend(query_parameters(req_schema))
 
 			op: dict[str, Any] = {
 				"tags": [tag],
@@ -593,9 +435,11 @@ def build_openapi() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
 			op["x-legacy-rpc-method"] = legacy_target
 			op["security"] = [] if allow_guest else [{"BearerAuth": []}]
 
-			if method in ("POST", "PUT", "PATCH", "DELETE") and req_schema_name:
+			# A model left empty once the path parameters are taken out means no body.
+			if method in ("POST", "PUT", "PATCH", "DELETE") and req_schema:
+				REQ[req_schema_name] = req_schema
 				op["requestBody"] = {
-					"required": True,
+					"required": bool(req_schema.get("required")),
 					"content": {"application/json": {"schema": REF(req_schema_name)}},
 				}
 
@@ -660,40 +504,33 @@ def build_openapi() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
 	return doc, paths, components_schemas
 
 
-def strip_extensions(o: Any) -> Any:
-	if isinstance(o, dict):
-		return {k: strip_extensions(v) for k, v in o.items() if not k.startswith("x-")}
-	if isinstance(o, list):
-		return [strip_extensions(v) for v in o]
-	return o
-
-
 def main() -> None:
 	doc, paths, components_schemas = build_openapi()
-
-	# 1. Write internal spec
-	with open(INTERNAL_SPEC_OUTPUT, "w") as f:  # nosemgrep
-		f.write("# OAN Authentication Service API -- OpenAPI 3.0.3 (INTERNAL)\n")
-		f.write("# Carries internal vendor extensions (x-legacy-rpc-method).\n")
-		f.write("# Generated from generate_openapi_spec.py -- do not edit manually.\n")
-		yaml.safe_dump(doc, f, sort_keys=False, default_flow_style=False, width=100, allow_unicode=True)
-
 	n_paths = len(paths)
 	n_ops = sum(len(v) for v in paths.values())
+
+	dump_spec(
+		doc,
+		INTERNAL_SPEC_OUTPUT,
+		[
+			"OAN Authentication Service API -- OpenAPI 3.0.3 (INTERNAL)",
+			"Carries internal vendor extensions (x-legacy-rpc-method).",
+			"Generated from generate_openapi_spec.py -- do not edit manually.",
+		],
+	)
 	print(
 		f"Wrote {INTERNAL_SPEC_OUTPUT.name}: {n_paths} paths, {n_ops} operations, {len(components_schemas)} schemas",
 		file=sys.stderr,
 	)
 
-	# 2. Write public spec (vendor extensions stripped)
-	public_doc = strip_extensions(doc)
-	with open(PUBLIC_SPEC_OUTPUT, "w") as f:  # nosemgrep
-		f.write("# OAN Authentication Service API -- OpenAPI 3.0.3 (PUBLIC)\n")
-		f.write("# Contract with vendor extensions removed. Generated from generate_openapi_spec.py.\n")
-		yaml.safe_dump(
-			public_doc, f, sort_keys=False, default_flow_style=False, width=100, allow_unicode=True
-		)
-
+	dump_spec(
+		strip_extensions(doc),
+		PUBLIC_SPEC_OUTPUT,
+		[
+			"OAN Authentication Service API -- OpenAPI 3.0.3 (PUBLIC)",
+			"Contract with vendor extensions removed. Generated from generate_openapi_spec.py.",
+		],
+	)
 	print(
 		f"Wrote {PUBLIC_SPEC_OUTPUT.name}: {n_paths} paths, {n_ops} operations, {len(components_schemas)} schemas",
 		file=sys.stderr,

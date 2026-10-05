@@ -59,7 +59,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/LoginRequest'
+              $ref: '#/components/schemas/LoginSchema'
   /api/v1/auth/register:
     post:
       tags:
@@ -96,7 +96,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/RegisterRequest'
+              $ref: '#/components/schemas/RegisterUserSchema'
   /api/v1/auth/refresh:
     post:
       tags:
@@ -131,7 +131,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/RefreshTokenRequest'
+              $ref: '#/components/schemas/RefreshTokenSchema'
   /api/v1/auth/logout:
     post:
       tags:
@@ -165,7 +165,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/LogoutRequest'
+              $ref: '#/components/schemas/LogoutSchema'
   /api/v1/auth/forgot-password:
     post:
       tags:
@@ -199,7 +199,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/ForgotPasswordRequest'
+              $ref: '#/components/schemas/ForgotPasswordSchema'
   /api/v1/auth/reset-password:
     post:
       tags:
@@ -234,7 +234,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/ResetPasswordRequest'
+              $ref: '#/components/schemas/ResetPasswordSchema'
   /api/v1/auth/me:
     get:
       tags:
@@ -608,132 +608,127 @@ components:
           description: Status confirmation message
       required:
       - message
-    RegisterRequest:
-      type: object
-      properties:
-        password:
-          type: string
-          format: password
-          minLength: 8
-          maxLength: 128
-          description: Password meeting complexity requirements (at least 8 characters with letters, numbers,
-            and special characters)
-        full_name:
-          type: string
-          minLength: 1
-          maxLength: 140
-          description: Full name of user or organization
-        email:
-          type: string
-          format: email
-          nullable: true
-          description: Login email address
-        phone_number:
-          type: string
-          nullable: true
-          description: Phone number. Can be full international E.164 format (e.g. +251911223344) or national
-            subscriber digits when country_code is provided.
-        country_code:
-          type: string
-          example: '+251'
-          nullable: true
-          description: Optional country dialing code (e.g. +251, +91). When provided, phone_number is
-            treated as national digits.
-        role:
-          type: string
-          nullable: true
-          description: Singular role to request
-        roles:
-          type: array
-          items:
-            type: string
-          nullable: true
-          description: Multiple roles to request
-      additionalProperties: true
-      required:
-      - password
-      - full_name
-      description: Payload for registering a new user account with email or phone_number. When country_code
-        is provided, phone_number is treated as the national subscriber number; otherwise, it must be
-        in full international E.164 format.
-    LoginRequest:
-      type: object
+    LoginSchema:
       properties:
         usr:
-          type: string
           minLength: 1
-          description: 'Login identifier: email, mobile number, or User ID'
+          type: string
         pwd:
-          type: string
-          format: password
           minLength: 1
-          description: Account password
-        remember_me:
-          type: boolean
-          default: false
-          description: Extend refresh token lifetime to 90 days
-        scope:
           type: string
+        remember_me:
+          default: false
+          type: boolean
+        scope:
+          anyOf:
+          - type: string
+          - items:
+              type: string
+            type: array
+          default: null
           nullable: true
-          description: 'Optional scope narrowing: comma-separated list of roles'
       required:
       - usr
       - pwd
-      description: Credentials to authenticate and obtain token pair
-    RefreshTokenRequest:
       type: object
+    RegisterUserSchema:
+      additionalProperties: true
+      properties:
+        email:
+          type: string
+          default: null
+          nullable: true
+        password:
+          maxLength: 128
+          minLength: 8
+          type: string
+        full_name:
+          maxLength: 140
+          minLength: 1
+          type: string
+        phone_number:
+          type: string
+          default: null
+          description: Phone number. Can be full international E.164 format (e.g. +251911223344) or national
+            subscriber digits when country_code is provided.
+          nullable: true
+        country_code:
+          type: string
+          default: null
+          description: Optional country dialing code (e.g. +251, +91). When provided, phone_number is
+            treated as national digits.
+          nullable: true
+        role:
+          type: string
+          default: null
+          nullable: true
+        roles:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: string
+          default: null
+          nullable: true
+      required:
+      - password
+      - full_name
+      type: object
+    RefreshTokenSchema:
       properties:
         refresh_token:
-          type: string
           minLength: 1
-          description: Active single-use refresh token
+          type: string
       required:
       - refresh_token
-      description: Refresh token exchange payload
-    LogoutRequest:
       type: object
+    LogoutSchema:
       properties:
         refresh_token:
-          type: string
           minLength: 1
-          description: Active refresh token to revoke
+          type: string
       required:
       - refresh_token
-      description: Revoke refresh token session
-    ForgotPasswordRequest:
       type: object
+    ForgotPasswordSchema:
       properties:
         usr:
-          type: string
           minLength: 1
-          description: Login handle (email or phone number) to initiate recovery
+          type: string
       required:
       - usr
-      description: Password recovery initiation request
-    ResetPasswordRequest:
       type: object
+    ResetPasswordSchema:
+      description: 'Completion of a reset over either channel.
+
+
+        `key` arrives from an emailed link; `usr` + `otp` from an SMS code. One
+
+        endpoint serves both because the caller should not have to know which channel
+
+        their account was given — `forgot_password` decided that, from what the
+
+        account actually has.'
       properties:
-        new_password:
-          type: string
-          format: password
-          minLength: 8
-          maxLength: 128
-          description: New account password (min 8 chars, letters, numbers, symbols)
         key:
           type: string
+          default: null
           nullable: true
-          description: Reset token key received via email link
         usr:
           type: string
+          default: null
           nullable: true
-          description: Login identifier (used alongside SMS OTP)
         otp:
           type: string
+          default: null
           nullable: true
-          description: Numeric one-time verification code received via SMS
+        new_password:
+          maxLength: 128
+          minLength: 8
+          type: string
       required:
       - new_password
-      description: Password reset completion payload. Provide either `key` OR (`usr` and `otp`).
+      type: object
     TokenPairResponse:
       type: object
       properties:
