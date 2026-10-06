@@ -825,10 +825,16 @@ def _deliver_reset_by_email(user_doc, login_email: str) -> None:
 
 # nosemgrep: guest-whitelisted-method, frappe-semgrep-rules.rules.security.guest-whitelisted-method
 @route(
-	"/forgot-password",
+	"/password/forgot",
 	allow_guest=True,
 	summary="Initiate password recovery",
 	description="Initiate password recovery for an account via email reset link or SMS OTP code.",
+)
+@route(
+	"/forgot-password",
+	allow_guest=True,
+	summary="Initiate password recovery (deprecated alias)",
+	description="Deprecated alias of POST /api/v1/auth/password/forgot, kept until clients move to the new path.",
 )
 @frappe.whitelist(allow_guest=True)
 @validate_request(ForgotPasswordSchema)
@@ -951,10 +957,16 @@ def _mint_reset_key(user: str) -> str:
 
 # nosemgrep: guest-whitelisted-method, frappe-semgrep-rules.rules.security.guest-whitelisted-method
 @route(
-	"/reset-password",
+	"/password/reset",
 	allow_guest=True,
 	summary="Complete password reset",
 	description="Complete password reset using either an emailed reset key or a phone SMS OTP code with a new password.",
+)
+@route(
+	"/reset-password",
+	allow_guest=True,
+	summary="Complete password reset (deprecated alias)",
+	description="Deprecated alias of POST /api/v1/auth/password/reset, kept until clients move to the new path.",
 )
 @frappe.whitelist(allow_guest=True)
 @validate_request(ResetPasswordSchema)

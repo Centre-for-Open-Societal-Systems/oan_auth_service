@@ -59,6 +59,8 @@ TIER_OVERRIDES = {
 	("POST", "/api/v1/auth/logout"): "public-auth",
 	("POST", "/api/v1/auth/forgot-password"): "public-auth",
 	("POST", "/api/v1/auth/reset-password"): "public-auth",
+	("POST", "/api/v1/auth/password/forgot"): "public-auth",
+	("POST", "/api/v1/auth/password/reset"): "public-auth",
 	("POST", "/api/v1/auth/password/initial"): "public-auth",
 	("GET", "/api/v1/auth/me"): "authenticated-core",
 	("GET", "/api/v1/auth/keys"): "public-read",

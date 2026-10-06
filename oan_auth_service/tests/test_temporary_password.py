@@ -243,7 +243,7 @@ class TestTemporaryPassword(unittest.TestCase):
 
 		try:
 			with configured_keys():
-				status, body = _call("/api/v1/auth/reset-password", {"key": key, "new_password": OWN})
+				status, body = _call("/api/v1/auth/password/reset", {"key": key, "new_password": OWN})
 				self.assertEqual(status, 200, msg=body)
 				self.assertFalse(_flagged(user))
 

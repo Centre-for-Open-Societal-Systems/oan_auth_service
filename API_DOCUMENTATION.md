@@ -19,8 +19,8 @@ Comprehensive API documentation for the **OAN Authentication Service** (`oan_aut
   - [3. Token Refresh (`POST /api/v1/auth/refresh`)](#3-token-refresh-post-apiv1authrefresh)
   - [4. User Logout (`POST /api/v1/auth/logout`)](#4-user-logout-post-apiv1authlogout)
 - [Password Recovery Endpoints](#password-recovery-endpoints)
-  - [5. Forgot Password (`POST /api/v1/auth/forgot-password`)](#5-forgot-password-post-apiv1authforgot-password)
-  - [6. Reset Password (`POST /api/v1/auth/reset-password`)](#6-reset-password-post-apiv1authreset-password)
+  - [5. Forgot Password (`POST /api/v1/auth/password/forgot`)](#5-forgot-password-post-apiv1authpasswordforgot)
+  - [6. Reset Password (`POST /api/v1/auth/password/reset`)](#6-reset-password-post-apiv1authpasswordreset)
 - [Temporary Password Endpoints](#temporary-password-endpoints)
   - [11. Set Initial Password (`POST /api/v1/auth/password/initial`)](#11-set-initial-password-post-apiv1authpasswordinitial)
 - [Identity & Profile Endpoints](#identity--profile-endpoints)
@@ -152,8 +152,8 @@ HTTP Status: `400`, `401`, `403`, `404`, `429`, or `500`
 | `POST` | `/api/v1/auth/login`            | Authenticate & obtain token pair               | Public / Guest   | Constant-time flow     |
 | `POST` | `/api/v1/auth/refresh`          | Exchange single-use refresh token              | Public / Guest   | Single-use rotation    |
 | `POST` | `/api/v1/auth/logout`           | Revoke active refresh token                    | Public / Guest   | No                     |
-| `POST` | `/api/v1/auth/forgot-password`  | Initiate password recovery (SMS / Email)       | Public / Guest   | 10 req / hour / IP     |
-| `POST` | `/api/v1/auth/reset-password`   | Complete password reset (Email Key or SMS OTP) | Public / Guest   | 20 OTP req / hour / IP |
+| `POST` | `/api/v1/auth/password/forgot`  | Initiate password recovery (SMS / Email)       | Public / Guest   | 10 req / hour / IP     |
+| `POST` | `/api/v1/auth/password/reset`   | Complete password reset (Email Key or SMS OTP) | Public / Guest   | 20 OTP req / hour / IP |
 | `POST` | `/api/v1/auth/password/initial` | Replace a temporary password                   | Public / Guest   | 10 req / 5 min / IP    |
 | `GET`  | `/api/v1/auth/me`               | Current user profile & claims introspection    | `Bearer <token>` | No                     |
 | `GET`  | `/api/v1/auth/keys`             | JWT signing key ID & algorithm metadata        | Public / Guest   | No                     |
@@ -386,7 +386,7 @@ Revokes the specified refresh token in the database, terminating the persistent 
 
 ## Password Recovery Endpoints
 
-### 5. Forgot Password (`POST /api/v1/auth/forgot-password`)
+### 5. Forgot Password (`POST /api/v1/auth/password/forgot`)
 
 Initiates account password recovery. The server intelligently determines the delivery channel based on the user record:
 
@@ -396,7 +396,7 @@ Initiates account password recovery. The server intelligently determines the del
 To prevent account enumeration, the response status and message are identical whether the account exists or not.
 
 - **HTTP Method**: `POST`
-- **Path**: `/api/v1/auth/forgot-password`
+- **Path**: `/api/v1/auth/password/forgot` (deprecated alias: `/api/v1/auth/forgot-password`)
 - **Authorization**: Public / Guest
 - **Rate Limit**: 10 requests / hour / IP
 - **Header**: `Content-Type: application/json`
@@ -432,12 +432,12 @@ To prevent account enumeration, the response status and message are identical wh
 
 ---
 
-### 6. Reset Password (`POST /api/v1/auth/reset-password`)
+### 6. Reset Password (`POST /api/v1/auth/password/reset`)
 
 Completes password reset using either verification method. Upon successful password reset, **all existing refresh tokens for the user are immediately revoked** to safeguard against compromised sessions.
 
 - **HTTP Method**: `POST`
-- **Path**: `/api/v1/auth/reset-password`
+- **Path**: `/api/v1/auth/password/reset` (deprecated alias: `/api/v1/auth/reset-password`)
 - **Authorization**: Public / Guest
 - **Rate Limit**: 20 attempts / hour / IP (on SMS OTP flow)
 - **Header**: `Content-Type: application/json`
