@@ -147,20 +147,20 @@ HTTP Status: `400`, `401`, `403`, `404`, `429`, or `500`
 
 ## Endpoints Summary
 
-| Method | Path                           | Summary                                        | Auth Required    | Rate Limited           |
-| :----- | :----------------------------- | :--------------------------------------------- | :--------------- | :--------------------- |
-| `POST` | `/api/v1/auth/register`        | Register new user account                      | Public / Guest   | Yes (Caller IP)        |
-| `POST` | `/api/v1/auth/login`           | Authenticate & obtain token pair               | Public / Guest   | Constant-time flow     |
-| `POST` | `/api/v1/auth/refresh`         | Exchange single-use refresh token              | Public / Guest   | Single-use rotation    |
-| `POST` | `/api/v1/auth/logout`          | Revoke active refresh token                    | Public / Guest   | No                     |
-| `POST` | `/api/v1/auth/forgot-password` | Initiate password recovery (SMS / Email)       | Public / Guest   | 10 req / hour / IP     |
-| `POST` | `/api/v1/auth/reset-password`  | Complete password reset (Email Key or SMS OTP) | Public / Guest   | 20 OTP req / hour / IP |
-| `POST` | `/api/v1/auth/set-initial-password` | Replace a temporary password             | Public / Guest   | 10 req / 5 min / IP    |
-| `POST` | `/api/v1/auth/temporary-password` | Issue or reissue a temporary password (System Manager) | `Bearer <token>` | 10 req / 5 min / caller |
-| `GET`  | `/api/v1/auth/me`              | Current user profile & claims introspection    | `Bearer <token>` | No                     |
-| `GET`  | `/api/v1/auth/keys`            | JWT signing key ID & algorithm metadata        | Public / Guest   | No                     |
-| `GET`  | `/api/v1/auth/health`          | Health check endpoint                          | Public / Guest   | No                     |
-| `GET`  | `/api/v1/auth/metadata`        | Aggregated app metadata & public roles         | Public / Guest   | No                     |
+| Method | Path                                | Summary                                                | Auth Required    | Rate Limited            |
+| :----- | :---------------------------------- | :----------------------------------------------------- | :--------------- | :---------------------- |
+| `POST` | `/api/v1/auth/register`             | Register new user account                              | Public / Guest   | Yes (Caller IP)         |
+| `POST` | `/api/v1/auth/login`                | Authenticate & obtain token pair                       | Public / Guest   | Constant-time flow      |
+| `POST` | `/api/v1/auth/refresh`              | Exchange single-use refresh token                      | Public / Guest   | Single-use rotation     |
+| `POST` | `/api/v1/auth/logout`               | Revoke active refresh token                            | Public / Guest   | No                      |
+| `POST` | `/api/v1/auth/forgot-password`      | Initiate password recovery (SMS / Email)               | Public / Guest   | 10 req / hour / IP      |
+| `POST` | `/api/v1/auth/reset-password`       | Complete password reset (Email Key or SMS OTP)         | Public / Guest   | 20 OTP req / hour / IP  |
+| `POST` | `/api/v1/auth/set-initial-password` | Replace a temporary password                           | Public / Guest   | 10 req / 5 min / IP     |
+| `POST` | `/api/v1/auth/temporary-password`   | Issue or reissue a temporary password (System Manager) | `Bearer <token>` | 10 req / 5 min / caller |
+| `GET`  | `/api/v1/auth/me`                   | Current user profile & claims introspection            | `Bearer <token>` | No                      |
+| `GET`  | `/api/v1/auth/keys`                 | JWT signing key ID & algorithm metadata                | Public / Guest   | No                      |
+| `GET`  | `/api/v1/auth/health`               | Health check endpoint                                  | Public / Guest   | No                      |
+| `GET`  | `/api/v1/auth/metadata`             | Aggregated app metadata & public roles                 | Public / Guest   | No                      |
 
 ---
 
@@ -515,10 +515,10 @@ Replaces a temporary password with one only the account holder knows. No token i
 
 #### Request Body Parameters
 
-| Field              | Type     | Required | Constraints   | Description                                                                         |
-| :----------------- | :------- | :------- | :------------ | :---------------------------------------------------------------------------------- |
-| `usr`              | `string` | **Yes**  | Min 1 char    | Login handle (email, phone number or user id).                                      |
-| `current_password` | `string` | **Yes**  | Min 1 char    | The temporary password.                                                             |
+| Field              | Type     | Required | Constraints   | Description                                                                              |
+| :----------------- | :------- | :------- | :------------ | :--------------------------------------------------------------------------------------- |
+| `usr`              | `string` | **Yes**  | Min 1 char    | Login handle (email, phone number or user id).                                           |
+| `current_password` | `string` | **Yes**  | Min 1 char    | The temporary password.                                                                  |
 | `new_password`     | `string` | **Yes**  | 8 – 128 chars | At least 1 letter, 1 number and 1 special character. Must differ from the temporary one. |
 
 #### Request Body Example
@@ -559,10 +559,10 @@ Sets a temporary password on any account, for a first password or after a forgot
 
 #### Request Body Parameters
 
-| Field      | Type     | Required | Constraints   | Description                                                    |
-| :--------- | :------- | :------- | :------------ | :------------------------------------------------------------- |
+| Field      | Type     | Required | Constraints   | Description                                                           |
+| :--------- | :------- | :------- | :------------ | :-------------------------------------------------------------------- |
 | `usr`      | `string` | **Yes**  | Min 1 char    | Login handle of the account. `Administrator` and `Guest` are refused. |
-| `password` | `string` | **Yes**  | 8 – 128 chars | At least 1 letter and 1 number. A special character is not required. |
+| `password` | `string` | **Yes**  | 8 – 128 chars | At least 1 letter and 1 number. A special character is not required.  |
 
 #### Request Body Example
 
@@ -750,12 +750,12 @@ Aggregates public reference metadata, registration parameters, and domain metada
 
 ## Common Error Codes Reference
 
-| HTTP Status             | Error Code (`code`)     | Trigger Reason                                                                                |
-| :---------------------- | :---------------------- | :-------------------------------------------------------------------------------------------- |
-| `400 Bad Request`       | `VALIDATION_ERROR`      | Malformed JSON, missing mandatory fields, invalid phone/email, or failed password complexity. |
-| `401 Unauthorized`      | `AUTHENTICATION_ERROR`  | Invalid credentials, expired/replayed refresh token, or invalid/expired password reset code.  |
-| `403 Forbidden`         | `PERMISSION_ERROR`      | Requesting a role not permitted for public self-registration.                                 |
+| HTTP Status             | Error Code (`code`)        | Trigger Reason                                                                                            |
+| :---------------------- | :------------------------- | :-------------------------------------------------------------------------------------------------------- |
+| `400 Bad Request`       | `VALIDATION_ERROR`         | Malformed JSON, missing mandatory fields, invalid phone/email, or failed password complexity.             |
+| `401 Unauthorized`      | `AUTHENTICATION_ERROR`     | Invalid credentials, expired/replayed refresh token, or invalid/expired password reset code.              |
+| `403 Forbidden`         | `PERMISSION_ERROR`         | Requesting a role not permitted for public self-registration.                                             |
 | `403 Forbidden`         | `PASSWORD_CHANGE_REQUIRED` | Correct credentials, but the account holds a temporary password. Send the user to `set-initial-password`. |
-| `403 Forbidden`         | `HTTPS_REQUIRED`        | Request made over plain HTTP when `jwt_enforce_https` is enabled.                             |
-| `429 Too Many Requests` | `RATE_LIMIT_EXCEEDED`   | Exceeded rate limit on forgot-password or OTP verification endpoints.                         |
-| `500 Server Error`      | `INTERNAL_SERVER_ERROR` | Unhandled runtime exception or key configuration error.                                       |
+| `403 Forbidden`         | `HTTPS_REQUIRED`           | Request made over plain HTTP when `jwt_enforce_https` is enabled.                                         |
+| `429 Too Many Requests` | `RATE_LIMIT_EXCEEDED`      | Exceeded rate limit on forgot-password or OTP verification endpoints.                                     |
+| `500 Server Error`      | `INTERNAL_SERVER_ERROR`    | Unhandled runtime exception or key configuration error.                                                   |

@@ -665,7 +665,7 @@ def issue_temporary_password(user: str, password: str) -> None:
 	summary="Replace a temporary password",
 	description="Replace an admin-issued temporary password with one only the account holder knows. The temporary password proves identity; no token is needed or issued. Sign in with the new password afterwards.",
 )
-@frappe.whitelist(allow_guest=True)
+@frappe.whitelist(allow_guest=True, methods=["POST"])
 @validate_request(SetInitialPasswordSchema)
 @handle_api_errors
 def set_initial_password(usr: str, current_password: str, new_password: str):
@@ -723,7 +723,7 @@ def set_initial_password(usr: str, current_password: str, new_password: str):
 	summary="Issue or reissue a temporary password",
 	description="System Manager only. Set a temporary password on any account; the holder must replace it through set-initial-password before they can sign in. Use it to issue a first password or to reissue one after a forgotten password. Apps that manage their own users expose a narrower endpoint over the same operation.",
 )
-@frappe.whitelist()
+@frappe.whitelist(methods=["POST"])
 @handle_api_errors
 @require_role(["System Manager"])
 @validate_request(IssueTemporaryPasswordSchema)
