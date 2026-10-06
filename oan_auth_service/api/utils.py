@@ -22,6 +22,19 @@ class _DummyException(Exception):
 	pass
 
 
+class PasswordChangeRequired(frappe.AuthenticationError):
+	"""The credentials were right, but the password is a temporary one that must be replaced first.
+
+	Subclasses AuthenticationError so it fails closed anywhere a plain
+	authentication failure would, and answers 403 rather than 401 because the
+	caller did nothing wrong: a 401 reads to a client as an expired session and
+	sends the user to a global sign-out, when the right next screen is
+	"choose a new password".
+	"""
+
+	http_status_code = 403
+
+
 class ResponseValidationError(Exception):
 	"""An endpoint returned data that does not match its declared `response_model`.
 
@@ -51,6 +64,20 @@ def validate_password_complexity(value: str) -> str:
 		raise ValueError("Password must contain at least one number.")
 	if not any(not c.isalnum() for c in value):
 		raise ValueError("Password must contain at least one special character.")
+	return value
+
+
+def validate_temporary_password(value: str) -> str:
+	"""Rule for a password an admin types for someone else: at least 8 characters, a letter and a digit.
+
+	Deliberately weaker than `validate_password_complexity`. It is handed from an
+	admin to a person by hand and lives for exactly one use, after which
+	`set_initial_password` demands the full rule of the password that replaces it.
+	"""
+	if len(value) < 8:
+		raise ValueError("Password must be at least 8 characters.")
+	if not any(c.isalpha() for c in value) or not any(c.isdigit() for c in value):
+		raise ValueError("Password must contain at least one letter and one number.")
 	return value
 
 
@@ -787,6 +814,19 @@ def handle_api_errors(func):
 			frappe.log_error(title="JWT Key Configuration Error", message=str(e))
 			resolved_meta = _resolve_version_meta(func)
 			return error_response(str(e), "CONFIGURATION_ERROR", meta=resolved_meta)
+
+		except PasswordChangeRequired as e:
+			# Ahead of the generic path, which would answer AUTHENTICATION_ERROR: a client
+			# branches on this code to show "choose a new password" instead of a sign-in failure.
+			_rollback()
+			frappe.local.message_log = []
+			frappe.response["http_status_code"] = 403
+			resolved_meta = _resolve_version_meta(func)
+			return error_response(
+				get_error_message(e, _("You must set your own password before signing in.")),
+				"PASSWORD_CHANGE_REQUIRED",
+				meta=resolved_meta,
+			)
 
 		except Exception as e:
 			_rollback()

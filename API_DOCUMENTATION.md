@@ -21,6 +21,9 @@ Comprehensive API documentation for the **OAN Authentication Service** (`oan_aut
 - [Password Recovery Endpoints](#password-recovery-endpoints)
   - [5. Forgot Password (`POST /api/v1/auth/forgot-password`)](#5-forgot-password-post-apiv1authforgot-password)
   - [6. Reset Password (`POST /api/v1/auth/reset-password`)](#6-reset-password-post-apiv1authreset-password)
+- [Temporary Password Endpoints](#temporary-password-endpoints)
+  - [11. Set Initial Password (`POST /api/v1/auth/set-initial-password`)](#11-set-initial-password-post-apiv1authset-initial-password)
+  - [12. Issue Temporary Password (`POST /api/v1/auth/temporary-password`)](#12-issue-temporary-password-post-apiv1authtemporary-password)
 - [Identity & Profile Endpoints](#identity--profile-endpoints)
   - [7. Introspect User (`GET /api/v1/auth/me`)](#7-introspect-user-get-apiv1authme)
 - [System & Discovery Endpoints](#system--discovery-endpoints)
@@ -152,6 +155,8 @@ HTTP Status: `400`, `401`, `403`, `404`, `429`, or `500`
 | `POST` | `/api/v1/auth/logout`          | Revoke active refresh token                    | Public / Guest   | No                     |
 | `POST` | `/api/v1/auth/forgot-password` | Initiate password recovery (SMS / Email)       | Public / Guest   | 10 req / hour / IP     |
 | `POST` | `/api/v1/auth/reset-password`  | Complete password reset (Email Key or SMS OTP) | Public / Guest   | 20 OTP req / hour / IP |
+| `POST` | `/api/v1/auth/set-initial-password` | Replace a temporary password             | Public / Guest   | 10 req / 5 min / IP    |
+| `POST` | `/api/v1/auth/temporary-password` | Issue or reissue a temporary password (System Manager) | `Bearer <token>` | 10 req / 5 min / caller |
 | `GET`  | `/api/v1/auth/me`              | Current user profile & claims introspection    | `Bearer <token>` | No                     |
 | `GET`  | `/api/v1/auth/keys`            | JWT signing key ID & algorithm metadata        | Public / Guest   | No                     |
 | `GET`  | `/api/v1/auth/health`          | Health check endpoint                          | Public / Guest   | No                     |
@@ -488,6 +493,99 @@ Must provide **either** `key` (Email flow) **OR** (`usr` + `otp`) (SMS flow), bu
 
 ---
 
+## Temporary Password Endpoints
+
+An admin can give an account a **temporary password**: one somebody other than the account holder chose. The account can authenticate with it, but cannot open a session. Until the holder replaces it:
+
+- `POST /api/v1/auth/login` answers **403** with `code: "PASSWORD_CHANGE_REQUIRED"` when the password is right (a wrong password is still a plain 401).
+- `POST /api/v1/auth/refresh` refuses refresh tokens and access tokens already issued to the account stop working.
+- Issuing a temporary password ends every session the account already held.
+
+The holder replaces it with `POST /api/v1/auth/set-initial-password`. Apps that create accounts for others (for example officers) call `issue_temporary_password(user, password)` from `oan_auth_service.api.v1.auth` after checking that their caller may manage that account.
+
+### 11. Set Initial Password (`POST /api/v1/auth/set-initial-password`)
+
+Replaces a temporary password with one only the account holder knows. No token is needed or issued: the temporary password is the proof. Sign in with the new password afterwards.
+
+- **HTTP Method**: `POST`
+- **Path**: `/api/v1/auth/set-initial-password`
+- **Authorization**: Public / Guest
+- **Rate Limit**: 10 requests / 5 minutes / IP. Wrong passwords also count towards the account lockout, as at login.
+- **Header**: `Content-Type: application/json`
+
+#### Request Body Parameters
+
+| Field              | Type     | Required | Constraints   | Description                                                                         |
+| :----------------- | :------- | :------- | :------------ | :---------------------------------------------------------------------------------- |
+| `usr`              | `string` | **Yes**  | Min 1 char    | Login handle (email, phone number or user id).                                      |
+| `current_password` | `string` | **Yes**  | Min 1 char    | The temporary password.                                                             |
+| `new_password`     | `string` | **Yes**  | 8 – 128 chars | At least 1 letter, 1 number and 1 special character. Must differ from the temporary one. |
+
+#### Request Body Example
+
+```json
+{
+  "usr": "tigist.alemu@example.com",
+  "current_password": "Welcome2026",
+  "new_password": "MyOwn#Password1"
+}
+```
+
+#### Response: `200 OK`
+
+```json
+{
+  "status": "success",
+  "message": "Password set. Please sign in with your new password.",
+  "data": null,
+  "meta": { "api_version": "v1", "status": "current" },
+  "request_id": "db0a8ee6-05ec-4be4-af39-8134aeaf4a69"
+}
+```
+
+An unknown account, a wrong password and an account that holds no temporary password all return the same `401 AUTHENTICATION_ERROR` "Invalid login credentials", so the endpoint reveals neither which accounts exist nor which hold a temporary password.
+
+---
+
+### 12. Issue Temporary Password (`POST /api/v1/auth/temporary-password`)
+
+Sets a temporary password on any account, for a first password or after a forgotten one. **System Manager only**, because the caller chooses the password and could otherwise take over any account. A role that should reach only its own users belongs in the consuming app, which checks its target and calls `issue_temporary_password`.
+
+- **HTTP Method**: `POST`
+- **Path**: `/api/v1/auth/temporary-password`
+- **Authorization**: Required (`Bearer <access_token>`), System Manager
+- **Rate Limit**: 10 requests / 5 minutes / caller
+- **Header**: `Content-Type: application/json`
+
+#### Request Body Parameters
+
+| Field      | Type     | Required | Constraints   | Description                                                    |
+| :--------- | :------- | :------- | :------------ | :------------------------------------------------------------- |
+| `usr`      | `string` | **Yes**  | Min 1 char    | Login handle of the account. `Administrator` and `Guest` are refused. |
+| `password` | `string` | **Yes**  | 8 – 128 chars | At least 1 letter and 1 number. A special character is not required. |
+
+#### Request Body Example
+
+```json
+{ "usr": "tigist.alemu@example.com", "password": "Welcome2026" }
+```
+
+#### Response: `200 OK`
+
+```json
+{
+  "status": "success",
+  "message": "Temporary password issued. The account holder must set their own password before signing in.",
+  "data": null,
+  "meta": { "api_version": "v1", "status": "current" },
+  "request_id": "db0a8ee6-05ec-4be4-af39-8134aeaf4a69"
+}
+```
+
+Errors: `403 PERMISSION_DENIED` for a caller who is not a System Manager or for a protected account, `404 NOT_FOUND` for an unknown account, `400 VALIDATION_ERROR` for a weak password.
+
+---
+
 ## Identity & Profile Endpoints
 
 ### 7. Introspect User (`GET /api/v1/auth/me`)
@@ -657,6 +755,7 @@ Aggregates public reference metadata, registration parameters, and domain metada
 | `400 Bad Request`       | `VALIDATION_ERROR`      | Malformed JSON, missing mandatory fields, invalid phone/email, or failed password complexity. |
 | `401 Unauthorized`      | `AUTHENTICATION_ERROR`  | Invalid credentials, expired/replayed refresh token, or invalid/expired password reset code.  |
 | `403 Forbidden`         | `PERMISSION_ERROR`      | Requesting a role not permitted for public self-registration.                                 |
+| `403 Forbidden`         | `PASSWORD_CHANGE_REQUIRED` | Correct credentials, but the account holds a temporary password. Send the user to `set-initial-password`. |
 | `403 Forbidden`         | `HTTPS_REQUIRED`        | Request made over plain HTTP when `jwt_enforce_https` is enabled.                             |
 | `429 Too Many Requests` | `RATE_LIMIT_EXCEEDED`   | Exceeded rate limit on forgot-password or OTP verification endpoints.                         |
 | `500 Server Error`      | `INTERNAL_SERVER_ERROR` | Unhandled runtime exception or key configuration error.                                       |

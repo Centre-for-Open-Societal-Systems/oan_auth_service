@@ -59,6 +59,8 @@ The app includes a declarative Werkzeug REST Router (`oan_auth_service.api.route
 | `POST` | `/api/v1/auth/logout`          | Revoke active refresh token              | Public / Guest           |
 | `POST` | `/api/v1/auth/forgot-password` | Initiate password recovery (SMS / email) | Public / Guest           |
 | `POST` | `/api/v1/auth/reset-password`  | Complete password reset                  | Public / Guest           |
+| `POST` | `/api/v1/auth/set-initial-password` | Replace a temporary password        | Public / Guest           |
+| `POST` | `/api/v1/auth/temporary-password` | Issue a temporary password (System Manager) | Authenticated (`Bearer`) |
 | `GET`  | `/api/v1/auth/me`              | Current user profile & JWT claims        | Authenticated (`Bearer`) |
 | `GET`  | `/api/v1/auth/keys`            | Public signing key metadata & algorithm  | Public / Guest           |
 | `GET`  | `/api/v1/auth/health`          | Health check endpoint                    | Public / Guest           |
