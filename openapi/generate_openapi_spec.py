@@ -340,20 +340,6 @@ REQ["SetInitialPasswordRequest"] = OBJ(
 	description="Replace a temporary password. No token is needed or issued; sign in afterwards.",
 )
 
-REQ["IssueTemporaryPasswordRequest"] = OBJ(
-	{
-		"usr": S(minLength=1, description="Login identifier of the account to issue the password for"),
-		"password": S(
-			format="password",
-			minLength=8,
-			maxLength=128,
-			description="Temporary password (min 8 chars, at least one letter and one number)",
-		),
-	},
-	required=["usr", "password"],
-	description="System Manager request to issue or reissue a temporary password.",
-)
-
 
 # ---------------------------------------------------------------------------
 # Envelope Builder Helper
@@ -434,8 +420,6 @@ def _determine_tag(path: str, func_name: str, api_doc_tags: list[str] | None = N
 		for x in (
 			"forgot-password",
 			"reset-password",
-			"set-initial-password",
-			"temporary-password",
 			"password",
 		)
 	):
@@ -475,7 +459,6 @@ def _determine_response_schema(
 		"forgot_password": "MessageOnlyResponse",
 		"reset_password": "MessageOnlyResponse",
 		"set_initial_password": "MessageOnlyResponse",
-		"issue_temporary_password_for": "MessageOnlyResponse",
 	}
 	if func_name in mapping:
 		return mapping[func_name]
@@ -498,7 +481,6 @@ def _determine_request_schema(endpoint_fn: Any, unwrapped: Any, func_name: str) 
 			"ForgotPasswordSchema": "ForgotPasswordRequest",
 			"ResetPasswordSchema": "ResetPasswordRequest",
 			"SetInitialPasswordSchema": "SetInitialPasswordRequest",
-			"IssueTemporaryPasswordSchema": "IssueTemporaryPasswordRequest",
 		}
 		if schema_name in class_mapping:
 			return class_mapping[schema_name]
@@ -520,7 +502,6 @@ def _determine_request_schema(endpoint_fn: Any, unwrapped: Any, func_name: str) 
 		"forgot_password": "ForgotPasswordRequest",
 		"reset_password": "ResetPasswordRequest",
 		"set_initial_password": "SetInitialPasswordRequest",
-		"issue_temporary_password_for": "IssueTemporaryPasswordRequest",
 	}
 	return mapping.get(func_name)
 

@@ -138,13 +138,13 @@ services:
         policy: redis
         fault_tolerant: true
         hide_client_headers: false
-  - name: post-api-v1-auth-set-initial-password
+  - name: post-api-v1-auth-password-initial
     methods:
     - POST
     paths:
-    - ~/api/v1/auth/set-initial-password$
+    - ~/api/v1/auth/password/initial$
     strip_path: false
-    regex_priority: 4
+    regex_priority: 5
     tags:
     - oan
     - auth
@@ -161,36 +161,6 @@ services:
         policy: redis
         fault_tolerant: true
         hide_client_headers: false
-  - name: post-api-v1-auth-temporary-password
-    methods:
-    - POST
-    paths:
-    - ~/api/v1/auth/temporary-password$
-    strip_path: false
-    regex_priority: 4
-    tags:
-    - oan
-    - auth
-    - v1
-    - d02
-    - authenticated-core
-    - bearer
-    plugins:
-    - name: rate-limiting
-      config:
-        minute: 120
-        hour: 4000
-        limit_by: consumer
-        policy: redis
-        fault_tolerant: true
-        hide_client_headers: false
-    - name: jwt
-      config:
-        claims_to_verify:
-        - exp
-        key_claim_name: iss
-        header_names:
-        - Authorization
   - name: post-api-v1-auth-forgot-password
     methods:
     - POST

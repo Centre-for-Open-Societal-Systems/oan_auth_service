@@ -161,7 +161,7 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/LogoutRequest'
-  /api/v1/auth/set-initial-password:
+  /api/v1/auth/password/initial:
     post:
       tags:
       - Password Recovery
@@ -169,7 +169,7 @@ paths:
       description: Replace an admin-issued temporary password with one only the account holder knows.
         The temporary password proves identity; no token is needed or issued. Sign in with the new password
         afterwards.
-      operationId: post_api_v1_auth_set_initial_password
+      operationId: post_api_v1_auth_password_initial
       responses:
         '200':
           description: Success
@@ -196,49 +196,6 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/SetInitialPasswordRequest'
-  /api/v1/auth/temporary-password:
-    post:
-      tags:
-      - Password Recovery
-      summary: Issue or reissue a temporary password
-      description: System Manager only. Set a temporary password on any account; the holder must replace
-        it through set-initial-password before they can sign in. Use it to issue a first password or to
-        reissue one after a forgotten password. Apps that manage their own users expose a narrower endpoint
-        over the same operation.
-      operationId: post_api_v1_auth_temporary_password
-      responses:
-        '200':
-          description: Success
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/MessageOnlyResponse'
-        '400':
-          description: Validation or Client Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/StandardErrorResponse'
-        '500':
-          description: Internal Server Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/StandardErrorResponse'
-        '401':
-          description: Unauthorized / Authentication Required
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/StandardErrorResponse'
-      security:
-      - BearerAuth: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/IssueTemporaryPasswordRequest'
   /api/v1/auth/forgot-password:
     post:
       tags:
@@ -825,23 +782,6 @@ components:
       - current_password
       - new_password
       description: Replace a temporary password. No token is needed or issued; sign in afterwards.
-    IssueTemporaryPasswordRequest:
-      type: object
-      properties:
-        usr:
-          type: string
-          minLength: 1
-          description: Login identifier of the account to issue the password for
-        password:
-          type: string
-          format: password
-          minLength: 8
-          maxLength: 128
-          description: Temporary password (min 8 chars, at least one letter and one number)
-      required:
-      - usr
-      - password
-      description: System Manager request to issue or reissue a temporary password.
     TokenPairResponse:
       type: object
       properties:

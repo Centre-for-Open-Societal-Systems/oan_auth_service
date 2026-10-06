@@ -13,7 +13,7 @@ from oan_auth_service.api.router import ensure_routes_registered
 from oan_auth_service.api.v1.auth import _issue_token_pair, issue_temporary_password
 from oan_auth_service.setup.install import MUST_CHANGE_PASSWORD_FIELD
 from oan_auth_service.tests.test_router import make_test_request
-from oan_auth_service.tests.utils import cleanup_user, configured_keys, ensure_role, make_user
+from oan_auth_service.tests.utils import cleanup_user, configured_keys, make_user
 
 TEMPORARY = "Temp1234"
 OWN = "MyOwnPassword1!"
@@ -32,7 +32,6 @@ def _flagged(user: str) -> bool:
 class TestTemporaryPassword(unittest.TestCase):
 	def setUp(self):
 		ensure_routes_registered()
-		ensure_role("System Manager")
 		self.users = []
 		# The endpoints are rate limited per caller address; start each test with a clean budget.
 		for key in ("oan_auth:set_initial_pwd:127.0.0.1",):
@@ -41,12 +40,11 @@ class TestTemporaryPassword(unittest.TestCase):
 	def tearDown(self):
 		for user in self.users:
 			cleanup_user(user)
-			frappe.cache.delete_value(f"oan_auth:temp_pwd:{user}")
 		frappe.set_user("Administrator")
 
-	def _officer(self, temporary: bool = True, roles: list[str] | None = None) -> str:
+	def _officer(self, temporary: bool = True) -> str:
 		email = f"temp_{frappe.generate_hash(length=8)}@example.com"
-		user = make_user(email, "Original1!", roles=roles)
+		user = make_user(email, "Original1!")
 		self.users.append(user)
 		if temporary:
 			issue_temporary_password(user, TEMPORARY)
@@ -92,7 +90,7 @@ class TestTemporaryPassword(unittest.TestCase):
 
 		with configured_keys():
 			status, body = _call(
-				"/api/v1/auth/set-initial-password",
+				"/api/v1/auth/password/initial",
 				{"usr": user, "current_password": TEMPORARY, "new_password": OWN},
 			)
 			self.assertEqual(status, 200, msg=body)
@@ -133,7 +131,7 @@ class TestTemporaryPassword(unittest.TestCase):
 
 		with configured_keys():
 			for label, (payload, expected) in cases.items():
-				status, body = _call("/api/v1/auth/set-initial-password", payload)
+				status, body = _call("/api/v1/auth/password/initial", payload)
 				self.assertEqual(status, expected, msg=(label, body))
 
 		# None of that may have changed either account.
@@ -197,72 +195,39 @@ class TestTemporaryPassword(unittest.TestCase):
 
 		self.assertEqual(frappe.session.user, user)
 
-	# -- the System Manager endpoint ----------------------------------------
+	# -- reissuing ----------------------------------------------------------
 
-	def test_system_manager_can_issue_and_reissue(self):
-		target = self._officer(temporary=False)
-		admin = self._officer(temporary=False, roles=["System Manager"])
-		frappe.set_user(admin)
+	def test_reissuing_flags_the_account_again_and_kills_the_old_password(self):
+		user = self._officer()
 
 		with configured_keys():
-			status, body = _call("/api/v1/auth/temporary-password", {"usr": target, "password": TEMPORARY})
-			self.assertEqual(status, 200, msg=body)
-			self.assertTrue(_flagged(target))
-
-			# Rotate it, then issue again: the account is flagged again and the old one is dead.
-			_call(
-				"/api/v1/auth/set-initial-password",
-				{"usr": target, "current_password": TEMPORARY, "new_password": OWN},
-			)
-			self.assertFalse(_flagged(target))
-
 			status, _body = _call(
-				"/api/v1/auth/temporary-password", {"usr": target, "password": "Another1234"}
+				"/api/v1/auth/password/initial",
+				{"usr": user, "current_password": TEMPORARY, "new_password": OWN},
 			)
 			self.assertEqual(status, 200)
-			self.assertTrue(_flagged(target))
-			status, _body = _call("/api/v1/auth/login", {"usr": target, "pwd": OWN})
+			self.assertFalse(_flagged(user))
+
+			issue_temporary_password(user, "Another1234")
+			frappe.db.commit()  # nosemgrep: frappe-manual-commit
+
+			self.assertTrue(_flagged(user))
+			status, _body = _call("/api/v1/auth/login", {"usr": user, "pwd": OWN})
 			self.assertEqual(status, 401)
+			status, body = _call("/api/v1/auth/login", {"usr": user, "pwd": "Another1234"})
+			self.assertEqual((status, body["code"]), (403, "PASSWORD_CHANGE_REQUIRED"))
 
-	def test_only_system_manager_may_issue(self):
-		target = self._officer(temporary=False)
-		caller = self._officer(temporary=False)
-		frappe.set_user(caller)
+	def test_a_weak_temporary_password_is_refused_and_changes_nothing(self):
+		user = self._officer(temporary=False)
 
+		for weak in ("short1", "lettersonly", "12345678"):
+			with self.assertRaises(ValueError, msg=weak):
+				issue_temporary_password(user, weak)
+
+		self.assertFalse(_flagged(user))
 		with configured_keys():
-			status, body = _call("/api/v1/auth/temporary-password", {"usr": target, "password": TEMPORARY})
-
-		self.assertEqual(status, 403)
-		self.assertEqual(body["code"], "PERMISSION_DENIED")
-		self.assertFalse(_flagged(target))
-
-	def test_issue_refuses_unknown_and_protected_accounts(self):
-		admin = self._officer(temporary=False, roles=["System Manager"])
-		frappe.set_user(admin)
-
-		with configured_keys():
-			status, _body = _call(
-				"/api/v1/auth/temporary-password", {"usr": "nobody@example.com", "password": TEMPORARY}
-			)
-			self.assertEqual(status, 404)
-
-			status, _body = _call(
-				"/api/v1/auth/temporary-password", {"usr": "Administrator", "password": TEMPORARY}
-			)
-			self.assertEqual(status, 403)
-			self.assertFalse(_flagged("Administrator"))
-
-	def test_temporary_password_rule(self):
-		target = self._officer(temporary=False)
-		admin = self._officer(temporary=False, roles=["System Manager"])
-		frappe.set_user(admin)
-
-		with configured_keys():
-			for weak in ("short1", "lettersonly", "12345678"):
-				status, body = _call("/api/v1/auth/temporary-password", {"usr": target, "password": weak})
-				self.assertEqual(status, 400, msg=(weak, body))
-
-		self.assertFalse(_flagged(target))
+			status, _body = _call("/api/v1/auth/login", {"usr": user, "pwd": "Original1!"})
+		self.assertEqual(status, 200)
 
 	# -- forgotten password ---------------------------------------------------
 

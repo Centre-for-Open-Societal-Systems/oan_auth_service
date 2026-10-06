@@ -50,7 +50,6 @@ from oan_auth_service.api.utils import (
 	check_rate_limit,
 	handle_api_errors,
 	parse_multi_value,
-	require_role,
 	split_phone_number,
 	success_response,
 	validate_mobile,
@@ -253,16 +252,6 @@ class SetInitialPasswordSchema(BaseModel):
 	@classmethod
 	def validate_password(cls, v: str) -> str:
 		return validate_password_complexity(v)
-
-
-class IssueTemporaryPasswordSchema(BaseModel):
-	usr: str = Field(..., min_length=1)
-	password: str = Field(..., min_length=8, max_length=128)
-
-	@field_validator("password")
-	@classmethod
-	def validate_password(cls, v: str) -> str:
-		return validate_temporary_password(v)
 
 
 class RefreshTokenSchema(BaseModel):
@@ -637,8 +626,7 @@ def issue_temporary_password(user: str, password: str) -> None:
 	an account and when they reissue one after a forgotten password. Not
 	whitelisted: it sets the password of whatever `user` names, so who may call it
 	on whom is the caller's decision. A consuming app must check that its caller may
-	manage this particular account before calling it; `issue_temporary_password_for`
-	below is the endpoint for System Managers, who need no such check.
+	manage this particular account before calling it.
 
 	The account can authenticate with the password but cannot open a session until
 	`set_initial_password` replaces it, so whoever typed it gains nothing lasting.
@@ -660,7 +648,7 @@ def issue_temporary_password(user: str, password: str) -> None:
 
 # nosemgrep: guest-whitelisted-method, frappe-semgrep-rules.rules.security.guest-whitelisted-method
 @route(
-	"/set-initial-password",
+	"/password/initial",
 	allow_guest=True,
 	summary="Replace a temporary password",
 	description="Replace an admin-issued temporary password with one only the account holder knows. The temporary password proves identity; no token is needed or issued. Sign in with the new password afterwards.",
@@ -716,45 +704,6 @@ def set_initial_password(usr: str, current_password: str, new_password: str):
 
 	frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
 	return success_response(message=_("Password set. Please sign in with your new password."))
-
-
-@route(
-	"/temporary-password",
-	summary="Issue or reissue a temporary password",
-	description="System Manager only. Set a temporary password on any account; the holder must replace it through set-initial-password before they can sign in. Use it to issue a first password or to reissue one after a forgotten password. Apps that manage their own users expose a narrower endpoint over the same operation.",
-)
-@frappe.whitelist(methods=["POST"])
-@handle_api_errors
-@require_role(["System Manager"])
-@validate_request(IssueTemporaryPasswordSchema)
-def issue_temporary_password_for(usr: str, password: str):
-	"""Issue or reissue a temporary password on any account. System Manager only.
-
-	Limited to System Managers because this is account takeover by design: the
-	caller picks the password, so anyone allowed here could set one on any account
-	and then complete `set_initial_password` themselves. A role that should reach
-	only its own users belongs in the consuming app, which checks its target and
-	calls `issue_temporary_password`.
-	"""
-	check_rate_limit(f"oan_auth:temp_pwd:{frappe.session.user}", limit=10, window=300)
-
-	user = _resolve_login_identifier(usr)
-
-	if user is None:
-		raise frappe.DoesNotExistError(_("User not found."))
-
-	if user in ("Administrator", "Guest"):
-		frappe.throw(_("A temporary password cannot be issued for this account."), frappe.PermissionError)
-
-	issue_temporary_password(user, password)
-
-	frappe.logger("oan_auth_service").info(f"temporary password issued by={frappe.session.user} for={user}")
-	frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
-	return success_response(
-		message=_(
-			"Temporary password issued. The account holder must set their own password before signing in."
-		)
-	)
 
 
 def revoke_all_for_user(user: str) -> int:
