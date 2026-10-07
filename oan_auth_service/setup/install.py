@@ -18,10 +18,12 @@ import frappe
 # The canonical name of the field, defined here because this is what creates it.
 # Everything that reads it imports from here rather than repeating the string.
 LOGIN_EMAIL_FIELD = "oan_login_email"
+MUST_CHANGE_PASSWORD_FIELD = "oan_must_change_password"
 
 
 def after_install():
 	create_login_email_field()
+	create_must_change_password_field()
 
 
 def create_login_email_field():
@@ -73,6 +75,42 @@ def create_login_email_field():
 			"description": (
 				"Real address this account signs in with. User.name is a synthetic id "
 				"and is never shown to the account holder."
+			),
+		},
+	)
+
+	frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
+
+
+def create_must_change_password_field():
+	"""Add `User.oan_must_change_password` — set while an account holds a temporary password.
+
+	A temporary password is one somebody other than the account holder chose, so
+	whoever chose it knows it. The flag is what makes that harmless: while it is
+	set, login refuses to mint tokens, refresh refuses to rotate them, and the
+	request middleware refuses the ones already issued. Only
+	`set_initial_password` clears it, and only by replacing the password.
+
+	Read-only because nothing a form or a client sends should be able to clear it.
+	Writers go through `issue_temporary_password` and `set_initial_password` in
+	`api/v1/auth.py`, which also revoke the refresh tokens the old password issued.
+	"""
+	from frappe.custom.doctype.custom_field.custom_field import create_custom_field
+
+	create_custom_field(
+		"User",
+		{
+			"fieldname": MUST_CHANGE_PASSWORD_FIELD,
+			"label": "Must Change Password",
+			"fieldtype": "Check",
+			"default": "0",
+			"insert_after": "send_welcome_email",
+			"read_only": 1,
+			# A copied User would otherwise inherit the flag along with nothing else
+			# about the account's password state.
+			"no_copy": 1,
+			"description": (
+				"Set when an admin issues a temporary password. Cleared once the user sets a password of their own."
 			),
 		},
 	)

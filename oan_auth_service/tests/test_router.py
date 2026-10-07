@@ -364,7 +364,7 @@ class TestRESTAuthEndpoints(unittest.TestCase):
 
 			# Forgot password via REST
 			forgot_req = make_test_request(
-				"/api/v1/auth/forgot-password",
+				"/api/v1/auth/password/forgot",
 				method="POST",
 				data={"usr": phone},
 			)
@@ -372,3 +372,24 @@ class TestRESTAuthEndpoints(unittest.TestCase):
 			self.assertEqual(forgot_res.status_code, 200)
 			forgot_data = json.loads(forgot_res.get_data(as_text=True))
 			self.assertEqual(forgot_data["status"], "success")
+
+	def test_recovery_endpoints_answer_at_the_documented_paths_and_the_old_ones(self):
+		"""The design document names /password/forgot and /password/reset; the old paths stay as aliases."""
+		import frappe.api
+
+		# Forgot-password is limited to 10 per hour per address; keep repeated runs from using it up.
+		frappe.cache.delete_value("oan_auth:pwreset:127.0.0.1")
+
+		for path in ("/api/v1/auth/password/forgot", "/api/v1/auth/forgot-password"):
+			req = make_test_request(path, method="POST", data={"usr": "nobody-here@example.com"})
+			res = frappe.api.handle(req)
+			self.assertEqual(res.status_code, 200, msg=path)
+			self.assertEqual(json.loads(res.get_data(as_text=True))["status"], "success", msg=path)
+
+		for path in ("/api/v1/auth/password/reset", "/api/v1/auth/reset-password"):
+			req = make_test_request(
+				path, method="POST", data={"key": "not-a-real-key", "new_password": "Whatever#123"}
+			)
+			res = frappe.api.handle(req)
+			# A real route that rejects the key, not a 404 for an unknown path.
+			self.assertNotEqual(res.status_code, 404, msg=path)

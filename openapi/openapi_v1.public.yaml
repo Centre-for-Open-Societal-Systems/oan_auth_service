@@ -161,13 +161,82 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/LogoutRequest'
+  /api/v1/auth/password/initial:
+    post:
+      tags:
+      - Password Recovery
+      summary: Replace a temporary password
+      description: Replace an admin-issued temporary password with one only the account holder knows.
+        The temporary password proves identity; no token is needed or issued. Sign in with the new password
+        afterwards.
+      operationId: post_api_v1_auth_password_initial
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageOnlyResponse'
+        '400':
+          description: Validation or Client Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetInitialPasswordRequest'
   /api/v1/auth/forgot-password:
+    post:
+      tags:
+      - Password Recovery
+      summary: Initiate password recovery (deprecated alias)
+      description: Deprecated alias of POST /api/v1/auth/password/forgot, kept until clients move to the
+        new path.
+      operationId: post_api_v1_auth_forgot_password
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageOnlyResponse'
+        '400':
+          description: Validation or Client Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ForgotPasswordRequest'
+  /api/v1/auth/password/forgot:
     post:
       tags:
       - Password Recovery
       summary: Initiate password recovery
       description: Initiate password recovery for an account via email reset link or SMS OTP code.
-      operationId: post_api_v1_auth_forgot_password
+      operationId: post_api_v1_auth_password_forgot
       responses:
         '200':
           description: Success
@@ -198,10 +267,44 @@ paths:
     post:
       tags:
       - Password Recovery
+      summary: Complete password reset (deprecated alias)
+      description: Deprecated alias of POST /api/v1/auth/password/reset, kept until clients move to the
+        new path.
+      operationId: post_api_v1_auth_reset_password
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageOnlyResponse'
+        '400':
+          description: Validation or Client Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResetPasswordRequest'
+  /api/v1/auth/password/reset:
+    post:
+      tags:
+      - Password Recovery
       summary: Complete password reset
       description: Complete password reset using either an emailed reset key or a phone SMS OTP code with
         a new password.
-      operationId: post_api_v1_auth_reset_password
+      operationId: post_api_v1_auth_password_reset
       responses:
         '200':
           description: Success
@@ -723,6 +826,30 @@ components:
       required:
       - new_password
       description: Password reset completion payload. Provide either `key` OR (`usr` and `otp`).
+    SetInitialPasswordRequest:
+      type: object
+      properties:
+        usr:
+          type: string
+          minLength: 1
+          description: 'Login identifier: email, mobile number, or User ID'
+        current_password:
+          type: string
+          format: password
+          minLength: 1
+          description: The temporary password
+        new_password:
+          type: string
+          format: password
+          minLength: 8
+          maxLength: 128
+          description: The account holder's own password (min 8 chars, letters, numbers, symbols). Must
+            differ from the temporary one.
+      required:
+      - usr
+      - current_password
+      - new_password
+      description: Replace a temporary password. No token is needed or issued; sign in afterwards.
     TokenPairResponse:
       type: object
       properties:

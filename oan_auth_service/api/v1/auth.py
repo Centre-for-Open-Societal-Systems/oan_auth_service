@@ -44,6 +44,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from oan_auth_service.api import tokens
 from oan_auth_service.api.router import prefixed
 from oan_auth_service.api.utils import (
+	PasswordChangeRequired,
 	SafeEmail,
 	assemble_phone_number,
 	check_rate_limit,
@@ -54,9 +55,10 @@ from oan_auth_service.api.utils import (
 	validate_mobile,
 	validate_password_complexity,
 	validate_request,
+	validate_temporary_password,
 )
 from oan_auth_service.config import settings
-from oan_auth_service.setup.install import LOGIN_EMAIL_FIELD
+from oan_auth_service.setup.install import LOGIN_EMAIL_FIELD, MUST_CHANGE_PASSWORD_FIELD
 
 REFRESH_TOKEN_DOCTYPE = "OAN User Refresh Token"
 
@@ -241,6 +243,17 @@ class RegisterUserSchema(BaseModel):
 		return validate_password_complexity(v)
 
 
+class SetInitialPasswordSchema(BaseModel):
+	usr: str = Field(..., min_length=1)
+	current_password: str = Field(..., min_length=1)
+	new_password: str = Field(..., min_length=8, max_length=128)
+
+	@field_validator("new_password")
+	@classmethod
+	def validate_password(cls, v: str) -> str:
+		return validate_password_complexity(v)
+
+
 class RefreshTokenSchema(BaseModel):
 	refresh_token: str = Field(..., min_length=1)
 
@@ -332,6 +345,12 @@ def login(usr: str, pwd: str, remember_me: bool = False, scope: str | list[str] 
 	login_manager = LoginManager.__new__(LoginManager)
 	login_manager.authenticate(user=user, pwd=pwd)
 	user = login_manager.user
+
+	# After authenticate(), never before: a wrong password must still answer 401, or
+	# this response would tell an anonymous caller which accounts hold a temporary
+	# password. Reaching here means the credentials were right, so it is safe to say
+	# what is wrong with the account.
+	_refuse_temporary_password(user)
 
 	roles = tokens.resolve_roles(user)
 	narrowed = _narrow_to_scope(roles, scope)
@@ -550,6 +569,11 @@ def refresh(refresh_token: str):
 		# the only point in a session's life where storage is consulted at all.
 		raise frappe.AuthenticationError(_("Invalid refresh token"))
 
+	# A temporary password was issued after this token was. `issue_temporary_password`
+	# already deleted the tokens it knew of; this covers one minted in the gap, so a
+	# session cannot outlive the credential it was opened with.
+	_refuse_temporary_password(row.user)
+
 	# Roles are re-resolved from the database on every refresh, which is what
 	# bounds the staleness of the roles claim to one access-token TTL.
 	pair = _issue_token_pair(row.user, remember_me=cint(row.remember_me))
@@ -587,6 +611,99 @@ def logout(refresh_token: str):
 	# Reports success either way. Whether a given token string was live is not
 	# something an unauthenticated caller should be able to probe for.
 	return success_response(data={"revoked": True})
+
+
+def _refuse_temporary_password(user: str) -> None:
+	"""Raise `PasswordChangeRequired` if `user` still holds an admin-issued password."""
+	if frappe.db.get_value("User", user, MUST_CHANGE_PASSWORD_FIELD):
+		raise PasswordChangeRequired(_("You must set your own password before signing in."))
+
+
+def issue_temporary_password(user: str, password: str) -> None:
+	"""Give `user` a password somebody else chose, and require them to replace it.
+
+	The one place a temporary password is written, used both when an admin creates
+	an account and when they reissue one after a forgotten password. Not
+	whitelisted: it sets the password of whatever `user` names, so who may call it
+	on whom is the caller's decision. A consuming app must check that its caller may
+	manage this particular account before calling it.
+
+	The account can authenticate with the password but cannot open a session until
+	`set_initial_password` replaces it, so whoever typed it gains nothing lasting.
+	Any session the account already holds ends here: the refresh tokens are deleted,
+	the request middleware refuses access tokens for a flagged user, and Frappe's own
+	sessions are cleared. When the reason for a reissue is a suspected compromise,
+	"new password" has to mean "cut off the old session" too.
+
+	The caller commits.
+	"""
+	from frappe.utils.password import update_password
+
+	validate_temporary_password(password)
+
+	update_password(user=user, pwd=password, logout_all_sessions=True)
+	frappe.db.set_value("User", user, MUST_CHANGE_PASSWORD_FIELD, 1, update_modified=False)
+	revoke_all_for_user(user)
+
+
+# nosemgrep: guest-whitelisted-method, frappe-semgrep-rules.rules.security.guest-whitelisted-method
+@route(
+	"/password/initial",
+	allow_guest=True,
+	summary="Replace a temporary password",
+	description="Replace an admin-issued temporary password with one only the account holder knows. The temporary password proves identity; no token is needed or issued. Sign in with the new password afterwards.",
+)
+@frappe.whitelist(allow_guest=True, methods=["POST"])
+@validate_request(SetInitialPasswordSchema)
+@handle_api_errors
+def set_initial_password(usr: str, current_password: str, new_password: str):
+	"""Rotate a temporary password into one only the account holder knows.
+
+	Guest-reachable by necessity: login refuses to mint a token while the flag is
+	set, so the caller has nothing to authorise this with except the temporary
+	password itself, which is re-verified here exactly as login would verify it.
+	It goes through the same `LoginManager.authenticate`, so guessing at it trips
+	the same account lockout as guessing at login.
+
+	Every refusal is the same "Invalid login credentials". An unknown account, a
+	wrong password and an account that is not holding a temporary password are
+	indistinguishable, which keeps an anonymous caller from learning which accounts
+	exist or which are sitting on a temporary password. It also keeps this from
+	being an unauthenticated change-password endpoint for every account on the site.
+	"""
+	from frappe.auth import LoginManager
+	from frappe.utils.password import update_password
+
+	check_rate_limit(f"oan_auth:set_initial_pwd:{frappe.local.request_ip}", limit=10, window=300)
+
+	user = _resolve_login_identifier(usr)
+
+	if user is None:
+		# Same timing as a wrong password: see login().
+		try:
+			passlibctx.verify("", _DUMMY_PASSWORD_HASH)
+		except Exception:
+			pass
+		raise frappe.AuthenticationError(_("Invalid login credentials"))
+
+	login_manager = LoginManager.__new__(LoginManager)
+	login_manager.authenticate(user=user, pwd=current_password)
+	user = login_manager.user
+
+	if not frappe.db.get_value("User", user, MUST_CHANGE_PASSWORD_FIELD):
+		raise frappe.AuthenticationError(_("Invalid login credentials"))
+
+	if new_password == current_password:
+		frappe.throw(_("Choose a password different from the temporary one."), frappe.ValidationError)
+
+	update_password(user=user, pwd=new_password, logout_all_sessions=True)
+	frappe.db.set_value("User", user, MUST_CHANGE_PASSWORD_FIELD, 0, update_modified=False)
+	# Nothing should hold a refresh token for an account that could not sign in, but
+	# clear any that predate the flag rather than leave a live session behind.
+	revoke_all_for_user(user)
+
+	frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
+	return success_response(message=_("Password set. Please sign in with your new password."))
 
 
 def revoke_all_for_user(user: str) -> int:
@@ -708,10 +825,16 @@ def _deliver_reset_by_email(user_doc, login_email: str) -> None:
 
 # nosemgrep: guest-whitelisted-method, frappe-semgrep-rules.rules.security.guest-whitelisted-method
 @route(
-	"/forgot-password",
+	"/password/forgot",
 	allow_guest=True,
 	summary="Initiate password recovery",
 	description="Initiate password recovery for an account via email reset link or SMS OTP code.",
+)
+@route(
+	"/forgot-password",
+	allow_guest=True,
+	summary="Initiate password recovery (deprecated alias)",
+	description="Deprecated alias of POST /api/v1/auth/password/forgot, kept until clients move to the new path.",
 )
 @frappe.whitelist(allow_guest=True)
 @validate_request(ForgotPasswordSchema)
@@ -834,10 +957,16 @@ def _mint_reset_key(user: str) -> str:
 
 # nosemgrep: guest-whitelisted-method, frappe-semgrep-rules.rules.security.guest-whitelisted-method
 @route(
-	"/reset-password",
+	"/password/reset",
 	allow_guest=True,
 	summary="Complete password reset",
 	description="Complete password reset using either an emailed reset key or a phone SMS OTP code with a new password.",
+)
+@route(
+	"/reset-password",
+	allow_guest=True,
+	summary="Complete password reset (deprecated alias)",
+	description="Deprecated alias of POST /api/v1/auth/password/reset, kept until clients move to the new path.",
 )
 @frappe.whitelist(allow_guest=True)
 @validate_request(ResetPasswordSchema)
@@ -876,6 +1005,10 @@ def reset_password(new_password: str, key: str | None = None, usr: str | None = 
 	result = frappe_update_password(new_password=new_password, key=key)
 
 	if user:
+		# The reset key or SMS code went to the account holder, so the password just set is
+		# theirs: it is no longer a temporary one, and the flag would otherwise lock them out
+		# of a password they chose themselves.
+		frappe.db.set_value("User", user, MUST_CHANGE_PASSWORD_FIELD, 0, update_modified=False)
 		# A password change has to invalidate refresh tokens. Otherwise the reset
 		# a user performs *because* they were compromised leaves the attacker's
 		# session running — the exact scenario the reset was meant to end.

@@ -28,6 +28,7 @@ from frappe import _
 
 from oan_auth_service.api import tokens
 from oan_auth_service.api.jwt_keys import JWTKeyConfigurationError
+from oan_auth_service.setup.install import MUST_CHANGE_PASSWORD_FIELD
 
 # namespace prefix -> config for that consumer.
 _NAMESPACES: dict[str, dict] = {}
@@ -135,8 +136,14 @@ def validate_jwt_request(request=None):
 	if not user or not frappe.db.exists("User", user):
 		_reject("Invalid or expired token")
 
-	if not frappe.db.get_value("User", user, "enabled"):
+	enabled, must_change_password = frappe.db.get_value("User", user, ["enabled", MUST_CHANGE_PASSWORD_FIELD])
+	if not enabled:
 		_reject("Invalid or expired token")
+
+	# An access token cannot be revoked, so one issued before a temporary password was
+	# set would keep working for its remaining lifetime. The flag is what cuts it off.
+	if must_change_password:
+		_reject("Password change required")
 
 	revocation_check = config.get("revocation_check")
 	if revocation_check:

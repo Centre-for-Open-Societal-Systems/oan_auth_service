@@ -138,6 +138,29 @@ services:
         policy: redis
         fault_tolerant: true
         hide_client_headers: false
+  - name: post-api-v1-auth-password-initial
+    methods:
+    - POST
+    paths:
+    - ~/api/v1/auth/password/initial$
+    strip_path: false
+    regex_priority: 5
+    tags:
+    - oan
+    - auth
+    - v1
+    - d02
+    - public-auth
+    - public
+    plugins:
+    - name: rate-limiting
+      config:
+        minute: 5
+        hour: 30
+        limit_by: ip
+        policy: redis
+        fault_tolerant: true
+        hide_client_headers: false
   - name: post-api-v1-auth-forgot-password
     methods:
     - POST
@@ -161,6 +184,29 @@ services:
         policy: redis
         fault_tolerant: true
         hide_client_headers: false
+  - name: post-api-v1-auth-password-forgot
+    methods:
+    - POST
+    paths:
+    - ~/api/v1/auth/password/forgot$
+    strip_path: false
+    regex_priority: 5
+    tags:
+    - oan
+    - auth
+    - v1
+    - d02
+    - public-auth
+    - public
+    plugins:
+    - name: rate-limiting
+      config:
+        minute: 5
+        hour: 30
+        limit_by: ip
+        policy: redis
+        fault_tolerant: true
+        hide_client_headers: false
   - name: post-api-v1-auth-reset-password
     methods:
     - POST
@@ -168,6 +214,29 @@ services:
     - ~/api/v1/auth/reset-password$
     strip_path: false
     regex_priority: 4
+    tags:
+    - oan
+    - auth
+    - v1
+    - d02
+    - public-auth
+    - public
+    plugins:
+    - name: rate-limiting
+      config:
+        minute: 5
+        hour: 30
+        limit_by: ip
+        policy: redis
+        fault_tolerant: true
+        hide_client_headers: false
+  - name: post-api-v1-auth-password-reset
+    methods:
+    - POST
+    paths:
+    - ~/api/v1/auth/password/reset$
+    strip_path: false
+    regex_priority: 5
     tags:
     - oan
     - auth

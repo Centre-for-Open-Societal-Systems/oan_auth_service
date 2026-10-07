@@ -51,17 +51,18 @@ The app includes a declarative Werkzeug REST Router (`oan_auth_service.api.route
 
 ### V1 Auth REST Endpoints
 
-| Method | REST Path                      | Description                              | Access                   |
-| ------ | ------------------------------ | ---------------------------------------- | ------------------------ |
-| `POST` | `/api/v1/auth/register`        | Register new account & return token pair | Public / Guest           |
-| `POST` | `/api/v1/auth/login`           | Authenticate & issue token pair          | Public / Guest           |
-| `POST` | `/api/v1/auth/refresh`         | Rotate single-use refresh token          | Public / Guest           |
-| `POST` | `/api/v1/auth/logout`          | Revoke active refresh token              | Public / Guest           |
-| `POST` | `/api/v1/auth/forgot-password` | Initiate password recovery (SMS / email) | Public / Guest           |
-| `POST` | `/api/v1/auth/reset-password`  | Complete password reset                  | Public / Guest           |
-| `GET`  | `/api/v1/auth/me`              | Current user profile & JWT claims        | Authenticated (`Bearer`) |
-| `GET`  | `/api/v1/auth/keys`            | Public signing key metadata & algorithm  | Public / Guest           |
-| `GET`  | `/api/v1/auth/health`          | Health check endpoint                    | Public / Guest           |
+| Method | REST Path                       | Description                              | Access                   |
+| ------ | ------------------------------- | ---------------------------------------- | ------------------------ |
+| `POST` | `/api/v1/auth/register`         | Register new account & return token pair | Public / Guest           |
+| `POST` | `/api/v1/auth/login`            | Authenticate & issue token pair          | Public / Guest           |
+| `POST` | `/api/v1/auth/refresh`          | Rotate single-use refresh token          | Public / Guest           |
+| `POST` | `/api/v1/auth/logout`           | Revoke active refresh token              | Public / Guest           |
+| `POST` | `/api/v1/auth/password/forgot`  | Initiate password recovery (SMS / email) | Public / Guest           |
+| `POST` | `/api/v1/auth/password/reset`   | Complete password reset                  | Public / Guest           |
+| `POST` | `/api/v1/auth/password/initial` | Replace a temporary password             | Public / Guest           |
+| `GET`  | `/api/v1/auth/me`               | Current user profile & JWT claims        | Authenticated (`Bearer`) |
+| `GET`  | `/api/v1/auth/keys`             | Public signing key metadata & algorithm  | Public / Guest           |
+| `GET`  | `/api/v1/auth/health`           | Health check endpoint                    | Public / Guest           |
 
 ### HTTPS Transport Security
 
