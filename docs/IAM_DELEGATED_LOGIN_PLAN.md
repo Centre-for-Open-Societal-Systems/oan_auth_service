@@ -36,7 +36,8 @@ IAM (Keycloak, eSignet, ...).
   requests need an `X-CSRF-Token` header matching the cookie), and `iss` alone
   picks the verifier, so either kind of token may arrive either way. An expired
   token is a `401` on both paths; the client refreshes, this app never does
-  (`api/middleware.py`).
+  (`api/middleware.py`). Cookie names follow IAM's: `iam_auth_cookie_prefix`
+  mirrors iam_core's `auth_cookie_prefix` and must hold the same value.
 
 ## Known limits
 
@@ -44,7 +45,6 @@ IAM (Keycloak, eSignet, ...).
   accepted. The role requirement above is what keeps such callers out.
 - A Bearer token works until its `exp`. To cut someone off sooner, disable
   their local `User`.
-- IAM's `auth_cookie_prefix` is not supported.
 - IAM role names are used as-is, with no allowlist or deny-list. Whoever
   administers this application's client in the identity provider can grant any
   Frappe role that exists, including `System Manager`. Frappe has no built-in
@@ -52,6 +52,19 @@ IAM (Keycloak, eSignet, ...).
   administrators is an accepted decision for now. Follow-up: an
   `iam_role_map` in site config (IAM role to Frappe role, fail closed) so
   privileged roles can only be granted by an explicit site-config entry.
+- CSRF protection on cookie requests is a plain double-submit: the
+  `X-CSRF-Token` header must equal the CSRF cookie. The token is random
+  (`secrets.token_urlsafe(32)`, reissued by IAM on login and on token refresh)
+  but not signed and not bound to the session. If IAM's cookies are set on a
+  parent domain (`auth_cookie_domain`), a sibling subdomain can set both the
+  cookie and the header itself and pass the check. Do not host untrusted
+  subdomains under that cookie domain. IAM sets the CSRF cookie `SameSite=Lax`,
+  `Secure` per `auth_cookie_secure`, not `HttpOnly` (the page must read it).
+- A user whose last IAM role is removed is stripped of their Frappe roles and
+  refused. The strip is committed only on safe methods (GET, HEAD, OPTIONS).
+  On POST/PUT/DELETE Frappe rolls back the rejected request, so the strip is
+  undone. The user stays refused (IAM grants no role), and the next safe-method
+  request commits the strip.
 - Rejected tokens are not cached, and validation is a synchronous call to IAM
   (5 second timeout). An unauthenticated caller can send JWT-shaped strings with
   a foreign `iss`, each causing one IAM call and holding a worker while IAM is

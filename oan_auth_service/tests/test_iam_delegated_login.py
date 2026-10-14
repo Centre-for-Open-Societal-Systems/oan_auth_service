@@ -14,14 +14,14 @@ import frappe
 import jwt
 import requests
 
-from oan_auth_service.api import iam_users
+from oan_auth_service.api import iam_users, middleware
 from oan_auth_service.api.middleware import validate_jwt_request
 from oan_auth_service.api.router import ensure_routes_registered
 from oan_auth_service.api.v1.auth import _resolve_login_identifier, issue_temporary_password
 from oan_auth_service.tests.test_router import make_test_request
 from oan_auth_service.tests.utils import cleanup_user, configured_keys, ensure_role, override_conf
 
-IAM_URL = "http://iam.test"
+IAM_URL = "https://iam.test"
 APP = "oan-grievance"
 OFFICER = "IAM Test Officer"
 VIEWER = "IAM Test Viewer"
@@ -100,13 +100,21 @@ class TestIAMDelegatedLogin(unittest.TestCase):
 		self.subs.append(sub)
 		return sub
 
-	def _authenticate_cookies(self, cookies, method="GET", headers=None, **conf):
+	def _authenticate_cookies(self, cookies, method="GET", headers=None, protected=False, **conf):
+		"""`protected` makes the test path non-exempt, as every real endpoint but login-style ones."""
 		conf = {"iam_base_url": IAM_URL, "iam_application": APP, **conf}
 		env = {"HTTP_COOKIE": "; ".join(f"{k}={v}" for k, v in cookies.items())}
+		real_match = middleware._match_namespace
+
+		def match(path):
+			config = real_match(path)
+			return {**config, "exempt_paths": []} if config and protected else config
+
 		with (
 			configured_keys(),
 			override_conf(**conf),
 			patch("oan_auth_service.api.iam_tokens.requests.get", side_effect=self.iam.get),
+			patch.object(middleware, "_match_namespace", side_effect=match),
 		):
 			req = make_test_request(
 				"/api/v1/auth/health", method=method, headers=headers or {}, environ_base=env
@@ -187,11 +195,28 @@ class TestIAMDelegatedLogin(unittest.TestCase):
 		self.assertFalse(frappe.db.exists("User", iam_users.user_name_for_sub(sub)))
 
 	def test_user_losing_all_roles_is_stripped_and_rejected(self):
+		# Safe method (GET): the strip is committed before the 401, so it persists.
 		sub = self._sub()
 		user = self._authenticate(self.iam.issue(sub))
-		with self.assertRaises(frappe.AuthenticationError):
+		with patch("frappe.db.commit") as commit, self.assertRaises(frappe.AuthenticationError):
 			self._authenticate(self.iam.issue(sub, {APP: []}))
+		commit.assert_called_once()
 		self.assertEqual(self._roles(user), set())
+
+	def test_role_strip_is_not_committed_on_unsafe_method(self):
+		# POST: nothing commits, so Frappe's rollback of the rejected request undoes
+		# the strip. The request is still refused.
+		sub = self._sub()
+		self._authenticate(self.iam.issue(sub))
+		token = self.iam.issue(sub, {APP: []})
+		with patch("frappe.db.commit") as commit, self.assertRaises(frappe.AuthenticationError):
+			self._authenticate_cookies(
+				{"X-Access-Token": token, "X-CSRF-Token": "abc"},
+				method="POST",
+				headers={"X-CSRF-Token": "abc"},
+				protected=True,
+			)
+		commit.assert_not_called()
 
 	def test_principal_is_cached_per_token(self):
 		token = self.iam.issue(self._sub())
@@ -266,17 +291,71 @@ class TestIAMDelegatedLogin(unittest.TestCase):
 		token = self.iam.issue(self._sub())
 		del self.iam.principals[token]
 		with self.assertRaises(frappe.AuthenticationError):
-			self._authenticate_cookies({"X-Access-Token": token})
+			self._authenticate_cookies({"X-Access-Token": token}, protected=True)
 
 	def test_cookie_post_requires_matching_csrf_header(self):
 		token = self.iam.issue(self._sub())
 		cookies = {"X-Access-Token": token, "X-CSRF-Token": "abc"}
 
 		with self.assertRaises(frappe.AuthenticationError):
-			self._authenticate_cookies(cookies, method="POST")
+			self._authenticate_cookies(cookies, method="POST", protected=True)
 		with self.assertRaises(frappe.AuthenticationError):
-			self._authenticate_cookies(cookies, method="POST", headers={"X-CSRF-Token": "nope"})
-		self._authenticate_cookies(cookies, method="POST", headers={"X-CSRF-Token": "abc"})
+			self._authenticate_cookies(
+				cookies, method="POST", headers={"X-CSRF-Token": "nope"}, protected=True
+			)
+		self._authenticate_cookies(cookies, method="POST", headers={"X-CSRF-Token": "abc"}, protected=True)
+
+	def test_cookie_names_follow_iam_prefix(self):
+		# Mirrors iam_core: the prefix applies to every auth cookie, never the CSRF header.
+		sub = self._sub()
+		token = self.iam.issue(sub)
+		prefixed = {"staff_X-Access-Token": token, "staff_X-CSRF-Token": "abc"}
+
+		# A cookie under the other name is not seen at all (the health path is exempt).
+		self.assertEqual(self._authenticate_cookies(prefixed), "Guest")
+		self.assertEqual(
+			self._authenticate_cookies({"X-Access-Token": token}, iam_auth_cookie_prefix="staff_"), "Guest"
+		)
+		user = self._authenticate_cookies(
+			prefixed, method="POST", headers={"X-CSRF-Token": "abc"}, iam_auth_cookie_prefix="staff_"
+		)
+		self.assertEqual(user, iam_users.user_name_for_sub(sub))
+
+	def test_stale_cookie_does_not_block_exempt_post(self):
+		# A browser resends its expired cookie to /login, /refresh and the like.
+		# On an exempt path it counts as "no credentials", never a 401.
+		stale = self.iam.issue(self._sub())
+		del self.iam.principals[stale]
+		valid = self.iam.issue(self._sub())
+		cookies = {"X-Access-Token": stale, "X-CSRF-Token": "abc"}
+
+		# Expired token, no CSRF header.
+		self.assertEqual(self._authenticate_cookies(cookies, method="POST"), "Guest")
+		# Expired token, CSRF header present.
+		self.assertEqual(
+			self._authenticate_cookies(cookies, method="POST", headers={"X-CSRF-Token": "abc"}), "Guest"
+		)
+		# Valid token but CSRF header missing.
+		good = {"X-Access-Token": valid, "X-CSRF-Token": "abc"}
+		self.assertEqual(self._authenticate_cookies(good, method="POST"), "Guest")
+
+		# The same stale cookie on a protected path is still a 401.
+		with self.assertRaises(frappe.AuthenticationError):
+			self._authenticate_cookies(
+				cookies, method="POST", headers={"X-CSRF-Token": "abc"}, protected=True
+			)
+
+	def test_non_ascii_csrf_is_rejected_not_500(self):
+		# compare_digest raises TypeError on non-ASCII str; both sides are client-controlled.
+		token = self.iam.issue(self._sub())
+		cookies = {"X-Access-Token": token, "X-CSRF-Token": "abc"}
+		with self.assertRaises(frappe.AuthenticationError):
+			self._authenticate_cookies(cookies, method="POST", headers={"X-CSRF-Token": "é"}, protected=True)
+
+		# On an exempt path the bad CSRF means "no credentials".
+		self.assertEqual(
+			self._authenticate_cookies(cookies, method="POST", headers={"X-CSRF-Token": "é"}), "Guest"
+		)
 
 	def test_bearer_post_needs_no_csrf(self):
 		token = self.iam.issue(self._sub())
@@ -293,4 +372,4 @@ class TestIAMDelegatedLogin(unittest.TestCase):
 		self.assertEqual(self._authenticate_cookies({"X-Access-Token": own}), "Administrator")
 		self.assertEqual(self.iam.calls, 0)
 		with self.assertRaises(frappe.AuthenticationError):
-			self._authenticate_cookies({"X-Access-Token": own}, method="POST")
+			self._authenticate_cookies({"X-Access-Token": own}, method="POST", protected=True)

@@ -16,7 +16,8 @@ Configuration (site_config.json), all optional:
     "password_reset_otp_max_attempts": 5,
     "jwt_self_registerable_roles": [],
     "iam_base_url": "https://iam.example.org",
-    "iam_application": "oan-grievance"
+    "iam_application": "oan-grievance",
+    "iam_auth_cookie_prefix": ""
 
 The `iam_*` keys configure login delegated to the OpenG2P IAM service; see
 api/iam_tokens.py and api/iam_users.py.
@@ -111,3 +112,13 @@ def iam_application() -> str:
 	lists under other applications are ignored.
 	"""
 	return frappe.conf.get("iam_application") or ""
+
+
+def iam_auth_cookie_prefix() -> str:
+	"""Prefix on IAM's auth cookie names, mirroring iam_core's `auth_cookie_prefix`.
+
+	Must hold the same value as the IAM deployment whose cookies reach this app
+	(its `common_auth_cookie_prefix` env). Empty, the default, means IAM's
+	unprefixed names.
+	"""
+	return frappe.conf.get("iam_auth_cookie_prefix") or ""

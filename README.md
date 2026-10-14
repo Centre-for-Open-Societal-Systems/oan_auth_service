@@ -113,7 +113,7 @@ Staff can sign in through the OpenG2P IAM service instead of a local password. T
   - an expired token gets a `401`, the same as over Bearer. Refreshing is the client's job (through IAM for IAM tokens); this app never refreshes or sets cookies;
   - state-changing requests (anything but GET, HEAD, OPTIONS) must repeat the `X-CSRF-Token` cookie as an `X-CSRF-Token` header;
   - the browser must send IAM's cookies to this host (IAM's cookie `Domain` has to cover it) and the API must allow credentialed CORS for the frontend origin; neither is configured by this app;
-  - cookie names are IAM's defaults; an IAM `auth_cookie_prefix` is not supported.
+  - cookie names are IAM's, with `iam_auth_cookie_prefix` applied the way iam_core applies `auth_cookie_prefix`. Set it to the same value as the IAM deployment whose cookies reach this app (its `common_auth_cookie_prefix`); the default `""` matches IAM's default. The `X-CSRF-Token` header is never prefixed.
 - **IAM outage.** If IAM is unreachable, times out or answers 5xx, the request gets a `503`, not a `401`, so a frontend retries instead of logging the user out. The outage is logged once a minute, not once per request.
 - **Expiry.** A Bearer access token keeps working until its `exp`, as it does in every OpenG2P service. Refreshing a Bearer token is the caller's job, through IAM. To cut someone off sooner, disable their local `User`.
 
@@ -121,8 +121,13 @@ Staff can sign in through the OpenG2P IAM service instead of a local password. T
 
 ```json
 "iam_base_url": "https://iam.example.org",
-"iam_application": "oan-grievance"
+"iam_application": "oan-grievance",
+"iam_auth_cookie_prefix": ""
 ```
+
+`iam_base_url` must be `https`: bearer tokens are sent there, so a plain `http` URL is refused (`401`). `localhost`, `127.0.0.1` and `::1` are allowed over `http` for local development.
+
+`iam_auth_cookie_prefix` is optional; leave it unset unless IAM sets `common_auth_cookie_prefix`.
 
 ## Development
 

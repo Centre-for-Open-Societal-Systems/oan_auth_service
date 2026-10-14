@@ -19,6 +19,7 @@ until it expires, the same window every other OpenG2P service has.
 
 import hashlib
 import time
+from urllib.parse import urlparse
 
 import frappe
 import jwt
@@ -48,6 +49,14 @@ def _iam_unavailable(detail: str) -> IAMUnavailableError:
 	return IAMUnavailableError(detail)
 
 
+def _require_https(base_url: str) -> None:
+	"""Refuse to send bearer tokens to IAM over plain http. Loopback is exempt."""
+	parsed = urlparse(base_url)
+	if parsed.scheme == "https" or parsed.hostname in ("localhost", "127.0.0.1", "::1"):
+		return
+	raise TokenError("iam_base_url must use https")
+
+
 # Used when a token carries no readable `exp`: short enough that a revoked
 # token does not linger, long enough to spare IAM a call per request.
 FALLBACK_CACHE_TTL = 60
@@ -75,6 +84,7 @@ def get_principal(token: str) -> dict:
 	base_url = settings.iam_base_url()
 	if not base_url:
 		raise TokenError("iam_base_url is not configured")
+	_require_https(base_url)
 
 	try:
 		response = requests.get(
@@ -110,10 +120,17 @@ def get_principal(token: str) -> dict:
 	return principal
 
 
-# IAM's cookie names (iam_core AuthCookieName). A prefix set on the IAM side
-# (`auth_cookie_prefix`) is not supported here.
+# IAM's base cookie names (iam_core AuthCookieName). Read them through
+# `cookie_name`, which applies the deployment's prefix the way iam_core does.
 ACCESS_COOKIE = "X-Access-Token"
 CSRF_COOKIE = "X-CSRF-Token"
+# iam_core never prefixes the CSRF header, only the cookie.
+CSRF_HEADER = "X-CSRF-Token"
+
+
+def cookie_name(base: str) -> str:
+	"""`base` with the deployment's IAM cookie prefix applied (iam_core `cookie_name`)."""
+	return f"{settings.iam_auth_cookie_prefix()}{base}"
 
 
 def _seconds_until_expiry(token: str) -> int:

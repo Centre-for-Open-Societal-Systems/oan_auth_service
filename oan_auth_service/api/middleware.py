@@ -99,7 +99,7 @@ _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 def _cookie_session_token(request) -> str | None:
 	"""The access token from the access cookie, used when there is no Authorization header."""
-	return request.cookies.get(iam_tokens.ACCESS_COOKIE) or None
+	return request.cookies.get(iam_tokens.cookie_name(iam_tokens.ACCESS_COOKIE)) or None
 
 
 def _check_csrf(request) -> None:
@@ -112,9 +112,11 @@ def _check_csrf(request) -> None:
 	"""
 	if request.method in _SAFE_METHODS:
 		return
-	header = request.headers.get(iam_tokens.CSRF_COOKIE) or ""
-	cookie = request.cookies.get(iam_tokens.CSRF_COOKIE) or ""
-	if not header or not hmac.compare_digest(header, cookie):
+	header = request.headers.get(iam_tokens.CSRF_HEADER) or ""
+	cookie = request.cookies.get(iam_tokens.cookie_name(iam_tokens.CSRF_COOKIE)) or ""
+	# Bytes, not str: compare_digest raises TypeError on a non-ASCII str, which
+	# a client controls, and that would surface as a 500 instead of a 401.
+	if not header or not hmac.compare_digest(header.encode(), cookie.encode()):
 		_reject("CSRF token missing or mismatched")
 
 
@@ -145,15 +147,35 @@ def validate_jwt_request(request=None):
 	# Transport only decides whether CSRF applies; the issuer alone decides how
 	# the token is verified.
 	token = _bearer_token()
-	if not token:
-		token = _cookie_session_token(request)
-		if token:
-			_check_csrf(request)
+	if token:
+		_authenticate_token(token, config)
+		return
+
+	token = _cookie_session_token(request)
 	if not token:
 		if is_exempt:
 			return
 		_reject("Missing bearer token")
 
+	if not is_exempt:
+		_check_csrf(request)
+		_authenticate_token(token, config)
+		return
+
+	# A browser sends its cookie on every request, including to the endpoints a
+	# user needs to recover from a bad one (login, refresh, password reset). On an
+	# exempt path a cookie that fails any check is "no credentials", not a 401,
+	# otherwise a stale cookie locks the user out until it is cleared by hand.
+	try:
+		_check_csrf(request)
+		_authenticate_token(token, config)
+	except (frappe.AuthenticationError, frappe.ServiceUnavailableError):
+		frappe.local.response.pop("message", None)
+		frappe.set_user("Guest")  # nosemgrep: frappe-semgrep-rules.rules.security.frappe-setuser
+
+
+def _authenticate_token(token: str, config: dict) -> None:
+	"""Verify `token` and, when valid, make its user the request user."""
 	# Dispatch on the unverified issuer: our own tokens verify in-process, any
 	# other issuer is a token from the OpenG2P IAM service, which validates it.
 	issuer = iam_tokens.peek_issuer(token)
@@ -230,6 +252,10 @@ def _provision_delegated_user(claims: dict) -> str:
 		if not iam_users.granted_roles(claims):
 			# No role for this app: never create the user. An existing user
 			# that lost its last role is stripped before the request is refused.
+			# The strip persists only on safe methods, where it is committed here.
+			# On POST/PUT/DELETE Frappe rolls back the rejected request, so the
+			# strip is undone and the user stays blocked (no roles in the IAM
+			# answer) until their next safe-method request commits it.
 			if frappe.db.exists("User", user) and iam_users.sync_roles(user, claims) and _is_safe_method():
 				frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
 			_reject(f"Principal {sub} has no roles for this application")
