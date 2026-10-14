@@ -1,35 +1,21 @@
 """Login, registration and token lifecycle endpoints.
 
-These are whitelisted and must be listed as exempt paths by every consumer that
-registers a namespace — they are how a caller obtains the token the middleware
-demands, so requiring one here would deadlock.
+These must be listed as exempt paths by every consumer that registers a
+namespace — they are how a caller obtains the token the middleware demands, so
+requiring one here would deadlock.
 
-Two transports reach each endpoint below:
+Endpoints are reached over REST only (`@route`, e.g. `POST /api/v1/auth/login`).
+There is no `/api/method/` RPC surface: nothing here is `@frappe.whitelist`ed.
 
-  REST  POST /api/v1/auth/login          (via the @route decorator, preferred)
-  RPC   POST /api/method/...auth.login   (via the @frappe.whitelist decorator)
+`@route` registers the function object it is handed, with no annotation-based
+coercion. Every endpoint taking arguments therefore carries `@validate_request`,
+and the ones that do not (`get_me`, `get_public_keys`, `get_health`,
+`get_metadata`) take no arguments. Keep it that way: an endpoint added later
+with arguments but no `@validate_request` would have no input validation.
 
-`@route` dispatches through `frappe.call`, which does not consult whitelisting,
-so reaching an endpoint over REST does not require `@frappe.whitelist`; only RPC
-does. Retiring the RPC surface is therefore deleting the `@frappe.whitelist(...)`
-line from each endpoint here, with no other file changes. Do that once the
-Postman collection and the oan_a2c consumer have moved off `/api/method/`, which
-is what they both use today.
-
-One caveat when that day comes. `frappe.whitelist` does not only register the
-method, it also returns `validate_argument_types(fn)` — and since it is the
-outermost decorator, the name the router registers *is* that wrapper. Removing it
-therefore also drops annotation-based coercion from the REST path, because
-`@route` registers whatever function object it is handed. That is
-tolerable here because every endpoint taking arguments is covered by
-`@validate_request`, which is strictly stronger, and the three that are not
-(`get_me`, `get_public_keys`, `get_health`) take no arguments. Keep it that way:
-an endpoint added later with arguments but no `@validate_request` would lose its
-only input validation the moment RPC is retired.
-
-Note also that Frappe's guest-input sanitisation lives in `is_whitelisted`, which
-runs on the RPC path only — REST guest input has never been HTML-sanitised, so
-pydantic validators are the sole input guard there.
+Frappe's guest-input sanitisation lives in `is_whitelisted`, which runs on the
+RPC path only, so REST guest input is not HTML-sanitised: pydantic validators
+are the sole input guard.
 """
 
 import re
@@ -136,7 +122,7 @@ def set_login_email(user: str, email: str | None) -> None:
 	either is updated alone — a user who changed their contact email would find
 	their login unchanged, with nothing to flag the mismatch.
 
-	So there is one function, and it is this one. Not whitelisted: who may change
+	So there is one function, and it is this one. Not routed: who may change
 	an account's login handle is a policy question, and the answer belongs to the
 	consuming app rather than to the auth service.
 	"""
@@ -315,14 +301,12 @@ class ResetPasswordSchema(BaseModel):
 route = prefixed("/api/v1/auth")
 
 
-# nosemgrep: guest-whitelisted-method, frappe-semgrep-rules.rules.security.guest-whitelisted-method
 @route(
 	"/login",
 	allow_guest=True,
 	summary="Login and obtain token pair",
 	description="Authenticate with user credentials (email, phone number, or username) and password to receive an access token and single-use refresh token.",
 )
-@frappe.whitelist(allow_guest=True)
 @validate_request(LoginSchema)
 @handle_api_errors
 def login(usr: str, pwd: str, remember_me: bool = False, scope: str | list[str] | None = None):
@@ -369,14 +353,12 @@ def login(usr: str, pwd: str, remember_me: bool = False, scope: str | list[str] 
 	return success_response(data=pair)
 
 
-# nosemgrep: guest-whitelisted-method, frappe-semgrep-rules.rules.security.guest-whitelisted-method
 @route(
 	"/register",
 	allow_guest=True,
 	summary="Register a new user account",
 	description="Register a new user account with password, full name, and either email or phone_number. When country_code is omitted, phone_number must be in full E.164 format (e.g. +251911223344). When country_code is provided (e.g. +251), phone_number is treated as the national subscriber number.",
 )
-@frappe.whitelist(allow_guest=True)
 @validate_request(RegisterUserSchema)
 @handle_api_errors
 def register_user(
@@ -527,14 +509,12 @@ def register_user(
 	return success_response(data=pair)
 
 
-# nosemgrep: guest-whitelisted-method, frappe-semgrep-rules.rules.security.guest-whitelisted-method
 @route(
 	"/refresh",
 	allow_guest=True,
 	summary="Exchange single-use refresh token",
 	description="Exchange a valid single-use refresh token for a new access token and rotated refresh token.",
 )
-@frappe.whitelist(allow_guest=True)
 @validate_request(RefreshTokenSchema)
 @handle_api_errors
 def refresh(refresh_token: str):
@@ -590,14 +570,12 @@ def refresh(refresh_token: str):
 	return success_response(data=pair)
 
 
-# nosemgrep: guest-whitelisted-method, frappe-semgrep-rules.rules.security.guest-whitelisted-method
 @route(
 	"/logout",
 	allow_guest=True,
 	summary="Revoke refresh token",
 	description="Revoke an active refresh token session.",
 )
-@frappe.whitelist(allow_guest=True)
 @validate_request(LogoutSchema)
 @handle_api_errors
 def logout(refresh_token: str):
@@ -631,7 +609,7 @@ def issue_temporary_password(user: str, password: str) -> None:
 
 	The one place a temporary password is written, used both when an admin creates
 	an account and when they reissue one after a forgotten password. Not
-	whitelisted: it sets the password of whatever `user` names, so who may call it
+	routed: it sets the password of whatever `user` names, so who may call it
 	on whom is the caller's decision. A consuming app must check that its caller may
 	manage this particular account before calling it.
 
@@ -656,14 +634,12 @@ def issue_temporary_password(user: str, password: str) -> None:
 	revoke_all_for_user(user)
 
 
-# nosemgrep: guest-whitelisted-method, frappe-semgrep-rules.rules.security.guest-whitelisted-method
 @route(
 	"/password/initial",
 	allow_guest=True,
 	summary="Replace a temporary password",
 	description="Replace an admin-issued temporary password with one only the account holder knows. The temporary password proves identity; no token is needed or issued. Sign in with the new password afterwards.",
 )
-@frappe.whitelist(allow_guest=True, methods=["POST"])
 @validate_request(SetInitialPasswordSchema)
 @handle_api_errors
 def set_initial_password(usr: str, current_password: str, new_password: str):
@@ -719,7 +695,7 @@ def set_initial_password(usr: str, current_password: str, new_password: str):
 def revoke_all_for_user(user: str) -> int:
 	"""Delete every refresh token held by `user`. Returns the number removed.
 
-	Not whitelisted: this is the primitive behind "log out everywhere" and
+	Not routed: this is the primitive behind "log out everywhere" and
 	behind a consumer's own response to a compromise, and the policy for when
 	either fires belongs to the consumer.
 	"""
@@ -833,7 +809,6 @@ def _deliver_reset_by_email(user_doc, login_email: str) -> None:
 	user_doc._reset_password(send_email=True)
 
 
-# nosemgrep: guest-whitelisted-method, frappe-semgrep-rules.rules.security.guest-whitelisted-method
 @route(
 	"/password/forgot",
 	allow_guest=True,
@@ -846,7 +821,6 @@ def _deliver_reset_by_email(user_doc, login_email: str) -> None:
 	summary="Initiate password recovery (deprecated alias)",
 	description="Deprecated alias of POST /api/v1/auth/password/forgot, kept until clients move to the new path.",
 )
-@frappe.whitelist(allow_guest=True)
 @validate_request(ForgotPasswordSchema)
 @handle_api_errors
 def forgot_password(usr: str):
@@ -965,7 +939,6 @@ def _mint_reset_key(user: str) -> str:
 	return key
 
 
-# nosemgrep: guest-whitelisted-method, frappe-semgrep-rules.rules.security.guest-whitelisted-method
 @route(
 	"/password/reset",
 	allow_guest=True,
@@ -978,7 +951,6 @@ def _mint_reset_key(user: str) -> str:
 	summary="Complete password reset (deprecated alias)",
 	description="Deprecated alias of POST /api/v1/auth/password/reset, kept until clients move to the new path.",
 )
-@frappe.whitelist(allow_guest=True)
 @validate_request(ResetPasswordSchema)
 @handle_api_errors
 def reset_password(new_password: str, key: str | None = None, usr: str | None = None, otp: str | None = None):
@@ -1040,7 +1012,6 @@ def reset_password(new_password: str, key: str | None = None, usr: str | None = 
 	summary="Introspect current authenticated user",
 	description="Introspect identity details, contact information, assigned roles, and app-specific profiles for the authenticated user.",
 )
-@frappe.whitelist()
 @handle_api_errors
 def get_me():
 	"""Introspect the current authenticated user and profiles.
@@ -1100,7 +1071,6 @@ def get_me():
 	return success_response(data=data)
 
 
-# nosemgrep: guest-whitelisted-method, frappe-semgrep-rules.rules.security.guest-whitelisted-method
 @route(
 	"/keys",
 	methods=("GET",),
@@ -1108,7 +1078,6 @@ def get_me():
 	summary="Public signing keys",
 	description="Retrieve the RS256 public keys (JWKS) that verify access tokens, and the active kid.",
 )
-@frappe.whitelist(allow_guest=True)
 @handle_api_errors
 def get_public_keys():
 	"""Return the JWKS verifiers use, plus which kid currently signs."""
@@ -1125,7 +1094,6 @@ def get_public_keys():
 	)
 
 
-# nosemgrep: guest-whitelisted-method, frappe-semgrep-rules.rules.security.guest-whitelisted-method
 @route(
 	"/health",
 	methods=("GET",),
@@ -1133,7 +1101,6 @@ def get_public_keys():
 	summary="Service health status",
 	description="Health check endpoint for the auth service.",
 )
-@frappe.whitelist(allow_guest=True)
 @handle_api_errors
 def get_health():
 	"""Health check endpoint for the auth service."""
@@ -1146,7 +1113,6 @@ def get_health():
 	)
 
 
-# nosemgrep: guest-whitelisted-method, frappe-semgrep-rules.rules.security.guest-whitelisted-method
 @route(
 	"/metadata",
 	methods=("GET",),
@@ -1154,7 +1120,6 @@ def get_health():
 	summary="Aggregated form and reference metadata",
 	description="Aggregate public dropdown and reference metadata across installed apps.",
 )
-@frappe.whitelist(allow_guest=True)
 @handle_api_errors
 def get_metadata():
 	"""Aggregate public dropdown and reference metadata across installed apps.

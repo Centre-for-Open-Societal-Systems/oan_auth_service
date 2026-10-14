@@ -219,7 +219,7 @@ def check_rate_limit(key: str, limit: int, window: int):
 
 
 def validate_request(schema: type[BaseModel], exclude_unset: bool = False):
-	"""Decorator to validate whitelisted API inputs using a Pydantic schema.
+	"""Decorator to validate API inputs using a Pydantic schema.
 
 	`cmd` is dropped before validation: Frappe's RPC path (`/api/method/...`) adds it
 	to the form dict, and it would otherwise trip schemas that forbid extra fields.
@@ -331,7 +331,7 @@ def api_doc(
 	Place this decorator *below* `@handle_api_errors` in the stack so the raised
 	`ResponseValidationError` is caught, logged and enveloped:
 
-	    @frappe.whitelist()
+	    @route("/my-endpoint")
 	    @validate_request(MySchema)
 	    @handle_api_errors
 	    @api_doc(summary="...", response_model=MyResponse)
@@ -722,7 +722,7 @@ def _rollback():
 
 
 def handle_api_errors(func):
-	"""Decorator to wrap whitelisted API methods with standardized error handling and JSON envelopes."""
+	"""Decorator to wrap API methods with standardized error handling and JSON envelopes."""
 
 	@wraps(func)
 	def wrapper(*args, **kwargs):

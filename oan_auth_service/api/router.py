@@ -54,8 +54,8 @@ def rest(
 	"""Expose `fn` at `path`, and return `fn` unchanged.
 
 	The wrapper is registered as the rule's endpoint; the module-level name stays
-	bound to the original function, so the RPC surface (`@frappe.whitelist`) and
-	any direct caller are unaffected by the function also being routed.
+	bound to the original function, so any direct caller is unaffected by the
+	function also being routed.
 
 	Exceptions are deliberately not caught. Endpoints carry `@handle_api_errors`,
 	which turns them into envelopes already, and anything escaping that is better

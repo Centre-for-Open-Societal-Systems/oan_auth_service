@@ -28,6 +28,25 @@ from oan_auth_service.api.tokens import TokenError
 from oan_auth_service.config import settings
 
 HTTP_TIMEOUT = 5
+# One Error Log row per window during an IAM outage, not one per failing request.
+OUTAGE_LOG_WINDOW_SEC = 60
+
+
+class IAMUnavailableError(Exception):
+	"""IAM could not be asked (unreachable, timed out or answered 5xx).
+
+	Deliberately not a `TokenError`: the token was not judged, so the caller
+	should get a 503, not a 401 that a frontend reads as an expired session.
+	"""
+
+
+def _iam_unavailable(detail: str) -> IAMUnavailableError:
+	key = "oan_auth:iam_outage_logged"
+	if not frappe.cache.get_value(key):
+		frappe.cache.set_value(key, 1, expires_in_sec=OUTAGE_LOG_WINDOW_SEC)
+		frappe.log_error(title="oan_auth_service: IAM unavailable", message=detail)
+	return IAMUnavailableError(detail)
+
 
 # Used when a token carries no readable `exp`: short enough that a revoked
 # token does not linger, long enough to spare IAM a call per request.
@@ -65,18 +84,36 @@ def get_principal(token: str) -> dict:
 			allow_redirects=False,
 		)
 	except requests.RequestException as exc:
-		frappe.log_error(title="oan_auth_service: IAM unreachable", message=str(exc))
-		raise TokenError("Could not reach IAM")
+		raise _iam_unavailable(f"Could not reach IAM: {exc}")
 
+	if response.status_code >= 500:
+		raise _iam_unavailable(f"IAM answered {response.status_code}")
 	if response.status_code != 200:
 		raise TokenError(f"IAM rejected the token ({response.status_code})")
 
-	principal = response.json()
+	try:
+		principal = response.json()
+	except ValueError:
+		frappe.log_error(
+			title="oan_auth_service: IAM bad response", message="IAM returned 200 with a non-JSON body"
+		)
+		raise TokenError("IAM returned a non-JSON response")
+	if not isinstance(principal, dict):
+		frappe.log_error(
+			title="oan_auth_service: IAM bad response", message="IAM returned 200 with a non-object JSON body"
+		)
+		raise TokenError("IAM returned an unexpected response")
 	if not principal.get("sub"):
 		raise TokenError("IAM principal has no sub")
 
 	frappe.cache.set_value(key, principal, expires_in_sec=_seconds_until_expiry(token))
 	return principal
+
+
+# IAM's cookie names (iam_core AuthCookieName). A prefix set on the IAM side
+# (`auth_cookie_prefix`) is not supported here.
+ACCESS_COOKIE = "X-Access-Token"
+CSRF_COOKIE = "X-CSRF-Token"
 
 
 def _seconds_until_expiry(token: str) -> int:

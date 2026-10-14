@@ -23,6 +23,8 @@ Frappe ever makes that path throw instead of swallow, this breaks, and the fix
 is a distinct Authorization scheme rather than a patch to the exception handling.
 """
 
+import hmac
+
 import frappe
 from frappe import _
 
@@ -92,6 +94,30 @@ def _bearer_token() -> str | None:
 	return parts[1].strip() or None
 
 
+_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+def _cookie_session_token(request) -> str | None:
+	"""The access token from the access cookie, used when there is no Authorization header."""
+	return request.cookies.get(iam_tokens.ACCESS_COOKIE) or None
+
+
+def _check_csrf(request) -> None:
+	"""Double-submit check for cookie-authenticated, state-changing requests.
+
+	A browser attaches cookies by itself, so a cookie alone proves nothing about
+	who made the request. IAM's CSRF token is readable by the page but not by
+	another site: the header must repeat the cookie. Bearer requests are exempt,
+	nothing attaches an Authorization header automatically.
+	"""
+	if request.method in _SAFE_METHODS:
+		return
+	header = request.headers.get(iam_tokens.CSRF_COOKIE) or ""
+	cookie = request.cookies.get(iam_tokens.CSRF_COOKIE) or ""
+	if not header or not hmac.compare_digest(header, cookie):
+		_reject("CSRF token missing or mismatched")
+
+
 def validate_jwt_request(request=None):
 	"""Entry point registered as `auth_hooks` in hooks.py."""
 	# No installed-app check: Frappe only runs auth_hooks of apps installed on
@@ -116,7 +142,13 @@ def validate_jwt_request(request=None):
 
 	is_exempt = path in config["exempt_paths"] or path.rstrip("/") in config["exempt_paths"]
 
+	# Transport only decides whether CSRF applies; the issuer alone decides how
+	# the token is verified.
 	token = _bearer_token()
+	if not token:
+		token = _cookie_session_token(request)
+		if token:
+			_check_csrf(request)
 	if not token:
 		if is_exempt:
 			return
@@ -138,6 +170,11 @@ def validate_jwt_request(request=None):
 		# like clients misbehaving.
 		frappe.log_error(title="oan_auth_service: JWT key material unusable")
 		frappe.throw(_("Authentication is misconfigured on this server"), frappe.ValidationError)
+	except iam_tokens.IAMUnavailableError:
+		# Not a verdict on the token: a 503 tells the frontend to retry, where a
+		# 401 would log the user out. Already logged (rate-limited) by iam_tokens.
+		frappe.local.response["message"] = _("Identity service unavailable")
+		raise frappe.ServiceUnavailableError
 	except tokens.TokenError as exc:
 		_reject(f"Invalid or expired token: {exc}")
 
@@ -181,20 +218,41 @@ def validate_jwt_request(request=None):
 def _provision_delegated_user(claims: dict) -> str:
 	"""Resolve or create the local user for an IAM principal and sync its roles.
 
-	Committed here rather than left to the request: Frappe only commits unsafe
-	methods, so a GET would otherwise roll back the user it just created.
+	On safe methods (GET, HEAD, OPTIONS) it commits, and only when a user was
+	created or roles changed: Frappe only commits unsafe methods, so a GET would
+	otherwise roll back the user it just created.
 	"""
 	try:
-		user = iam_users.resolve_user(claims)
+		sub = claims.get("sub")
+		if not sub or not isinstance(sub, str):
+			raise tokens.TokenError("Principal has no sub")
+		user = iam_users.user_name_for_sub(sub)
+		if not iam_users.granted_roles(claims):
+			# No role for this app: never create the user. An existing user
+			# that lost its last role is stripped before the request is refused.
+			if frappe.db.exists("User", user) and iam_users.sync_roles(user, claims) and _is_safe_method():
+				frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
+			_reject(f"Principal {sub} has no roles for this application")
+		created = not frappe.db.exists("User", user)
+		iam_users.resolve_user(claims)
 	except tokens.TokenError as exc:
 		_reject(f"Invalid or expired token: {exc}")
 
+	changed = created
 	if frappe.db.get_value("User", user, "enabled"):
-		iam_users.sync_roles(user, claims)
-		# Explicit commit: provisioning must persist even on GET requests
+		changed = iam_users.sync_roles(user, claims) or created
+	if changed and _is_safe_method():
+		# Frappe rolls back safe methods, which would undo the provisioning. For
+		# unsafe methods it commits on success and rolls back on failure, which
+		# is the right outcome for provisioning too.
 		frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
 
 	return user
+
+
+def _is_safe_method() -> bool:
+	request = getattr(frappe.local, "request", None)
+	return request is not None and request.method in ("GET", "HEAD", "OPTIONS")
 
 
 def _verify_scope_still_held(user: str, claims: dict) -> None:
