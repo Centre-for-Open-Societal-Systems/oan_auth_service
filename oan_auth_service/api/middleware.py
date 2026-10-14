@@ -166,12 +166,16 @@ def validate_jwt_request(request=None):
 	# user needs to recover from a bad one (login, refresh, password reset). On an
 	# exempt path a cookie that fails any check is "no credentials", not a 401,
 	# otherwise a stale cookie locks the user out until it is cleared by hand.
+	# Rejections here are expected and client-triggerable, so they skip the
+	# Error Log table (a DB write per request, floodable by anyone).
+	frappe.flags.oan_quiet_reject = True
 	try:
 		_check_csrf(request)
 		_authenticate_token(token, config)
 	except (frappe.AuthenticationError, frappe.ServiceUnavailableError):
 		frappe.local.response.pop("message", None)
-		frappe.set_user("Guest")  # nosemgrep: frappe-semgrep-rules.rules.security.frappe-setuser
+	finally:
+		frappe.flags.oan_quiet_reject = False
 
 
 def _authenticate_token(token: str, config: dict) -> None:
@@ -306,5 +310,8 @@ def _reject(reason: str):
 	revoked helps them work out which half of an attempt succeeded.
 	"""
 	frappe.local.response["message"] = _("Authentication failed")
-	frappe.log_error(title="oan_auth_service: rejected request", message=reason)
+	if frappe.flags.get("oan_quiet_reject"):
+		frappe.logger("oan_auth_service").info("rejected request (exempt path): %s", reason)
+	else:
+		frappe.log_error(title="oan_auth_service: rejected request", message=reason)
 	raise frappe.AuthenticationError

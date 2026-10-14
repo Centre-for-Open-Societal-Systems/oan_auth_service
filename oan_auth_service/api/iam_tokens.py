@@ -50,11 +50,36 @@ def _iam_unavailable(detail: str) -> IAMUnavailableError:
 
 
 def _require_https(base_url: str) -> None:
-	"""Refuse to send bearer tokens to IAM over plain http. Loopback is exempt."""
+	"""Refuse to send bearer tokens to IAM over plain http.
+
+	Loopback is exempt, and `iam_allow_insecure_http` opts out for a trusted
+	in-cluster IAM.
+	"""
 	parsed = urlparse(base_url)
-	if parsed.scheme == "https" or parsed.hostname in ("localhost", "127.0.0.1", "::1"):
+	if (
+		parsed.scheme == "https"
+		or parsed.hostname in ("localhost", "127.0.0.1", "::1")
+		or settings.iam_allow_insecure_http()
+	):
 		return
+	_log_insecure_url_once(base_url)
 	raise TokenError("iam_base_url must use https")
+
+
+def _log_insecure_url_once(base_url: str) -> None:
+	"""Write one Error Log row per site per hour, not one per rejected request."""
+	key = "oan_auth:iam_insecure_url_logged"
+	if frappe.cache.get_value(key):
+		return
+	frappe.cache.set_value(key, 1, expires_in_sec=3600)
+	frappe.log_error(
+		title="oan_auth_service: iam_base_url is not https",
+		message=(
+			f"iam_base_url={base_url!r} is plain http, so every IAM-issued token is rejected. "
+			'Use an https URL, or set "iam_allow_insecure_http": true in site_config.json '
+			"if IAM is on a trusted private network."
+		),
+	)
 
 
 # Used when a token carries no readable `exp`: short enough that a revoked

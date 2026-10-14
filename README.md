@@ -127,6 +127,8 @@ Staff can sign in through the OpenG2P IAM service instead of a local password. T
 
 `iam_base_url` must be `https`: bearer tokens are sent there, so a plain `http` URL is refused (`401`). `localhost`, `127.0.0.1` and `::1` are allowed over `http` for local development.
 
+For a trusted in-cluster IAM reachable only over `http`, set `"iam_allow_insecure_http": true`. Tokens then cross the network unencrypted, so use it on a private network only. A rejected URL is logged once an hour in Error Log, not per request.
+
 `iam_auth_cookie_prefix` is optional; leave it unset unless IAM sets `common_auth_cookie_prefix`.
 
 ## Development

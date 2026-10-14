@@ -14,7 +14,8 @@ import frappe
 import jwt
 import requests
 
-from oan_auth_service.api import iam_users, middleware
+from oan_auth_service.api import iam_tokens, iam_users, middleware
+from oan_auth_service.api.iam_tokens import TokenError
 from oan_auth_service.api.middleware import validate_jwt_request
 from oan_auth_service.api.router import ensure_routes_registered
 from oan_auth_service.api.v1.auth import _resolve_login_identifier, issue_temporary_password
@@ -100,7 +101,9 @@ class TestIAMDelegatedLogin(unittest.TestCase):
 		self.subs.append(sub)
 		return sub
 
-	def _authenticate_cookies(self, cookies, method="GET", headers=None, protected=False, **conf):
+	def _authenticate_cookies(
+		self, cookies, method="GET", headers=None, protected=False, form_dict=None, **conf
+	):
 		"""`protected` makes the test path non-exempt, as every real endpoint but login-style ones."""
 		conf = {"iam_base_url": IAM_URL, "iam_application": APP, **conf}
 		env = {"HTTP_COOKIE": "; ".join(f"{k}={v}" for k, v in cookies.items())}
@@ -121,6 +124,7 @@ class TestIAMDelegatedLogin(unittest.TestCase):
 			)
 			frappe.set_user("Guest")
 			frappe.local.session = frappe._dict({"user": "Guest"})
+			frappe.local.form_dict = frappe._dict(form_dict or {})
 			validate_jwt_request(req)
 		return frappe.session.user
 
@@ -329,8 +333,15 @@ class TestIAMDelegatedLogin(unittest.TestCase):
 		valid = self.iam.issue(self._sub())
 		cookies = {"X-Access-Token": stale, "X-CSRF-Token": "abc"}
 
-		# Expired token, no CSRF header.
+		# Expired token, no CSRF header. No Error Log row on an exempt path.
+		before = frappe.db.count("Error Log")
 		self.assertEqual(self._authenticate_cookies(cookies, method="POST"), "Guest")
+		self.assertEqual(frappe.db.count("Error Log"), before)
+		# The request body must survive: the router builds endpoint args from it.
+		body = {"usr": "a@example.com", "pwd": "x"}
+		self.assertEqual(self._authenticate_cookies(cookies, method="POST", form_dict=body), "Guest")
+		self.assertEqual(frappe.form_dict.get("usr"), "a@example.com")
+		self.assertEqual(frappe.form_dict.get("pwd"), "x")
 		# Expired token, CSRF header present.
 		self.assertEqual(
 			self._authenticate_cookies(cookies, method="POST", headers={"X-CSRF-Token": "abc"}), "Guest"
@@ -344,6 +355,19 @@ class TestIAMDelegatedLogin(unittest.TestCase):
 			self._authenticate_cookies(
 				cookies, method="POST", headers={"X-CSRF-Token": "abc"}, protected=True
 			)
+
+	def test_http_iam_url_rejected_and_logged_once(self):
+		frappe.cache.delete_value("oan_auth:iam_insecure_url_logged")
+		before = frappe.db.count("Error Log", {"method": ["like", "%iam_base_url is not https%"]})
+		for _ in range(3):
+			with self.assertRaises(TokenError):
+				iam_tokens._require_https("http://iam.cluster.local")
+		after = frappe.db.count("Error Log", {"method": ["like", "%iam_base_url is not https%"]})
+		self.assertEqual(after - before, 1)
+
+	def test_http_iam_url_allowed_with_opt_out(self):
+		with override_conf(iam_allow_insecure_http=True):
+			iam_tokens._require_https("http://iam.cluster.local")
 
 	def test_non_ascii_csrf_is_rejected_not_500(self):
 		# compare_digest raises TypeError on non-ASCII str; both sides are client-controlled.

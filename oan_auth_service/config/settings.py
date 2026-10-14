@@ -105,6 +105,15 @@ def iam_base_url() -> str:
 	return (frappe.conf.get("iam_base_url") or "").rstrip("/")
 
 
+def iam_allow_insecure_http() -> bool:
+	"""Opt out of the https requirement on `iam_base_url`.
+
+	For a trusted in-cluster IAM reached over plain http. Bearer tokens then
+	cross the network unencrypted, so enable it only on a private network.
+	"""
+	return bool(frappe.conf.get("iam_allow_insecure_http"))
+
+
 def iam_application() -> str:
 	"""This app's application mnemonic in IAM: whose `client_roles` become Frappe roles.
 
