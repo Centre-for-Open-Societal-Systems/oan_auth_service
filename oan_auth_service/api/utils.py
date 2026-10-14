@@ -7,7 +7,7 @@ import math
 import re
 import uuid
 from functools import wraps
-from typing import Annotated
+from typing import Annotated, Any
 
 import frappe
 import phonenumbers
@@ -317,7 +317,7 @@ def api_doc(
 	summary: str | None = None,
 	description: str | None = None,
 	tags: list[str] | None = None,
-	response_model: type[BaseModel] | None = None,
+	response_model: Any = None,
 	deprecated: bool = False,
 ):
 	"""Attach OpenAPI metadata to an endpoint, and enforce `response_model` if given.

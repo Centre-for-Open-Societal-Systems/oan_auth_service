@@ -42,6 +42,7 @@ from frappe.utils.password import passlibctx
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from oan_auth_service.api import tokens
+from oan_auth_service.api.iam_users import is_delegated_user
 from oan_auth_service.api.router import prefixed
 from oan_auth_service.api.utils import (
 	PasswordChangeRequired,
@@ -102,12 +103,18 @@ def _resolve_login_identifier(usr: str) -> str | None:
 	silently took the first row would turn any future loss of that guarantee, to
 	a bad migration or a hand-edit, into an account-takeover path rather than an
 	error. Two rows is a bug, and it is reported as one.
+
+	Accounts provisioned by IAM-delegated login resolve to None, exactly like an
+	unknown identifier. Every password flow (login, reset, temporary password)
+	starts here, so this is the one place that keeps those accounts passwordless:
+	a password set through a reset mail would be a way in that outlives the
+	person's removal from the identity provider.
 	"""
 	for fieldname in LOGIN_HANDLE_FIELDS:
 		matches = frappe.get_all("User", filters={fieldname: usr}, pluck="name", limit=2)
 
 		if len(matches) == 1:
-			return matches[0]
+			return None if is_delegated_user(matches[0]) else matches[0]
 
 		if len(matches) > 1:
 			frappe.logger().error(
@@ -639,6 +646,9 @@ def issue_temporary_password(user: str, password: str) -> None:
 	"""
 	from frappe.utils.password import update_password
 
+	if is_delegated_user(user):
+		frappe.throw(_("This account signs in through IAM and cannot hold a password."))
+
 	validate_temporary_password(password)
 
 	update_password(user=user, pwd=password, logout_all_sessions=True)
@@ -1001,6 +1011,11 @@ def reset_password(new_password: str, key: str | None = None, usr: str | None = 
 	# the revocation below. The column stores a SHA-256 of the emailed key
 	# (user.py:491), so the raw key has to be hashed to match it.
 	user = frappe.db.get_value("User", {"reset_password_key": sha256_hash(key)}, "name")
+
+	# A key for a delegated account can only come from outside this API (e.g. a
+	# desk "reset password"); it must not become a local password anyway.
+	if is_delegated_user(user):
+		raise frappe.AuthenticationError(_("Invalid or expired reset code"))
 
 	result = frappe_update_password(new_password=new_password, key=key)
 

@@ -26,8 +26,9 @@ is a distinct Authorization scheme rather than a patch to the exception handling
 import frappe
 from frappe import _
 
-from oan_auth_service.api import tokens
+from oan_auth_service.api import iam_tokens, iam_users, tokens
 from oan_auth_service.api.jwt_keys import JWTKeyConfigurationError
+from oan_auth_service.config import settings
 from oan_auth_service.setup.install import MUST_CHANGE_PASSWORD_FIELD
 
 # namespace prefix -> config for that consumer.
@@ -121,18 +122,27 @@ def validate_jwt_request(request=None):
 			return
 		_reject("Missing bearer token")
 
+	# Dispatch on the unverified issuer: our own tokens verify in-process, any
+	# other issuer is a token from the OpenG2P IAM service, which validates it.
+	issuer = iam_tokens.peek_issuer(token)
+	delegated = issuer is not None and issuer != settings.issuer()
+
 	try:
-		claims = tokens.decode_access_token(token)
+		if delegated:
+			claims = iam_tokens.get_principal(token)
+		else:
+			claims = tokens.decode_access_token(token)
 	except JWTKeyConfigurationError:
 		# A server misconfiguration, not a bad token. Reported separately so an
 		# operator sees "we have no keys" rather than a flood of 401s that look
 		# like clients misbehaving.
 		frappe.log_error(title="oan_auth_service: JWT key material unusable")
 		frappe.throw(_("Authentication is misconfigured on this server"), frappe.ValidationError)
-	except tokens.TokenError:
-		_reject("Invalid or expired token")
+	except tokens.TokenError as exc:
+		_reject(f"Invalid or expired token: {exc}")
 
-	user = claims.get("sub")
+	# IAM's `sub` is the identity provider's id; the local user is derived from it.
+	user = _provision_delegated_user(claims) if delegated else claims.get("sub")
 	if not user or not frappe.db.exists("User", user):
 		_reject("Invalid or expired token")
 
@@ -151,7 +161,9 @@ def validate_jwt_request(request=None):
 		if reason:
 			_reject(reason)
 
-	_verify_scope_still_held(user, claims)
+	# IAM principals carry no `scope` claim of ours; their roles were just synced.
+	if not delegated:
+		_verify_scope_still_held(user, claims)
 
 	form_dict = getattr(frappe.local, "form_dict", None)
 	# Deliberately sets the authenticated request user from validated JWT claims
@@ -163,6 +175,26 @@ def validate_jwt_request(request=None):
 	# notably the `scope` claim, which this app records but cannot itself
 	# enforce against Frappe's DocPerm layer (see api/v1/auth.py:_narrow_to_scope).
 	frappe.local.oan_auth_claims = claims
+	frappe.local.oan_auth_issuer_kind = "iam" if delegated else "local"
+
+
+def _provision_delegated_user(claims: dict) -> str:
+	"""Resolve or create the local user for an IAM principal and sync its roles.
+
+	Committed here rather than left to the request: Frappe only commits unsafe
+	methods, so a GET would otherwise roll back the user it just created.
+	"""
+	try:
+		user = iam_users.resolve_user(claims)
+	except tokens.TokenError as exc:
+		_reject(f"Invalid or expired token: {exc}")
+
+	if frappe.db.get_value("User", user, "enabled"):
+		iam_users.sync_roles(user, claims)
+		# Explicit commit: provisioning must persist even on GET requests
+		frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
+
+	return user
 
 
 def _verify_scope_still_held(user: str, claims: dict) -> None:

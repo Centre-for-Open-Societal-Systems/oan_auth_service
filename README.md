@@ -104,6 +104,23 @@ required_apps = ["oan_auth_service"]
 
 so bench installs this app first and the refresh-token doctype exists before the consumer migrates. The consumer then registers its API namespace and exempt paths with `api.middleware.register_namespace()`.
 
+## Delegated login through the OpenG2P IAM service
+
+Staff can sign in through the OpenG2P IAM service instead of a local password. This app never talks to the identity provider behind IAM (Keycloak, eSignet, ...), so it does not care which one is used. The frontend runs IAM's login flow. Its server then forwards the access token as `Authorization: Bearer <token>`. The same middleware accepts it next to this app's own tokens, so consumers need no change.
+
+- **Validation.** A token whose `iss` is not this site's issuer is sent to IAM's `GET /auth/get_user_profile`. If IAM rejects it, so do we. If IAM accepts it, it returns a provider-neutral principal (`sub`, `name`, `client_roles`). The principal is cached until the token's `exp`.
+- **Identity.** The local user is `<sub>@iam.internal`, created on first login with no password. `sub` never changes when the person's email or username does.
+- **No password, ever.** Login, password reset and temporary-password flows refuse these accounts, so removing someone from the identity provider cannot leave a local way in.
+- **Roles.** IAM is the only source of these users' roles. On every request their Frappe roles are set to exactly `client_roles[iam_application]` (names used as-is, roles that do not exist in Frappe ignored).
+- **Expiry.** An access token keeps working until its `exp`, as it does in every OpenG2P service. Refreshing is the frontend's job, through IAM. To cut someone off sooner, disable their local `User`.
+
+`site_config.json`:
+
+```json
+"iam_base_url": "https://iam.example.org",
+"iam_application": "oan-grievance"
+```
+
 ## Development
 
 All commands run from `development/frappe-bench-16/`.
