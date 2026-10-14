@@ -334,9 +334,9 @@ class TestIAMDelegatedLogin(unittest.TestCase):
 		cookies = {"X-Access-Token": stale, "X-CSRF-Token": "abc"}
 
 		# Expired token, no CSRF header. No Error Log row on an exempt path.
-		before = frappe.db.count("Error Log")
-		self.assertEqual(self._authenticate_cookies(cookies, method="POST"), "Guest")
-		self.assertEqual(frappe.db.count("Error Log"), before)
+		with patch("oan_auth_service.api.middleware.frappe.log_error") as log_error:
+			self.assertEqual(self._authenticate_cookies(cookies, method="POST"), "Guest")
+			log_error.assert_not_called()
 		# The request body must survive: the router builds endpoint args from it.
 		body = {"usr": "a@example.com", "pwd": "x"}
 		self.assertEqual(self._authenticate_cookies(cookies, method="POST", form_dict=body), "Guest")
@@ -351,19 +351,21 @@ class TestIAMDelegatedLogin(unittest.TestCase):
 		self.assertEqual(self._authenticate_cookies(good, method="POST"), "Guest")
 
 		# The same stale cookie on a protected path is still a 401.
-		with self.assertRaises(frappe.AuthenticationError):
+		with (
+			patch("oan_auth_service.api.middleware.frappe.log_error"),
+			self.assertRaises(frappe.AuthenticationError),
+		):
 			self._authenticate_cookies(
 				cookies, method="POST", headers={"X-CSRF-Token": "abc"}, protected=True
 			)
 
 	def test_http_iam_url_rejected_and_logged_once(self):
 		frappe.cache.delete_value("oan_auth:iam_insecure_url_logged")
-		before = frappe.db.count("Error Log", {"method": ["like", "%iam_base_url is not https%"]})
-		for _ in range(3):
-			with self.assertRaises(TokenError):
-				iam_tokens._require_https("http://iam.cluster.local")
-		after = frappe.db.count("Error Log", {"method": ["like", "%iam_base_url is not https%"]})
-		self.assertEqual(after - before, 1)
+		with patch("oan_auth_service.api.iam_tokens.frappe.log_error") as log_error:
+			for _ in range(3):
+				with self.assertRaises(TokenError):
+					iam_tokens._require_https("http://iam.cluster.local")
+			self.assertEqual(log_error.call_count, 1)
 
 	def test_http_iam_url_allowed_with_opt_out(self):
 		with override_conf(iam_allow_insecure_http=True):
