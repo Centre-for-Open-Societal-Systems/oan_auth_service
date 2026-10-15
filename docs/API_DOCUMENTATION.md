@@ -59,14 +59,6 @@ Comprehensive API documentation for the **OAN Authentication Service** (`oan_aut
 | **Local Development**       | `http://localhost:8000`        |
 | **Production Auth Gateway** | `https://auth.openagrinet.org` |
 
-### RPC Alias Support
-
-In addition to clean REST paths, all endpoints are whitelisted and accessible via standard Frappe RPC method syntax:
-
-```http
-POST /api/method/oan_auth_service.api.v1.auth.<function_name>
-```
-
 ### Standard Request Headers
 
 | Header          | Required            | Value / Description                                                                  |

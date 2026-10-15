@@ -7,7 +7,7 @@ and builds openapi_v1.yaml and openapi_v1.public.yaml.
 
 Outputs:
   - openapi_v1.yaml: Engineering/Internal specification with vendor extensions
-    (x-legacy-rpc-method, x-schema-confidence).
+    (x-schema-confidence).
   - openapi_v1.public.yaml: Public/Gateway contract with vendor extensions stripped.
 
 Usage:
@@ -527,7 +527,6 @@ def build_openapi() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
 		inner_fn = inspect.unwrap(endpoint_fn)
 
 		func_name = inner_fn.__name__
-		legacy_target = f"{inner_fn.__module__}.{func_name}"
 
 		route_info = getattr(endpoint_fn, "_route", {})
 		api_doc_info = getattr(endpoint_fn, "_api_doc", None) or getattr(inner_fn, "_api_doc", None) or {}
@@ -613,7 +612,6 @@ def build_openapi() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
 			if parameters:
 				op["parameters"] = parameters
 
-			op["x-legacy-rpc-method"] = legacy_target
 			op["security"] = [] if allow_guest else [{"BearerAuth": []}]
 
 			if method in ("POST", "PUT", "PATCH", "DELETE") and req_schema_name:
@@ -697,7 +695,7 @@ def main() -> None:
 	# 1. Write internal spec
 	with open(INTERNAL_SPEC_OUTPUT, "w") as f:  # nosemgrep
 		f.write("# OAN Authentication Service API -- OpenAPI 3.0.3 (INTERNAL)\n")
-		f.write("# Carries internal vendor extensions (x-legacy-rpc-method).\n")
+		f.write("# Carries internal vendor extensions (x-schema-confidence).\n")
 		f.write("# Generated from generate_openapi_spec.py -- do not edit manually.\n")
 		yaml.safe_dump(doc, f, sort_keys=False, default_flow_style=False, width=100, allow_unicode=True)
 

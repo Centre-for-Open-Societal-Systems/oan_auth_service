@@ -23,11 +23,14 @@ Frappe ever makes that path throw instead of swallow, this breaks, and the fix
 is a distinct Authorization scheme rather than a patch to the exception handling.
 """
 
+import hmac
+
 import frappe
 from frappe import _
 
-from oan_auth_service.api import tokens
+from oan_auth_service.api import iam_tokens, iam_users, tokens
 from oan_auth_service.api.jwt_keys import JWTKeyConfigurationError
+from oan_auth_service.config import settings
 from oan_auth_service.setup.install import MUST_CHANGE_PASSWORD_FIELD
 
 # namespace prefix -> config for that consumer.
@@ -91,6 +94,32 @@ def _bearer_token() -> str | None:
 	return parts[1].strip() or None
 
 
+_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+def _cookie_session_token(request) -> str | None:
+	"""The access token from the access cookie, used when there is no Authorization header."""
+	return request.cookies.get(iam_tokens.cookie_name(iam_tokens.ACCESS_COOKIE)) or None
+
+
+def _check_csrf(request) -> None:
+	"""Double-submit check for cookie-authenticated, state-changing requests.
+
+	A browser attaches cookies by itself, so a cookie alone proves nothing about
+	who made the request. IAM's CSRF token is readable by the page but not by
+	another site: the header must repeat the cookie. Bearer requests are exempt,
+	nothing attaches an Authorization header automatically.
+	"""
+	if request.method in _SAFE_METHODS:
+		return
+	header = request.headers.get(iam_tokens.CSRF_HEADER) or ""
+	cookie = request.cookies.get(iam_tokens.cookie_name(iam_tokens.CSRF_COOKIE)) or ""
+	# Bytes, not str: compare_digest raises TypeError on a non-ASCII str, which
+	# a client controls, and that would surface as a 500 instead of a 401.
+	if not header or not hmac.compare_digest(header.encode(), cookie.encode()):
+		_reject("CSRF token missing or mismatched")
+
+
 def validate_jwt_request(request=None):
 	"""Entry point registered as `auth_hooks` in hooks.py."""
 	# No installed-app check: Frappe only runs auth_hooks of apps installed on
@@ -115,24 +144,68 @@ def validate_jwt_request(request=None):
 
 	is_exempt = path in config["exempt_paths"] or path.rstrip("/") in config["exempt_paths"]
 
+	# Transport only decides whether CSRF applies; the issuer alone decides how
+	# the token is verified.
 	token = _bearer_token()
+	if token:
+		_authenticate_token(token, config)
+		return
+
+	token = _cookie_session_token(request)
 	if not token:
 		if is_exempt:
 			return
 		_reject("Missing bearer token")
 
+	if not is_exempt:
+		_check_csrf(request)
+		_authenticate_token(token, config)
+		return
+
+	# A browser sends its cookie on every request, including to the endpoints a
+	# user needs to recover from a bad one (login, refresh, password reset). On an
+	# exempt path a cookie that fails any check is "no credentials", not a 401,
+	# otherwise a stale cookie locks the user out until it is cleared by hand.
+	# Rejections here are expected and client-triggerable, so they skip the
+	# Error Log table (a DB write per request, floodable by anyone).
+	frappe.flags.oan_quiet_reject = True
 	try:
-		claims = tokens.decode_access_token(token)
+		_check_csrf(request)
+		_authenticate_token(token, config)
+	except (frappe.AuthenticationError, frappe.ServiceUnavailableError):
+		frappe.local.response.pop("message", None)
+	finally:
+		frappe.flags.oan_quiet_reject = False
+
+
+def _authenticate_token(token: str, config: dict) -> None:
+	"""Verify `token` and, when valid, make its user the request user."""
+	# Dispatch on the unverified issuer: our own tokens verify in-process, any
+	# other issuer is a token from the OpenG2P IAM service, which validates it.
+	issuer = iam_tokens.peek_issuer(token)
+	delegated = issuer is not None and issuer != settings.issuer()
+
+	try:
+		if delegated:
+			claims = iam_tokens.get_principal(token)
+		else:
+			claims = tokens.decode_access_token(token)
 	except JWTKeyConfigurationError:
 		# A server misconfiguration, not a bad token. Reported separately so an
 		# operator sees "we have no keys" rather than a flood of 401s that look
 		# like clients misbehaving.
 		frappe.log_error(title="oan_auth_service: JWT key material unusable")
 		frappe.throw(_("Authentication is misconfigured on this server"), frappe.ValidationError)
-	except tokens.TokenError:
-		_reject("Invalid or expired token")
+	except iam_tokens.IAMUnavailableError:
+		# Not a verdict on the token: a 503 tells the frontend to retry, where a
+		# 401 would log the user out. Already logged (rate-limited) by iam_tokens.
+		frappe.local.response["message"] = _("Identity service unavailable")
+		raise frappe.ServiceUnavailableError
+	except tokens.TokenError as exc:
+		_reject(f"Invalid or expired token: {exc}")
 
-	user = claims.get("sub")
+	# IAM's `sub` is the identity provider's id; the local user is derived from it.
+	user = _provision_delegated_user(claims) if delegated else claims.get("sub")
 	if not user or not frappe.db.exists("User", user):
 		_reject("Invalid or expired token")
 
@@ -151,7 +224,9 @@ def validate_jwt_request(request=None):
 		if reason:
 			_reject(reason)
 
-	_verify_scope_still_held(user, claims)
+	# IAM principals carry no `scope` claim of ours; their roles were just synced.
+	if not delegated:
+		_verify_scope_still_held(user, claims)
 
 	form_dict = getattr(frappe.local, "form_dict", None)
 	# Deliberately sets the authenticated request user from validated JWT claims
@@ -163,6 +238,51 @@ def validate_jwt_request(request=None):
 	# notably the `scope` claim, which this app records but cannot itself
 	# enforce against Frappe's DocPerm layer (see api/v1/auth.py:_narrow_to_scope).
 	frappe.local.oan_auth_claims = claims
+	frappe.local.oan_auth_issuer_kind = "iam" if delegated else "local"
+
+
+def _provision_delegated_user(claims: dict) -> str:
+	"""Resolve or create the local user for an IAM principal and sync its roles.
+
+	On safe methods (GET, HEAD, OPTIONS) it commits, and only when a user was
+	created or roles changed: Frappe only commits unsafe methods, so a GET would
+	otherwise roll back the user it just created.
+	"""
+	try:
+		sub = claims.get("sub")
+		if not sub or not isinstance(sub, str):
+			raise tokens.TokenError("Principal has no sub")
+		user = iam_users.user_name_for_sub(sub)
+		if not iam_users.granted_roles(claims):
+			# No role for this app: never create the user. An existing user
+			# that lost its last role is stripped before the request is refused.
+			# The strip persists only on safe methods, where it is committed here.
+			# On POST/PUT/DELETE Frappe rolls back the rejected request, so the
+			# strip is undone and the user stays blocked (no roles in the IAM
+			# answer) until their next safe-method request commits it.
+			if frappe.db.exists("User", user) and iam_users.sync_roles(user, claims) and _is_safe_method():
+				frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
+			_reject(f"Principal {sub} has no roles for this application")
+		created = not frappe.db.exists("User", user)
+		iam_users.resolve_user(claims)
+	except tokens.TokenError as exc:
+		_reject(f"Invalid or expired token: {exc}")
+
+	changed = created
+	if frappe.db.get_value("User", user, "enabled"):
+		changed = iam_users.sync_roles(user, claims) or created
+	if changed and _is_safe_method():
+		# Frappe rolls back safe methods, which would undo the provisioning. For
+		# unsafe methods it commits on success and rolls back on failure, which
+		# is the right outcome for provisioning too.
+		frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
+
+	return user
+
+
+def _is_safe_method() -> bool:
+	request = getattr(frappe.local, "request", None)
+	return request is not None and request.method in ("GET", "HEAD", "OPTIONS")
 
 
 def _verify_scope_still_held(user: str, claims: dict) -> None:
@@ -190,5 +310,8 @@ def _reject(reason: str):
 	revoked helps them work out which half of an attempt succeeded.
 	"""
 	frappe.local.response["message"] = _("Authentication failed")
-	frappe.log_error(title="oan_auth_service: rejected request", message=reason)
+	if frappe.flags.get("oan_quiet_reject"):
+		frappe.logger("oan_auth_service").info("rejected request (exempt path): %s", reason)
+	else:
+		frappe.log_error(title="oan_auth_service: rejected request", message=reason)
 	raise frappe.AuthenticationError

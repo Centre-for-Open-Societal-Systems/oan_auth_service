@@ -25,10 +25,7 @@ how tokens are signed RS256 so verifiers never hold a key that can mint.
 
 ## Three kinds of versioning
 
-**1. API contract — `api/v1/`.** Endpoints are exposed via clean, Werkzeug-based RESTful routes as well as standard Frappe RPC paths:
-
-- REST route: `POST /api/v1/auth/login`
-- RPC alias: `POST /api/method/oan_auth_service.api.v1.auth.login`
+**1. API contract — `api/v1/`.** Endpoints are exposed only as Werkzeug-based REST routes, e.g. `POST /api/v1/auth/login`. There is no `/api/method/` RPC alias.
 
 A breaking change to the login or refresh contract ships as `api/v2/` alongside `v1`, letting consumers migrate on their own schedule.
 
@@ -103,6 +100,36 @@ required_apps = ["oan_auth_service"]
 ```
 
 so bench installs this app first and the refresh-token doctype exists before the consumer migrates. The consumer then registers its API namespace and exempt paths with `api.middleware.register_namespace()`.
+
+## Delegated login through the OpenG2P IAM service
+
+Staff can sign in through the OpenG2P IAM service instead of a local password. This app never talks to the identity provider behind IAM (Keycloak, eSignet, ...), so it does not care which one is used. The frontend runs IAM's login flow. Its server then forwards the access token as `Authorization: Bearer <token>`. The same middleware accepts it next to this app's own tokens, so consumers need no change.
+
+- **Validation.** A token whose `iss` is not this site's issuer is sent to IAM's `GET /auth/get_user_profile`. If IAM rejects it, so do we. If IAM accepts it, it returns a provider-neutral principal (`sub`, `name`, `client_roles`). The principal is cached until the token's `exp`.
+- **Identity.** The local user is `<sha256(sub)[:32]>@iam.internal` (valid for any `sub`, case-sensitive), created on first login with no password. `sub` never changes when the person's email or username does.
+- **No password, ever.** Login, password reset and temporary-password flows refuse these accounts, so removing someone from the identity provider cannot leave a local way in.
+- **Roles.** IAM is the only source of these users' roles. Their Frappe roles are set to exactly `client_roles[iam_application]` (names used as-is, roles that do not exist in Frappe ignored). There is no allowlist: whoever administers this app's client in IAM can grant any existing Frappe role, including `System Manager`. See "Known limits" in `docs/IAM_DELEGATED_LOGIN_PLAN.md`. IAM's answer is cached until the token's `exp`, so a role change in IAM applies when the user gets a new token, not on the next request.
+- **Bearer or cookie.** `Authorization: Bearer <token>` is the primary path and the only one for mobile and server-to-server callers. A browser may instead send the access token in the `X-Access-Token` cookie and no Authorization header. Where the token comes from only decides whether CSRF applies; its `iss` alone decides how it is verified, so the cookie may carry an IAM token or one of this app's own. Then:
+  - an expired token gets a `401`, the same as over Bearer. Refreshing is the client's job (through IAM for IAM tokens); this app never refreshes or sets cookies;
+  - state-changing requests (anything but GET, HEAD, OPTIONS) must repeat the `X-CSRF-Token` cookie as an `X-CSRF-Token` header;
+  - the browser must send IAM's cookies to this host (IAM's cookie `Domain` has to cover it) and the API must allow credentialed CORS for the frontend origin; neither is configured by this app;
+  - cookie names are IAM's, with `iam_auth_cookie_prefix` applied the way iam_core applies `auth_cookie_prefix`. Set it to the same value as the IAM deployment whose cookies reach this app (its `common_auth_cookie_prefix`); the default `""` matches IAM's default. The `X-CSRF-Token` header is never prefixed.
+- **IAM outage.** If IAM is unreachable, times out or answers 5xx, the request gets a `503`, not a `401`, so a frontend retries instead of logging the user out. The outage is logged once a minute, not once per request.
+- **Expiry.** A Bearer access token keeps working until its `exp`, as it does in every OpenG2P service. Refreshing a Bearer token is the caller's job, through IAM. To cut someone off sooner, disable their local `User`.
+
+`site_config.json`:
+
+```json
+"iam_base_url": "https://iam.example.org",
+"iam_application": "oan-grievance",
+"iam_auth_cookie_prefix": ""
+```
+
+`iam_base_url` must be `https`: bearer tokens are sent there, so a plain `http` URL is refused (`401`). `localhost`, `127.0.0.1` and `::1` are allowed over `http` for local development.
+
+For a trusted in-cluster IAM reachable only over `http`, set `"iam_allow_insecure_http": true`. Tokens then cross the network unencrypted, so use it on a private network only. A rejected URL is logged once an hour in Error Log, not per request.
+
+`iam_auth_cookie_prefix` is optional; leave it unset unless IAM sets `common_auth_cookie_prefix`.
 
 ## Development
 

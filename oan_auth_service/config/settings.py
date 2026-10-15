@@ -14,7 +14,13 @@ Configuration (site_config.json), all optional:
     "password_reset_otp_ttl": 600,
     "password_reset_otp_length": 6,
     "password_reset_otp_max_attempts": 5,
-    "jwt_self_registerable_roles": []
+    "jwt_self_registerable_roles": [],
+    "iam_base_url": "https://iam.example.org",
+    "iam_application": "oan-grievance",
+    "iam_auth_cookie_prefix": ""
+
+The `iam_*` keys configure login delegated to the OpenG2P IAM service; see
+api/iam_tokens.py and api/iam_users.py.
 """
 
 import frappe
@@ -92,3 +98,36 @@ def enforce_https() -> bool:
 def self_registerable_roles() -> list[str]:
 	"""List of roles permitted for self-registration by guest callers."""
 	return list(frappe.conf.get("jwt_self_registerable_roles") or [])
+
+
+def iam_base_url() -> str:
+	"""Base URL of the OpenG2P IAM API that validates delegated-login tokens."""
+	return (frappe.conf.get("iam_base_url") or "").rstrip("/")
+
+
+def iam_allow_insecure_http() -> bool:
+	"""Opt out of the https requirement on `iam_base_url`.
+
+	For a trusted in-cluster IAM reached over plain http. Bearer tokens then
+	cross the network unencrypted, so enable it only on a private network.
+	"""
+	return bool(frappe.conf.get("iam_allow_insecure_http"))
+
+
+def iam_application() -> str:
+	"""This app's application mnemonic in IAM: whose `client_roles` become Frappe roles.
+
+	The same identifier the registries configure as their client id. Roles IAM
+	lists under other applications are ignored.
+	"""
+	return frappe.conf.get("iam_application") or ""
+
+
+def iam_auth_cookie_prefix() -> str:
+	"""Prefix on IAM's auth cookie names, mirroring iam_core's `auth_cookie_prefix`.
+
+	Must hold the same value as the IAM deployment whose cookies reach this app
+	(its `common_auth_cookie_prefix` env). Empty, the default, means IAM's
+	unprefixed names.
+	"""
+	return frappe.conf.get("iam_auth_cookie_prefix") or ""
