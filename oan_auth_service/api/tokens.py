@@ -33,6 +33,9 @@ from oan_auth_service.config import settings
 
 ACCESS_TOKEN_TYPE = "access"
 
+# Set by this module; an `on_access_token_claims` hook may not replace them.
+RESERVED_CLAIMS = frozenset({"iss", "sub", "iat", "exp", "typ", "jti", "roles", "scope"})
+
 # 32 bytes of CSPRNG output, url-safe base64 encoded.
 REFRESH_TOKEN_BYTES = 32
 
@@ -74,6 +77,13 @@ def issue_access_token(user: str, roles: list[str], scope: list[str] | None = No
 
 	if scope is not None:
 		claims["scope"] = scope
+
+	# Consuming apps add claims their own clients read straight from the token
+	# (for example a user type used for routing). Registered claims are not theirs
+	# to override.
+	for hook_path in frappe.get_hooks("on_access_token_claims"):
+		extra = frappe.get_attr(hook_path)(user=user, roles=roles) or {}
+		claims.update({k: v for k, v in extra.items() if k not in RESERVED_CLAIMS})
 
 	token = jwt.encode(claims, private_key, algorithm=ALGORITHM, headers={"kid": kid})
 	return token, ttl

@@ -5,13 +5,13 @@ info:
   title: OAN Authentication Service API
   version: 1.0.0
   description: JWT authentication and user lifecycle service for OpenAgriNet (OAN). Provides RESTful endpoints
-    for user registration, login, token refresh, logout, password recovery, identity introspection, and
-    metadata aggregation.
+    for user registration, login, token refresh, logout, password recovery, identity introspection, metadata
+    aggregation, and admin user and role management.
   contact:
     name: COSS - Centre for Open Societal Systems
 servers:
-- url: http://localhost:8000
-  description: Local Frappe Bench
+- url: http://localhost:9080
+  description: Local APISIX gateway
 - url: https://auth.openagrinet.org
   description: Production Auth Gateway
 tags:
@@ -23,8 +23,12 @@ tags:
   description: User profile introspection and claims
 - name: System & Keys
   description: Health check, public key discovery, and metadata
+- name: Admin
+  description: User and role management. Requires System Manager or Administrator.
+- name: Notifications
+  description: Operations for Notifications
 paths:
-  /api/v1/auth/login:
+  /v1/auth/login:
     post:
       tags:
       - Authentication & Session
@@ -58,7 +62,7 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/LoginRequest'
-  /api/v1/auth/register:
+  /v1/auth/register:
     post:
       tags:
       - Authentication & Session
@@ -94,7 +98,7 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/RegisterRequest'
-  /api/v1/auth/refresh:
+  /v1/auth/refresh:
     post:
       tags:
       - Authentication & Session
@@ -128,7 +132,7 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/RefreshTokenRequest'
-  /api/v1/auth/logout:
+  /v1/auth/logout:
     post:
       tags:
       - Authentication & Session
@@ -161,7 +165,7 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/LogoutRequest'
-  /api/v1/auth/password/initial:
+  /v1/auth/password/initial:
     post:
       tags:
       - Password Recovery
@@ -196,7 +200,7 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/SetInitialPasswordRequest'
-  /api/v1/auth/forgot-password:
+  /v1/auth/forgot-password:
     post:
       tags:
       - Password Recovery
@@ -230,7 +234,7 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/ForgotPasswordRequest'
-  /api/v1/auth/password/forgot:
+  /v1/auth/password/forgot:
     post:
       tags:
       - Password Recovery
@@ -263,7 +267,7 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/ForgotPasswordRequest'
-  /api/v1/auth/reset-password:
+  /v1/auth/reset-password:
     post:
       tags:
       - Password Recovery
@@ -297,7 +301,7 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/ResetPasswordRequest'
-  /api/v1/auth/password/reset:
+  /v1/auth/password/reset:
     post:
       tags:
       - Password Recovery
@@ -331,7 +335,7 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/ResetPasswordRequest'
-  /api/v1/auth/me:
+  /v1/auth/me:
     get:
       tags:
       - Identity & Profile
@@ -366,7 +370,7 @@ paths:
                 $ref: '#/components/schemas/StandardErrorResponse'
       security:
       - BearerAuth: []
-  /api/v1/auth/keys:
+  /v1/auth/keys:
     get:
       tags:
       - System & Keys
@@ -393,7 +397,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/StandardErrorResponse'
       security: []
-  /api/v1/auth/health:
+  /v1/auth/health:
     get:
       tags:
       - System & Keys
@@ -420,7 +424,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/StandardErrorResponse'
       security: []
-  /api/v1/auth/metadata:
+  /v1/auth/metadata:
     get:
       tags:
       - System & Keys
@@ -447,6 +451,821 @@ paths:
               schema:
                 $ref: '#/components/schemas/StandardErrorResponse'
       security: []
+  /v1/admin/users:
+    get:
+      tags:
+      - Admin
+      summary: 'Admin: list users'
+      description: List user accounts, newest first. Filter by free-text `search`, exact `email` or `phone_number`,
+        `role` and `enabled`.
+      operationId: get_api_v1_admin_users
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUserListResponse'
+        '400':
+          description: Validation or Client Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '401':
+          description: Unauthorized / Authentication Required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '403':
+          description: Caller lacks System Manager / Administrator, or the target account is protected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      parameters:
+      - name: page
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+      - name: page_size
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 20
+      - name: search
+        in: query
+        schema:
+          type: string
+        description: Substring of name, user id, login email or mobile
+      - name: email
+        in: query
+        schema:
+          type: string
+          format: email
+        description: Exact login email
+      - name: phone_number
+        in: query
+        schema:
+          type: string
+        description: Exact mobile number, E.164
+      - name: role
+        in: query
+        schema:
+          type: string
+        description: Holds this role
+      - name: enabled
+        in: query
+        schema:
+          type: boolean
+      security:
+      - BearerAuth: []
+    post:
+      tags:
+      - Admin
+      summary: 'Admin: onboard a user'
+      description: Create an account with any roles and a temporary password the user must replace at
+        first sign-in. No tokens are issued. A generated temporary password is returned once, in the response.
+      operationId: post_api_v1_admin_users
+      responses:
+        '201':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminCreatedUserResponse'
+          headers:
+            Location:
+              description: URL of the created resource
+              schema:
+                type: string
+        '400':
+          description: Validation or Client Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '401':
+          description: Unauthorized / Authentication Required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '403':
+          description: Caller lacks System Manager / Administrator, or the target account is protected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      security:
+      - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminCreateUserRequest'
+  /v1/admin/users/{user_id}:
+    get:
+      tags:
+      - Admin
+      summary: 'Admin: get a user'
+      description: Account details, roles and app-specific profiles of any user.
+      operationId: get_api_v1_admin_users_user_id
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUserDetailResponse'
+        '400':
+          description: Validation or Client Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '401':
+          description: Unauthorized / Authentication Required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '403':
+          description: Caller lacks System Manager / Administrator, or the target account is protected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '404':
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: User Id parameter
+      security:
+      - BearerAuth: []
+    patch:
+      tags:
+      - Admin
+      summary: 'Admin: update a user'
+      description: Change name, login email, mobile number or enabled status. Only the fields sent are
+        changed. Disabling revokes every refresh token.
+      operationId: patch_api_v1_admin_users_user_id
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUserResponse'
+        '400':
+          description: Validation or Client Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '401':
+          description: Unauthorized / Authentication Required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '403':
+          description: Caller lacks System Manager / Administrator, or the target account is protected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '404':
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: User Id parameter
+      security:
+      - BearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminUpdateUserRequest'
+  /v1/admin/users/{user_id}/temporary-password:
+    post:
+      tags:
+      - Admin
+      summary: 'Admin: issue a temporary password'
+      description: Set a temporary password the user must replace before signing in, ending every existing
+        session. A generated password is returned once, in the response.
+      operationId: post_api_v1_admin_users_user_id_temporary_password
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminTemporaryPasswordResponse'
+        '400':
+          description: Validation or Client Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '401':
+          description: Unauthorized / Authentication Required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '403':
+          description: Caller lacks System Manager / Administrator, or the target account is protected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '404':
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: User Id parameter
+      security:
+      - BearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminTemporaryPasswordRequest'
+  /v1/admin/users/{user_id}/sessions:
+    delete:
+      tags:
+      - Admin
+      summary: 'Admin: revoke a user''s sessions'
+      description: Delete every refresh token the user holds. Access tokens already issued stay valid
+        until they expire.
+      operationId: delete_api_v1_admin_users_user_id_sessions
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminSessionsRevokedResponse'
+        '400':
+          description: Validation or Client Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '401':
+          description: Unauthorized / Authentication Required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '403':
+          description: Caller lacks System Manager / Administrator, or the target account is protected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '404':
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: User Id parameter
+      security:
+      - BearerAuth: []
+  /v1/admin/roles:
+    get:
+      tags:
+      - Admin
+      summary: 'Admin: list assignable roles'
+      description: Every enabled role that can be granted through this API.
+      operationId: get_api_v1_admin_roles
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminRoleListResponse'
+        '400':
+          description: Validation or Client Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '401':
+          description: Unauthorized / Authentication Required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '403':
+          description: Caller lacks System Manager / Administrator, or the target account is protected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      security:
+      - BearerAuth: []
+  /v1/admin/users/{user_id}/roles:
+    get:
+      tags:
+      - Admin
+      summary: 'Admin: list a user''s roles'
+      description: Roles granted to the user, without the ones every user holds implicitly.
+      operationId: get_api_v1_admin_users_user_id_roles
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUserRolesResponse'
+        '400':
+          description: Validation or Client Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '401':
+          description: Unauthorized / Authentication Required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '403':
+          description: Caller lacks System Manager / Administrator, or the target account is protected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '404':
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: User Id parameter
+      security:
+      - BearerAuth: []
+    post:
+      tags:
+      - Admin
+      summary: 'Admin: grant roles'
+      description: Add roles to a user. Roles already held are ignored. The user's refresh tokens are
+        revoked so the next token carries the new roles.
+      operationId: post_api_v1_admin_users_user_id_roles
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUserRolesResponse'
+        '400':
+          description: Validation or Client Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '401':
+          description: Unauthorized / Authentication Required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '403':
+          description: Caller lacks System Manager / Administrator, or the target account is protected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '404':
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: User Id parameter
+      security:
+      - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminRolesRequest'
+  /v1/admin/users/{user_id}/roles/{role}:
+    delete:
+      tags:
+      - Admin
+      summary: 'Admin: revoke a role'
+      description: Remove one role from a user. The user's refresh tokens are revoked; access tokens already
+        issued keep the old role claim until they expire.
+      operationId: delete_api_v1_admin_users_user_id_roles_role
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUserRolesResponse'
+        '400':
+          description: Validation or Client Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '401':
+          description: Unauthorized / Authentication Required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '403':
+          description: Caller lacks System Manager / Administrator, or the target account is protected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '404':
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: User Id parameter
+      - name: role
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Role parameter
+      security:
+      - BearerAuth: []
+  /v1/notifications:
+    get:
+      tags:
+      - Notifications
+      summary: List my notifications
+      description: Newest first, for the caller only. `status` is unread, read or all. `unread_count`
+        ignores the filter and drives the badge.
+      operationId: get_api_v1_notifications
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '400':
+          description: Validation or Client Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '401':
+          description: Unauthorized / Authentication Required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      security:
+      - BearerAuth: []
+    patch:
+      tags:
+      - Notifications
+      summary: Mark many of my notifications read or unread
+      description: Send `ids` or `all=true`, plus `read` (default true).
+      operationId: patch_api_v1_notifications
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '400':
+          description: Validation or Client Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '401':
+          description: Unauthorized / Authentication Required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      security:
+      - BearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BulkUpdateSchema'
+    delete:
+      tags:
+      - Notifications
+      summary: Delete many of my notifications
+      description: Send `ids` or `all=true`.
+      operationId: delete_api_v1_notifications
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '400':
+          description: Validation or Client Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '401':
+          description: Unauthorized / Authentication Required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      security:
+      - BearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BulkSchema'
+  /v1/notifications/{notification_id}:
+    get:
+      tags:
+      - Notifications
+      summary: Get one of my notifications
+      description: Get one of my notifications
+      operationId: get_api_v1_notifications_notification_id
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '400':
+          description: Validation or Client Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '401':
+          description: Unauthorized / Authentication Required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      parameters:
+      - name: notification_id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Notification Id parameter
+      security:
+      - BearerAuth: []
+    patch:
+      tags:
+      - Notifications
+      summary: Mark one of my notifications read or unread
+      description: Mark one of my notifications read or unread
+      operationId: patch_api_v1_notifications_notification_id
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '400':
+          description: Validation or Client Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '401':
+          description: Unauthorized / Authentication Required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      parameters:
+      - name: notification_id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Notification Id parameter
+      security:
+      - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateNotificationSchema'
+    delete:
+      tags:
+      - Notifications
+      summary: Delete one of my notifications
+      description: Delete one of my notifications
+      operationId: delete_api_v1_notifications_notification_id
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '400':
+          description: Validation or Client Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '401':
+          description: Unauthorized / Authentication Required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      parameters:
+      - name: notification_id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Notification Id parameter
+      security:
+      - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NotificationRefSchema'
 components:
   securitySchemes:
     BearerAuth:
@@ -700,6 +1519,341 @@ components:
           description: Status confirmation message
       required:
       - message
+    AdminUserData:
+      type: object
+      properties:
+        user:
+          type: string
+          example: 3f9c0a1b2d4e5f60@id.openagrinet.internal
+          description: User id
+        first_name:
+          type: string
+          nullable: true
+        last_name:
+          type: string
+          nullable: true
+        full_name:
+          type: string
+          nullable: true
+        login_email:
+          type: string
+          format: email
+          nullable: true
+        mobile_no:
+          type: string
+          nullable: true
+          description: E.164
+        country_code:
+          type: string
+          example: '+251'
+          nullable: true
+        phone_number:
+          type: string
+          example: '911223344'
+          nullable: true
+          description: National subscriber number
+        roles:
+          type: array
+          items:
+            type: string
+          description: Granted roles, without the implicit ones
+        enabled:
+          type: boolean
+        must_change_password:
+          type: boolean
+          description: Holds a temporary password that must be replaced
+        is_delegated:
+          type: boolean
+          description: Signs in through the IAM service; roles are managed there
+        creation:
+          type: string
+          description: Creation timestamp
+      required:
+      - user
+      - roles
+      - enabled
+      - must_change_password
+      - is_delegated
+      description: A user account as admins see it
+    AdminUserDetailData:
+      type: object
+      properties:
+        user:
+          type: string
+          example: 3f9c0a1b2d4e5f60@id.openagrinet.internal
+          description: User id
+        first_name:
+          type: string
+          nullable: true
+        last_name:
+          type: string
+          nullable: true
+        full_name:
+          type: string
+          nullable: true
+        login_email:
+          type: string
+          format: email
+          nullable: true
+        mobile_no:
+          type: string
+          nullable: true
+          description: E.164
+        country_code:
+          type: string
+          example: '+251'
+          nullable: true
+        phone_number:
+          type: string
+          example: '911223344'
+          nullable: true
+          description: National subscriber number
+        roles:
+          type: array
+          items:
+            type: string
+          description: Granted roles, without the implicit ones
+        enabled:
+          type: boolean
+        must_change_password:
+          type: boolean
+          description: Holds a temporary password that must be replaced
+        is_delegated:
+          type: boolean
+          description: Signs in through the IAM service; roles are managed there
+        creation:
+          type: string
+          description: Creation timestamp
+        profiles:
+          type: object
+          properties: {}
+          additionalProperties: true
+          description: App-specific profiles from on_user_profile hooks
+      required:
+      - user
+      - roles
+      - enabled
+      - must_change_password
+      - is_delegated
+      description: A user account with app-specific profiles
+    AdminCreatedUserData:
+      type: object
+      properties:
+        user:
+          type: string
+          example: 3f9c0a1b2d4e5f60@id.openagrinet.internal
+          description: User id
+        first_name:
+          type: string
+          nullable: true
+        last_name:
+          type: string
+          nullable: true
+        full_name:
+          type: string
+          nullable: true
+        login_email:
+          type: string
+          format: email
+          nullable: true
+        mobile_no:
+          type: string
+          nullable: true
+          description: E.164
+        country_code:
+          type: string
+          example: '+251'
+          nullable: true
+        phone_number:
+          type: string
+          example: '911223344'
+          nullable: true
+          description: National subscriber number
+        roles:
+          type: array
+          items:
+            type: string
+          description: Granted roles, without the implicit ones
+        enabled:
+          type: boolean
+        must_change_password:
+          type: boolean
+          description: Holds a temporary password that must be replaced
+        is_delegated:
+          type: boolean
+          description: Signs in through the IAM service; roles are managed there
+        creation:
+          type: string
+          description: Creation timestamp
+        temporary_password:
+          type: string
+          format: password
+          description: Present only when generated by the server. Shown once; hand it to the user.
+      required:
+      - user
+      - roles
+      - enabled
+      - must_change_password
+      - is_delegated
+      description: The created account
+    AdminUserRolesData:
+      type: object
+      properties:
+        user:
+          type: string
+        roles:
+          type: array
+          items:
+            type: string
+      required:
+      - user
+      - roles
+    AdminRoleItem:
+      type: object
+      properties:
+        name:
+          type: string
+          example: System Manager
+        desk_access:
+          type: integer
+          enum:
+          - 0
+          - 1
+      required:
+      - name
+    AdminSessionsRevokedData:
+      type: object
+      properties:
+        user:
+          type: string
+        revoked_sessions:
+          type: integer
+          description: Refresh tokens deleted
+      required:
+      - user
+      - revoked_sessions
+    AdminTemporaryPasswordData:
+      type: object
+      properties:
+        user:
+          type: string
+        temporary_password:
+          type: string
+          format: password
+          description: Present only when generated by the server. Shown once.
+      required:
+      - user
+    PaginationMeta:
+      type: object
+      properties:
+        page:
+          type: integer
+        page_size:
+          type: integer
+        total_count:
+          type: integer
+        total_pages:
+          type: integer
+        has_next:
+          type: boolean
+        has_prev:
+          type: boolean
+      required:
+      - page
+      - page_size
+      - total_count
+      - total_pages
+      - has_next
+      - has_prev
+    ListNotificationsSchema:
+      properties:
+        page:
+          default: 1
+          description: Page number, 1-indexed
+          minimum: 1
+          title: Page
+          type: integer
+        page_size:
+          default: 20
+          description: Items per page
+          maximum: 100
+          minimum: 1
+          title: Page Size
+          type: integer
+        status:
+          default: all
+          description: Filter by read state
+          pattern: ^(unread|read|all)$
+          title: Status
+          type: string
+      title: ListNotificationsSchema
+      type: object
+    NotificationRefSchema:
+      properties:
+        notification_id:
+          minLength: 1
+          title: Notification Id
+          type: string
+      required:
+      - notification_id
+      title: NotificationRefSchema
+      type: object
+    UpdateNotificationSchema:
+      properties:
+        notification_id:
+          minLength: 1
+          title: Notification Id
+          type: string
+        read:
+          description: true marks read, false marks unread
+          title: Read
+          type: boolean
+      required:
+      - notification_id
+      - read
+      title: UpdateNotificationSchema
+      type: object
+    BulkUpdateSchema:
+      properties:
+        ids:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: string
+          - type: 'null'
+          default: null
+          description: Notification ids, list or comma-separated
+          title: Ids
+        all:
+          default: false
+          title: All
+          type: boolean
+        read:
+          default: true
+          description: true marks read, false marks unread
+          title: Read
+          type: boolean
+      title: BulkUpdateSchema
+      type: object
+    BulkSchema:
+      properties:
+        ids:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: string
+          - type: 'null'
+          default: null
+          description: Notification ids, list or comma-separated
+          title: Ids
+        all:
+          default: false
+          title: All
+          type: boolean
+      title: BulkSchema
+      type: object
     RegisterRequest:
       type: object
       properties:
@@ -850,6 +2004,96 @@ components:
       - current_password
       - new_password
       description: Replace a temporary password. No token is needed or issued; sign in afterwards.
+    AdminCreateUserRequest:
+      type: object
+      properties:
+        full_name:
+          type: string
+          minLength: 1
+          maxLength: 140
+        email:
+          type: string
+          format: email
+          nullable: true
+          description: Login email
+        phone_number:
+          type: string
+          nullable: true
+          description: E.164, or national digits when country_code is provided
+        country_code:
+          type: string
+          example: '+251'
+          nullable: true
+        roles:
+          type: array
+          items:
+            type: string
+          nullable: true
+          description: Defaults to jwt_default_registration_role
+        temporary_password:
+          type: string
+          format: password
+          minLength: 8
+          maxLength: 128
+          nullable: true
+          description: At least 8 characters with a letter and a digit. Generated and returned once when
+            omitted.
+      additionalProperties: true
+      required:
+      - full_name
+      description: Provide email, phone_number or both. Extra fields are passed to on_user_registered
+        hooks.
+    AdminUpdateUserRequest:
+      type: object
+      properties:
+        first_name:
+          type: string
+          minLength: 1
+          maxLength: 140
+        last_name:
+          type: string
+          maxLength: 140
+          nullable: true
+        email:
+          type: string
+          format: email
+          nullable: true
+          description: Empty or null clears it
+        phone_number:
+          type: string
+          nullable: true
+          description: Empty or null clears it
+        country_code:
+          type: string
+          example: '+251'
+          nullable: true
+        enabled:
+          type: boolean
+          description: false disables the account and revokes its refresh tokens
+      description: Only the fields sent are changed.
+    AdminRolesRequest:
+      type: object
+      properties:
+        roles:
+          type: array
+          items:
+            type: string
+          minItems: 1
+          example:
+          - Customer
+      required:
+      - roles
+    AdminTemporaryPasswordRequest:
+      type: object
+      properties:
+        temporary_password:
+          type: string
+          format: password
+          minLength: 8
+          maxLength: 128
+          nullable: true
+          description: At least 8 characters with a letter and a digit. Generated and returned once when
+            omitted.
     TokenPairResponse:
       type: object
       properties:
@@ -1000,6 +2244,213 @@ components:
       - status
       - data
       description: Reference metadata response
+    AdminUserResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: success
+          enum:
+          - success
+        message:
+          type: string
+          nullable: true
+          description: Optional response message
+        data:
+          $ref: '#/components/schemas/AdminUserData'
+        meta:
+          $ref: '#/components/schemas/ApiMeta'
+        request_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Tracing correlation ID
+      required:
+      - status
+      - data
+      description: A user account
+    AdminUserDetailResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: success
+          enum:
+          - success
+        message:
+          type: string
+          nullable: true
+          description: Optional response message
+        data:
+          $ref: '#/components/schemas/AdminUserDetailData'
+        meta:
+          $ref: '#/components/schemas/ApiMeta'
+        request_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Tracing correlation ID
+      required:
+      - status
+      - data
+      description: A user account
+    AdminCreatedUserResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: success
+          enum:
+          - success
+        message:
+          type: string
+          nullable: true
+          description: Optional response message
+        data:
+          $ref: '#/components/schemas/AdminCreatedUserData'
+        meta:
+          $ref: '#/components/schemas/ApiMeta'
+        request_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Tracing correlation ID
+      required:
+      - status
+      - data
+      description: The created account
+    AdminUserListResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: success
+          enum:
+          - success
+        message:
+          type: string
+          nullable: true
+          description: Optional response message
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminUserData'
+        meta:
+          $ref: '#/components/schemas/ApiMeta'
+        request_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Tracing correlation ID
+        pagination:
+          $ref: '#/components/schemas/PaginationMeta'
+      required:
+      - status
+      - data
+      - pagination
+      description: A page of user accounts
+    AdminUserRolesResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: success
+          enum:
+          - success
+        message:
+          type: string
+          nullable: true
+          description: Optional response message
+        data:
+          $ref: '#/components/schemas/AdminUserRolesData'
+        meta:
+          $ref: '#/components/schemas/ApiMeta'
+        request_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Tracing correlation ID
+      required:
+      - status
+      - data
+      description: A user's roles
+    AdminRoleListResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: success
+          enum:
+          - success
+        message:
+          type: string
+          nullable: true
+          description: Optional response message
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/AdminRoleItem'
+        meta:
+          $ref: '#/components/schemas/ApiMeta'
+        request_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Tracing correlation ID
+      required:
+      - status
+      - data
+      description: Assignable roles
+    AdminSessionsRevokedResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: success
+          enum:
+          - success
+        message:
+          type: string
+          nullable: true
+          description: Optional response message
+        data:
+          $ref: '#/components/schemas/AdminSessionsRevokedData'
+        meta:
+          $ref: '#/components/schemas/ApiMeta'
+        request_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Tracing correlation ID
+      required:
+      - status
+      - data
+      description: Sessions revoked
+    AdminTemporaryPasswordResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: success
+          enum:
+          - success
+        message:
+          type: string
+          nullable: true
+          description: Optional response message
+        data:
+          $ref: '#/components/schemas/AdminTemporaryPasswordData'
+        meta:
+          $ref: '#/components/schemas/ApiMeta'
+        request_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Tracing correlation ID
+      required:
+      - status
+      - data
+      description: Temporary password issued
     MessageOnlyResponse:
       type: object
       properties:

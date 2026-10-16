@@ -125,5 +125,7 @@ rules:
         - "**/openapi/**"
         - "**/kong/**"
         - "**/setup/**"
+        - "**/apisix/**"
+        - "**/postman/**"
     patterns:
       - pattern: print(...)

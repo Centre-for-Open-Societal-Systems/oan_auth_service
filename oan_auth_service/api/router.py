@@ -142,7 +142,7 @@ def ensure_routes_registered() -> None:
 		import frappe.api
 
 		# Importing the endpoint module is what executes the `rest(...)` calls.
-		from oan_auth_service.api.v1 import auth
+		from oan_auth_service.api.v1 import admin, auth, notifications
 
 		# An unbound copy each time: a Rule binds to one map only, and another app
 		# sharing this list may already have added it. Rules compare by pattern, so

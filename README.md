@@ -44,6 +44,10 @@ This matters because the deployments are independent. Pinning a moving branch me
 
 ## REST API Endpoints & Werkzeug Routing
 
+Public URLs drop the `/api` prefix: clients call `/v1/...` and the gateway rewrites it to
+the `/api/v1/...` routes below. Every consuming app follows the same rule; see
+[`docs/API_CONVENTIONS.md`](docs/API_CONVENTIONS.md).
+
 The app includes a declarative Werkzeug REST Router (`oan_auth_service.api.router.Router`) that compiles routes directly into Frappe's `API_URL_MAP`.
 
 ### V1 Auth REST Endpoints
@@ -60,6 +64,25 @@ The app includes a declarative Werkzeug REST Router (`oan_auth_service.api.route
 | `GET`  | `/api/v1/auth/me`               | Current user profile & JWT claims        | Authenticated (`Bearer`) |
 | `GET`  | `/api/v1/auth/keys`             | Public signing key metadata & algorithm  | Public / Guest           |
 | `GET`  | `/api/v1/auth/health`           | Health check endpoint                    | Public / Guest           |
+
+### V1 Admin REST Endpoints
+
+All require a bearer token for a user holding `System Manager` or `Administrator`. `{id}` is the user id only; find a user by email or phone with the list filters, so personal data never lands in access logs.
+
+| Method   | REST Path                                     | Description                                                                                |
+| -------- | --------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `GET`    | `/api/v1/admin/users`                         | List users (`search`, `email`, `phone_number`, `role`, `enabled`, `page`, `page_size`)     |
+| `POST`   | `/api/v1/admin/users`                         | Onboard a user with a temporary password; `201` + `Location`, no tokens                    |
+| `GET`    | `/api/v1/admin/users/{id}`                    | User details, roles and app profiles                                                       |
+| `PATCH`  | `/api/v1/admin/users/{id}`                    | Change name, login email, mobile; `{"enabled": false}` disables and revokes refresh tokens |
+| `DELETE` | `/api/v1/admin/users/{id}/sessions`           | Revoke every refresh token                                                                 |
+| `POST`   | `/api/v1/admin/users/{id}/temporary-password` | Issue a temporary password (a generated one is returned once)                              |
+| `GET`    | `/api/v1/admin/users/{id}/roles`              | List the user's roles                                                                      |
+| `POST`   | `/api/v1/admin/users/{id}/roles`              | Grant roles (`{"roles": [...]}`)                                                           |
+| `DELETE` | `/api/v1/admin/users/{id}/roles/{role}`       | Revoke a role                                                                              |
+| `GET`    | `/api/v1/admin/roles`                         | List assignable roles                                                                      |
+
+There is no `DELETE` on a user: hard deletion would orphan records consuming apps linked to it. The `Administrator` account and the caller's own account cannot be disabled or have roles changed. Only the `Administrator` user may grant the `Administrator` role. Roles of IAM-delegated accounts are refused, since IAM overwrites them at login.
 
 ### HTTPS Transport Security
 
@@ -100,6 +123,12 @@ required_apps = ["oan_auth_service"]
 ```
 
 so bench installs this app first and the refresh-token doctype exists before the consumer migrates. The consumer then registers its API namespace and exempt paths with `api.middleware.register_namespace()`.
+
+A consumer can add its own claims to every access token with the `on_access_token_claims` hook. The handler takes `user` and `roles` and returns a dict. It cannot override `iss`, `sub`, `iat`, `exp`, `typ`, `jti`, `roles` or `scope`.
+
+```python
+on_access_token_claims = ["my_app.auth.access_token_claims"]
+```
 
 ## Delegated login through the OpenG2P IAM service
 
@@ -153,3 +182,13 @@ Lint from the repo root:
 ruff check oan_auth_service/
 ruff format oan_auth_service/
 ```
+
+After adding or changing a route, regenerate the API artifacts, in this order (from the bench root):
+
+```bash
+env/bin/python apps/oan_auth_service/openapi/generate_openapi_spec.py
+(cd apps/oan_auth_service/kong && ../../../env/bin/python generate_kong_config_from_spec.py)
+env/bin/python apps/oan_auth_service/postman/generate_postman_collection.py
+```
+
+The Kong and Postman generators refuse to run when a route in the spec has no throttling tier (`TIER_OVERRIDES`) or no place in the request flow (`REQUEST_ORDER`).

@@ -2,6 +2,7 @@
 
 import unittest
 from datetime import UTC, datetime, timedelta
+from unittest.mock import patch
 
 import jwt as pyjwt
 from cryptography.hazmat.primitives import serialization
@@ -83,6 +84,27 @@ class TestAccessTokenRoundTrip(unittest.TestCase):
 			_token, ttl = tokens.issue_access_token("a@example.com", [])
 
 		self.assertEqual(ttl, 60)
+
+
+def _extra_claims(user, roles):
+	return {"user_type": "farmer", "sub": "attacker@example.com", "roles": ["System Manager"]}
+
+
+class TestAccessTokenClaimsHook(unittest.TestCase):
+	def _issue_with_hook(self):
+		hooks = {"on_access_token_claims": ["oan_auth_service.tests.test_tokens._extra_claims"]}
+		with configured_keys(), patch.object(tokens.frappe, "get_hooks", lambda name: hooks.get(name, [])):
+			token, _ = tokens.issue_access_token("a@example.com", ["Bank Agent"])
+			return tokens.decode_access_token(token)
+
+	def test_hook_claims_are_added_to_the_token(self):
+		self.assertEqual(self._issue_with_hook()["user_type"], "farmer")
+
+	def test_hook_cannot_override_registered_claims(self):
+		claims = self._issue_with_hook()
+
+		self.assertEqual(claims["sub"], "a@example.com")
+		self.assertEqual(claims["roles"], ["Bank Agent"])
 
 
 class TestAccessTokenRejection(unittest.TestCase):

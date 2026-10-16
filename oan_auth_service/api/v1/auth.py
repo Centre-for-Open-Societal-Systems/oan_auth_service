@@ -298,6 +298,125 @@ class ResetPasswordSchema(BaseModel):
 		return self
 
 
+def create_account(
+	full_name: str,
+	email: str | None = None,
+	phone_number: str | None = None,
+	country_code: str | None = None,
+	roles: list[str] | None = None,
+	password: str | None = None,
+	role: str | None = None,
+	hook_kwargs: dict | None = None,
+):
+	"""Create a User under a synthetic id, its Contact, and broadcast `on_user_registered`.
+
+	The one place an account is created, shared by self-registration and admin
+	onboarding. Role *policy* (who may assign what) is the caller's; this only
+	checks that every role exists. `password` may be None, in which case the
+	account cannot sign in until one is set. The caller commits.
+	"""
+	roles = list(roles or [])
+	for r in roles:
+		if not frappe.db.exists("Role", r):
+			frappe.throw(_("Role '{0}' does not exist").format(r), frappe.ValidationError)
+
+	if phone_number:
+		assembled = assemble_phone_number(phone_number, country_code=country_code)
+		phone_number = validate_mobile(assembled)
+	else:
+		phone_number = None
+
+	if email and str(email).strip():
+		# Lowercased because this is a login handle and the resolver matches it
+		# exactly. Frappe normalises the case of `User.email` in `autoname`
+		# (user/user.py:196); nothing normalises a custom field, so it is done
+		# here — otherwise "A@b.com" and "a@b.com" become two accounts that both
+		# satisfy the unique index and neither of which the owner can predict.
+		email = str(email).strip().lower()
+		if (
+			frappe.db.exists("User", {LOGIN_EMAIL_FIELD: email})
+			or frappe.db.exists("Contact Email", {"email_id": email})
+			or frappe.db.exists("User", email)
+		):
+			frappe.throw(_("A user with this email address already exists."), frappe.ValidationError)
+	else:
+		email = None
+
+	if phone_number:
+		if frappe.db.exists("User", {"mobile_no": phone_number}) or frappe.db.exists(
+			"Contact Phone", {"phone": phone_number}
+		):
+			frappe.throw(_("A user with this phone number already exists."), frappe.ValidationError)
+
+	first_name, _sep, last_name = full_name.strip().partition(" ")
+
+	name = f"{frappe.generate_hash(length=16)}@id.openagrinet.internal"
+	while frappe.db.exists("User", name):
+		name = f"{frappe.generate_hash(length=16)}@id.openagrinet.internal"
+
+	user_doc = frappe.get_doc(
+		{
+			"doctype": "User",
+			# Forces `name` to the synthetic id: User.autoname copies `email` into
+			# `name` on insert (user/user.py:197). The real address goes to
+			# LOGIN_EMAIL_FIELD instead, because `validate` reassigns
+			# `self.email = self.name` on every save (user/user.py:222) and would
+			# overwrite anything else stored here.
+			"email": name,
+			LOGIN_EMAIL_FIELD: email,
+			"first_name": first_name,
+			"last_name": last_name,
+			"mobile_no": phone_number if phone_number else None,
+			"send_welcome_email": 0,
+			"enabled": 1,
+			"new_password": password,
+			"roles": [{"role": r} for r in roles],
+		}
+	)
+	user_doc.insert(ignore_permissions=True)
+
+	if email or phone_number:
+		contact_doc = frappe.get_doc(
+			{
+				"doctype": "Contact",
+				"first_name": first_name,
+				"last_name": last_name,
+				"user": user_doc.name,
+				"email_ids": [{"email_id": email, "is_primary": 1}] if email else [],
+				"phone_nos": (
+					[{"phone": phone_number, "is_primary_mobile_no": 1, "is_primary_phone": 1}]
+					if phone_number
+					else []
+				),
+				"links": [{"link_doctype": "User", "link_name": user_doc.name}],
+			}
+		)
+		contact_doc.insert(ignore_permissions=True)
+
+	# Broadcast on_user_registered so consuming apps can create and link their own
+	# domain records. Every subscriber is called on every registration — the auth
+	# service does not know which roles map to which doctypes, so each handler is
+	# responsible for checking `roles` and returning early if it isn't concerned.
+	#
+	# Failures deliberately propagate: handle_api_errors rolls the transaction back,
+	# so a handler that cannot create its record also undoes the User insert. A
+	# registration that half-succeeded — an account with a role but no linked
+	# record, and a token pair already in the caller's hands — is worse than one
+	# that visibly failed and can be retried.
+	hook_kwargs = dict(hook_kwargs or {})
+	if phone_number:
+		hook_kwargs["phone_number"] = phone_number
+	for hook_path in frappe.get_hooks("on_user_registered"):
+		try:
+			fn = frappe.get_attr(hook_path)
+			fn(user_doc=user_doc, role=role, roles=roles, **hook_kwargs)
+		except Exception:
+			frappe.logger().error(f"on_user_registered hook failed, aborting account creation: {hook_path}")
+			raise
+
+	return user_doc
+
+
 route = prefixed("/api/v1/auth")
 
 
@@ -378,34 +497,6 @@ def register_user(
 	- Authenticated administrators (e.g. System Manager) can assign any valid role.
 	- Broadcasts `on_user_registered` hooks for consuming apps to initialize and link domain DocTypes.
 	"""
-	if phone_number:
-		assembled = assemble_phone_number(phone_number, country_code=country_code)
-		phone_number = validate_mobile(assembled)
-	else:
-		phone_number = None
-
-	if email and str(email).strip():
-		# Lowercased because this is a login handle and the resolver matches it
-		# exactly. Frappe normalises the case of `User.email` in `autoname`
-		# (user/user.py:196); nothing normalises a custom field, so it is done
-		# here — otherwise "A@b.com" and "a@b.com" become two accounts that both
-		# satisfy the unique index and neither of which the owner can predict.
-		email = str(email).strip().lower()
-		if (
-			frappe.db.exists("User", {LOGIN_EMAIL_FIELD: email})
-			or frappe.db.exists("Contact Email", {"email_id": email})
-			or frappe.db.exists("User", email)
-		):
-			frappe.throw(_("A user with this email address already exists."), frappe.ValidationError)
-	else:
-		email = None
-
-	if phone_number:
-		if frappe.db.exists("User", {"mobile_no": phone_number}) or frappe.db.exists(
-			"Contact Phone", {"phone": phone_number}
-		):
-			frappe.throw(_("A user with this phone number already exists."), frappe.ValidationError)
-
 	# Combine singular `role` or `roles` list/string
 	raw_roles = []
 	if role:
@@ -437,71 +528,16 @@ def register_user(
 				frappe.PermissionError,
 			)
 
-	first_name, _sep, last_name = full_name.strip().partition(" ")
-
-	name = f"{frappe.generate_hash(length=16)}@id.openagrinet.internal"
-	while frappe.db.exists("User", name):
-		name = f"{frappe.generate_hash(length=16)}@id.openagrinet.internal"
-
-	user_doc = frappe.get_doc(
-		{
-			"doctype": "User",
-			# Forces `name` to the synthetic id: User.autoname copies `email` into
-			# `name` on insert (user/user.py:197). The real address goes to
-			# LOGIN_EMAIL_FIELD instead, because `validate` reassigns
-			# `self.email = self.name` on every save (user/user.py:222) and would
-			# overwrite anything else stored here.
-			"email": name,
-			LOGIN_EMAIL_FIELD: email,
-			"first_name": first_name,
-			"last_name": last_name,
-			"mobile_no": phone_number if phone_number else None,
-			"send_welcome_email": 0,
-			"enabled": 1,
-			"new_password": password,
-			"roles": [{"role": r} for r in requested_roles],
-		}
+	user_doc = create_account(
+		full_name=full_name,
+		email=email,
+		phone_number=phone_number,
+		country_code=country_code,
+		roles=requested_roles,
+		password=password,
+		role=role,
+		hook_kwargs={k: v for k, v in kwargs.items() if k not in ("cmd", "phone", "country_code")},
 	)
-	user_doc.insert(ignore_permissions=True)
-
-	if email or phone_number:
-		contact_doc = frappe.get_doc(
-			{
-				"doctype": "Contact",
-				"first_name": first_name,
-				"last_name": last_name,
-				"user": user_doc.name,
-				"email_ids": [{"email_id": email, "is_primary": 1}] if email else [],
-				"phone_nos": (
-					[{"phone": phone_number, "is_primary_mobile_no": 1, "is_primary_phone": 1}]
-					if phone_number
-					else []
-				),
-				"links": [{"link_doctype": "User", "link_name": user_doc.name}],
-			}
-		)
-		contact_doc.insert(ignore_permissions=True)
-
-	# Broadcast on_user_registered so consuming apps can create and link their own
-	# domain records. Every subscriber is called on every registration — the auth
-	# service does not know which roles map to which doctypes, so each handler is
-	# responsible for checking `roles` and returning early if it isn't concerned.
-	#
-	# Failures deliberately propagate: handle_api_errors rolls the transaction back,
-	# so a handler that cannot create its record also undoes the User insert. A
-	# registration that half-succeeded — an account with a role but no linked
-	# record, and a token pair already in the caller's hands — is worse than one
-	# that visibly failed and can be retried.
-	hook_kwargs = {k: v for k, v in kwargs.items() if k not in ("cmd", "phone", "country_code")}
-	if phone_number:
-		hook_kwargs["phone_number"] = phone_number
-	for hook_path in frappe.get_hooks("on_user_registered"):
-		try:
-			fn = frappe.get_attr(hook_path)
-			fn(user_doc=user_doc, role=role, roles=requested_roles, **hook_kwargs)
-		except Exception:
-			frappe.logger().error(f"on_user_registered hook failed, aborting registration: {hook_path}")
-			raise
 
 	pair = _issue_token_pair(user_doc.name, remember_me=False)
 	# Explicit commit to ensure user and initial token state are persisted
@@ -1006,6 +1042,34 @@ def reset_password(new_password: str, key: str | None = None, usr: str | None = 
 	return success_response(message=result)
 
 
+def collect_profiles(user_doc, roles: list[str]) -> dict:
+	"""Broadcast `on_user_profile` and gather each app's profile under its namespace.
+
+	A failing or malformed hook is logged and skipped, never fatal: one consuming
+	app's bug should not hide the account from every other.
+	"""
+	profiles = {}
+	for hook_path in frappe.get_hooks("on_user_profile"):
+		try:
+			res = frappe.get_attr(hook_path)(user_doc=user_doc, roles=roles)
+			if isinstance(res, (tuple, list)) and len(res) == 2:
+				namespace, profile_data = res
+				if profile_data and isinstance(profile_data, dict):
+					profiles[namespace] = profile_data
+			elif res is not None:
+				frappe.log_error(
+					title=f"on_user_profile hook invalid return: {hook_path}",
+					message=f"Expected (namespace, dict | None), got {type(res).__name__}: {res!r}",
+				)
+		except Exception:
+			frappe.log_error(
+				title=f"on_user_profile hook failed: {hook_path}",
+				message=frappe.get_traceback(),
+			)
+
+	return profiles
+
+
 @route(
 	"/me",
 	methods=("GET",),
@@ -1046,25 +1110,7 @@ def get_me():
 		"roles": roles,
 	}
 
-	profiles = {}
-	for hook_path in frappe.get_hooks("on_user_profile"):
-		try:
-			res = frappe.get_attr(hook_path)(user_doc=user_doc, roles=roles)
-			if isinstance(res, (tuple, list)) and len(res) == 2:
-				namespace, profile_data = res
-				if profile_data and isinstance(profile_data, dict):
-					profiles[namespace] = profile_data
-			elif res is not None:
-				frappe.log_error(
-					title=f"on_user_profile hook invalid return: {hook_path}",
-					message=f"Expected (namespace, dict | None), got {type(res).__name__}: {res!r}",
-				)
-		except Exception:
-			frappe.log_error(
-				title=f"on_user_profile hook failed: {hook_path}",
-				message=frappe.get_traceback(),
-			)
-
+	profiles = collect_profiles(user_doc, roles)
 	if profiles:
 		data["profiles"] = profiles
 
