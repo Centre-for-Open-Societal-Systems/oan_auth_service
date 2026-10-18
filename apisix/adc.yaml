@@ -30,11 +30,6 @@ services:
       max_age: 3600
     client-control:
       max_body_size: 5242880
-    request-id:
-      header_name: X-Request-Id
-      include_in_response: true
-    prometheus:
-      prefer_name: true
     proxy-rewrite:
       regex_uri:
       - ^/(v[0-9]+)/(.*)

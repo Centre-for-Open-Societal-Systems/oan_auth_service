@@ -148,7 +148,7 @@ def list_notifications(page: int = 1, page_size: int = 20, status: str = "all"):
 		DOCTYPE,
 		filters=filters,
 		fields=_FIELDS,
-		order_by="creation desc",
+		order_by="creation desc, name desc",
 		limit_start=(page - 1) * page_size,
 		limit_page_length=page_size,
 	)

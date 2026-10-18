@@ -50,6 +50,7 @@ def rest(
 	status: int = 200,
 	summary: str | None = None,
 	description: str | None = None,
+	tier: str | None = None,
 ) -> Callable:
 	"""Expose `fn` at `path`, and return `fn` unchanged.
 
@@ -98,6 +99,7 @@ def rest(
 			"description": description,
 			"allow_guest": allow_guest,
 			"status": status,
+			"tier": tier,
 		}
 		_rules.append(Rule(path, endpoint=endpoint, methods=[m.upper() for m in methods]))
 		if allow_guest:

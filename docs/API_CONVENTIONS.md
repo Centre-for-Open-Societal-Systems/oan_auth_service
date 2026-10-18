@@ -83,7 +83,6 @@ own prefix or re-register them.
 
 Plural nouns, lowercase kebab-case segments, lifecycle actions as `POST` sub-paths:
 `/v1/grievances/{ticket_number}/attachments`, `/v1/grievances/{ticket_number}/action`.
-See `oan_grievance_service/docs/api-development-standards.md` for handler rules.
 
 ## 7. Checklist for a new app or endpoint
 

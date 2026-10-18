@@ -242,7 +242,8 @@ def build_document(
 def service_plugins(
 	*, methods: str, credentials: bool, max_body_mb: int, cors_origins: str | None = None
 ) -> dict[str, Any]:
-	"""Plugins applied to every route of the service: CORS, body cap, request id, metrics."""
+	"""Plugins applied to every route of the service: CORS and body cap. `request-id` and
+	`prometheus` are global rules in the central, DevOps-owned adc.yaml."""
 	return {
 		"cors": {
 			# `allow_origins` must not be the default `*`; the regex list is the allowlist.
@@ -256,8 +257,6 @@ def service_plugins(
 			"max_age": 3600,
 		},
 		"client-control": {"max_body_size": max_body_mb * 1024 * 1024},
-		"request-id": {"header_name": "X-Request-Id", "include_in_response": True},
-		"prometheus": {"prefer_name": True},
 	}
 
 
@@ -348,10 +347,6 @@ def socket_service(
 		"name": f"{app}-realtime-v1",
 		"labels": labels,
 		"upstream": upstream,
-		"plugins": {
-			"request-id": {"header_name": "X-Request-Id", "include_in_response": True},
-			"prometheus": {"prefer_name": True},
-		},
 		"routes": routes,
 	}
 
