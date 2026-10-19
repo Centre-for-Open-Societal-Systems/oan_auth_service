@@ -456,8 +456,8 @@ paths:
       tags:
       - Admin
       summary: 'Admin: list users'
-      description: List user accounts, newest first. Filter by free-text `search`, exact `email` or `phone_number`,
-        `role` and `enabled`.
+      description: List user accounts holding a role of this service, newest first. Filter by free-text
+        `search`, exact `email` or `phone_number`, `role` and `enabled`.
       operationId: get_api_v1_admin_users
       responses:
         '200':
@@ -545,11 +545,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AdminCreatedUserResponse'
-          headers:
-            Location:
-              description: URL of the created resource
-              schema:
-                type: string
         '400':
           description: Validation or Client Error
           content:
@@ -640,7 +635,7 @@ paths:
       - Admin
       summary: 'Admin: update a user'
       description: Change name, login email, mobile number or enabled status. Only the fields sent are
-        changed. Disabling revokes every refresh token.
+        changed. An email or a phone number must remain. Disabling revokes every refresh token.
       operationId: patch_api_v1_admin_users_user_id
       responses:
         '200':
@@ -813,7 +808,8 @@ paths:
       tags:
       - Admin
       summary: 'Admin: list assignable roles'
-      description: Every enabled role that can be granted through this API.
+      description: Every enabled role of this service, meaning the ones whose names start with a configured
+        service prefix.
       operationId: get_api_v1_admin_roles
       responses:
         '200':
@@ -1020,13 +1016,147 @@ paths:
         description: Role parameter
       security:
       - BearerAuth: []
+  /v1/admin/permissions:
+    get:
+      tags:
+      - Admin
+      summary: 'Admin: list role permissions'
+      description: Doctype permissions of the roles this service owns, limited to doctypes it owns. Both
+        are the ones whose names start with a configured service prefix. Filter by `role` and `doctype`.
+      operationId: get_api_v1_admin_permissions
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '400':
+          description: Validation or Client Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '401':
+          description: Unauthorized / Authentication Required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '403':
+          description: Caller lacks System Manager / Administrator, or the target account is protected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      security:
+      - BearerAuth: []
+    put:
+      tags:
+      - Admin
+      summary: 'Admin: set role permissions on a doctype'
+      description: Grant or revoke individual rights (`read`, `write`, `create`, ...) for a service role
+        on a service doctype. The rule is created when missing. Rights not named are left as they are.
+      operationId: put_api_v1_admin_permissions
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '400':
+          description: Validation or Client Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '401':
+          description: Unauthorized / Authentication Required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '403':
+          description: Caller lacks System Manager / Administrator, or the target account is protected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      security:
+      - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetPermissionSchema'
+    delete:
+      tags:
+      - Admin
+      summary: 'Admin: remove a role permission rule'
+      description: Delete one permission rule (role, doctype, permlevel, if_owner) for a service role
+        on a service doctype.
+      operationId: delete_api_v1_admin_permissions
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '400':
+          description: Validation or Client Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '401':
+          description: Unauthorized / Authentication Required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '403':
+          description: Caller lacks System Manager / Administrator, or the target account is protected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      security:
+      - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeletePermissionSchema'
   /v1/notifications:
     get:
       tags:
       - Notifications
       summary: List my notifications
-      description: Newest first, for the caller only. `status` is unread, read or all. `unread_count`
-        ignores the filter and drives the badge.
+      description: 'Newest first, for the caller only. `status` is unread, read or all. `unread_count`
+        ignores the filter and drives the badge. `message` may contain HTML: clients must sanitize it
+        before rendering.'
       operationId: get_api_v1_notifications
       responses:
         '200':
@@ -1059,7 +1189,7 @@ paths:
       tags:
       - Notifications
       summary: Mark many of my notifications read or unread
-      description: Send `ids` or `all=true`, plus `read` (default true).
+      description: Send `ids` (at most 500) or `all=true`, plus `read` (default true).
       operationId: patch_api_v1_notifications
       responses:
         '200':
@@ -1098,7 +1228,7 @@ paths:
       tags:
       - Notifications
       summary: Delete many of my notifications
-      description: Send `ids` or `all=true`.
+      description: Send `ids` (at most 500) or `all=true`.
       operationId: delete_api_v1_notifications
       responses:
         '200':
@@ -1138,7 +1268,7 @@ paths:
       tags:
       - Notifications
       summary: Get one of my notifications
-      description: Get one of my notifications
+      description: '`message` may contain HTML: clients must sanitize it before rendering.'
       operationId: get_api_v1_notifications_notification_id
       responses:
         '200':
@@ -1781,6 +1911,82 @@ components:
       - total_pages
       - has_next
       - has_prev
+    PermissionQuerySchema:
+      properties:
+        role:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          description: Limit to one role
+          title: Role
+        doctype:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          description: Limit to one doctype
+          title: Doctype
+      title: PermissionQuerySchema
+      type: object
+    SetPermissionSchema:
+      properties:
+        role:
+          minLength: 1
+          title: Role
+          type: string
+        doctype:
+          minLength: 1
+          title: Doctype
+          type: string
+        permlevel:
+          default: 0
+          maximum: 9
+          minimum: 0
+          title: Permlevel
+          type: integer
+        if_owner:
+          default: false
+          title: If Owner
+          type: boolean
+        permissions:
+          additionalProperties:
+            type: boolean
+          description: 'Right name to granted flag, e.g. {"read": true, "write": false}'
+          minProperties: 1
+          title: Permissions
+          type: object
+      required:
+      - role
+      - doctype
+      - permissions
+      title: SetPermissionSchema
+      type: object
+    DeletePermissionSchema:
+      properties:
+        role:
+          minLength: 1
+          title: Role
+          type: string
+        doctype:
+          minLength: 1
+          title: Doctype
+          type: string
+        permlevel:
+          default: 0
+          maximum: 9
+          minimum: 0
+          title: Permlevel
+          type: integer
+        if_owner:
+          default: false
+          title: If Owner
+          type: boolean
+      required:
+      - role
+      - doctype
+      title: DeletePermissionSchema
+      type: object
     ListNotificationsSchema:
       properties:
         page:

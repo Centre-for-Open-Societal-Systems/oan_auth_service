@@ -1,17 +1,4 @@
-"""Notification endpoints, under `/api/v1/notifications`.
-
-Notifications are Frappe `Notification Log` records, so the desk bell and
-realtime push keep working. Every endpoint needs a valid token and only ever
-touches records where `for_user` is the caller; another user's record answers
-404, the same as a missing one, so ids cannot be probed.
-
-There is no create endpoint. Apps write notifications in process through
-`notify_users`, which never raises, so a business write is not failed by a
-notification.
-
-Bulk read and delete take either `ids` or `all=true`. Neither is an error, so a
-client bug cannot clear every record by sending an empty body.
-"""
+"""Notification endpoints, under `/api/v1/notifications`. Rules: docs/NOTIFICATIONS_RULES.md."""
 
 import frappe
 from frappe import _
@@ -31,6 +18,8 @@ from oan_auth_service.api.utils import (
 route = prefixed("/api/v1/notifications")
 
 DOCTYPE = "Notification Log"
+
+MAX_BULK_IDS = 500
 
 _FIELDS = ["name", "subject", "email_content", "type", "document_type", "document_name", "read", "creation"]
 
@@ -55,7 +44,10 @@ def notify_users(users, subject, message=None, doctype=None, docname=None, notif
 				}
 			).insert(ignore_permissions=True)
 		except Exception:
-			frappe.logger().warning(f"Could not create Notification Log for user {user}")
+			frappe.log_error(
+				title=f"Could not create Notification Log for user {user}",
+				message=frappe.get_traceback(),
+			)
 
 
 # ---------------------------------------------------------------------------
@@ -81,8 +73,11 @@ class BulkSchema(BaseModel):
 
 	@model_validator(mode="after")
 	def _ids_xor_all(self):
-		if bool(parse_multi_value(self.ids)) == self.all:
+		ids = parse_multi_value(self.ids)
+		if bool(ids) == self.all:
 			raise ValueError("Send either `ids` or `all=true`")
+		if len(ids) > MAX_BULK_IDS:
+			raise ValueError(f"Send at most {MAX_BULK_IDS} ids")
 		return self
 
 
@@ -134,7 +129,7 @@ def _get_own(notification_id: str) -> dict:
 	"",
 	methods=("GET",),
 	summary="List my notifications",
-	description="Newest first, for the caller only. `status` is unread, read or all. `unread_count` ignores the filter and drives the badge.",
+	description="Newest first, for the caller only. `status` is unread, read or all. `unread_count` ignores the filter and drives the badge. `message` may contain HTML: clients must sanitize it before rendering.",
 )
 @validate_request(ListNotificationsSchema)
 @handle_api_errors
@@ -166,6 +161,7 @@ def list_notifications(page: int = 1, page_size: int = 20, status: str = "all"):
 	"/<notification_id>",
 	methods=("GET",),
 	summary="Get one of my notifications",
+	description="`message` may contain HTML: clients must sanitize it before rendering.",
 )
 @validate_request(NotificationRefSchema)
 @handle_api_errors
@@ -190,17 +186,17 @@ def update_notification(notification_id: str, read: bool):
 	"",
 	methods=("PATCH",),
 	summary="Mark many of my notifications read or unread",
-	description="Send `ids` or `all=true`, plus `read` (default true).",
+	description="Send `ids` (at most 500) or `all=true`, plus `read` (default true).",
 )
 @validate_request(BulkUpdateSchema)
 @handle_api_errors
 def bulk_update_notifications(ids=None, all: bool = False, read: bool = True):
 	filters = _own_filters({"ids": ids, "all": all})
 	filters["read"] = int(not read)
-	names = frappe.get_all(DOCTYPE, filters=filters, pluck="name")
-	for name in names:
-		frappe.db.set_value(DOCTYPE, name, "read", int(read), update_modified=False)
-	return success_response(data={"updated": len(names)}, message="Notifications updated")
+	updated = frappe.db.count(DOCTYPE, filters=filters)
+	if updated:
+		frappe.db.set_value(DOCTYPE, filters, "read", int(read), update_modified=False)
+	return success_response(data={"updated": updated}, message="Notifications updated")
 
 
 @route(
@@ -220,7 +216,7 @@ def delete_notification(notification_id: str):
 	"",
 	methods=("DELETE",),
 	summary="Delete many of my notifications",
-	description="Send `ids` or `all=true`.",
+	description="Send `ids` (at most 500) or `all=true`.",
 )
 @validate_request(BulkSchema)
 @handle_api_errors

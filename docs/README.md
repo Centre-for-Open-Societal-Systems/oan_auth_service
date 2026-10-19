@@ -12,4 +12,4 @@ Shared standards for every OAN Frappe app. Each file covers one topic and stands
 | `GIT_WORKFLOW.md`               | Branches, commits, merge hygiene, pull requests.             |
 | `STANDARDS_DEVIATIONS.md`       | Where the current apps do not follow these standards yet.    |
 
-`oan_auth_service`'s own reference: `API_DOCUMENTATION.md`, `IAM_DELEGATED_LOGIN_PLAN.md`.
+`oan_auth_service`'s own reference: `API_DOCUMENTATION.md`, `ADMIN_API_RULES.md`, `NOTIFICATIONS_RULES.md`, `IAM_DELEGATED_LOGIN_PLAN.md`.

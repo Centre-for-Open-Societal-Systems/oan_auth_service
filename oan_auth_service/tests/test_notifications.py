@@ -47,6 +47,13 @@ class TestNotificationEndpoints(unittest.TestCase):
 				frappe.delete_doc("User", user, force=True, ignore_permissions=True)
 		frappe.db.commit()  # nosemgrep: frappe-manual-commit
 
+	def test_bulk_ids_are_capped(self):
+		frappe.set_user(self.alice)
+		ids = [f"n{i}" for i in range(501)]
+		for method in ("PATCH", "DELETE"):
+			status, _body = call(BASE, method, {"ids": ids})
+			self.assertEqual(status, 400, method)
+
 	def test_list_scoped_to_caller_with_unread_count(self):
 		frappe.set_user(self.alice)
 		status, body = call(BASE)

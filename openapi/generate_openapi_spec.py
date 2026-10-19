@@ -839,11 +839,6 @@ def build_openapi() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
 						"content": {"application/json": {"schema": REF("StandardErrorResponse")}},
 					}
 
-			if status_code == 201:
-				op["responses"]["201"]["headers"] = {
-					"Location": {"description": "URL of the created resource", "schema": S()}
-				}
-
 			if method == "GET":
 				parameters.extend(query_params)
 

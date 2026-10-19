@@ -72,7 +72,7 @@ All require a bearer token for a user holding `System Manager` or `Administrator
 | Method   | REST Path                                     | Description                                                                                |
 | -------- | --------------------------------------------- | ------------------------------------------------------------------------------------------ |
 | `GET`    | `/api/v1/admin/users`                         | List users (`search`, `email`, `phone_number`, `role`, `enabled`, `page`, `page_size`)     |
-| `POST`   | `/api/v1/admin/users`                         | Onboard a user with a temporary password; `201` + `Location`, no tokens                    |
+| `POST`   | `/api/v1/admin/users`                         | Onboard a user with a temporary password; `201`, no tokens                                 |
 | `GET`    | `/api/v1/admin/users/{id}`                    | User details, roles and app profiles                                                       |
 | `PATCH`  | `/api/v1/admin/users/{id}`                    | Change name, login email, mobile; `{"enabled": false}` disables and revokes refresh tokens |
 | `DELETE` | `/api/v1/admin/users/{id}/sessions`           | Revoke every refresh token                                                                 |

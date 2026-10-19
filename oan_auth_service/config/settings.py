@@ -100,6 +100,20 @@ def self_registerable_roles() -> list[str]:
 	return list(frappe.conf.get("jwt_self_registerable_roles") or [])
 
 
+def service_prefixes() -> tuple[str, ...]:
+	"""Name prefixes of the roles and doctypes this deployment's services own, e.g. `("A2C",)`.
+
+	The admin endpoints expose only roles, doctypes and users matching one. A
+	consuming app declares its prefix with the `oan_service_prefix` hook; the
+	`service_prefix` site config key (a string or list) takes precedence.
+	"""
+	configured = frappe.conf.get("service_prefix")
+	if isinstance(configured, str):
+		configured = [configured]
+	values = configured or frappe.get_hooks("oan_service_prefix")
+	return tuple(dict.fromkeys(v.strip() for v in values if v and v.strip()))
+
+
 def iam_base_url() -> str:
 	"""Base URL of the OpenG2P IAM API that validates delegated-login tokens."""
 	return (frappe.conf.get("iam_base_url") or "").rstrip("/")
