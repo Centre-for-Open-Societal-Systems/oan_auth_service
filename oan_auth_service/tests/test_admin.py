@@ -227,7 +227,7 @@ class TestAdminEndpoints(unittest.TestCase):
 		status, body = call(f"/api/v1/admin/users/{data['user']}/roles")
 		self.assertEqual(body["data"]["roles"], ["Svc Customer"])
 
-		status, body = call(f"/api/v1/admin/users/{data['user']}/roles/Customer", "DELETE")
+		status, body = call(f"/api/v1/admin/users/{data['user']}/roles/Svc%20Customer", "DELETE")
 		self.assertEqual(status, 200, body)
 		self.assertNotIn("Svc Customer", body["data"]["roles"])
 

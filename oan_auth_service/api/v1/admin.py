@@ -175,15 +175,23 @@ def _like_any(column, prefixes: tuple[str, ...]):
 	return cond
 
 
+def _holds_role(user: str, prefixes: tuple[str, ...] | None = None, role: str | None = None) -> bool:
+	"""Whether `user` has a granted `Has Role` row for `role`, or a role starting with a prefix.
+
+	Reads the grants directly. `frappe.get_roles` is no use here: it returns every
+	role for Administrator and hides the Administrator role from everyone else.
+	"""
+	has_role = frappe.qb.DocType("Has Role")
+	cond = (has_role.parenttype == "User") & (has_role.parent == user)
+	cond &= (has_role.role == role) if role else _like_any(has_role.role, prefixes)
+	return bool(frappe.qb.from_(has_role).select(has_role.name).where(cond).limit(1).run())
+
+
 def _resolve_target(user_id: str) -> str:
 	"""Return `user_id` if it names a real account holding a service role, or raise 404."""
 	user_id = user_id.strip()
 	prefix = _service_prefix()
-	if (
-		user_id == "Guest"
-		or not frappe.db.exists("User", user_id)
-		or not any(r.startswith(prefix) for r in tokens.resolve_roles(user_id))
-	):
+	if user_id == "Guest" or not frappe.db.exists("User", user_id) or not _holds_role(user_id, prefix):
 		raise frappe.DoesNotExistError(_("User not found"))
 	return user_id
 
@@ -206,7 +214,7 @@ def _guard_privileged(user: str) -> None:
 	caller = frappe.session.user
 	if caller == "Administrator" or user == caller:
 		return
-	if user == "Administrator" or "Administrator" in tokens.resolve_roles(user):
+	if user == "Administrator" or _holds_role(user, role="Administrator"):
 		frappe.throw(
 			_("Only the Administrator user may modify an administrator account."), frappe.PermissionError
 		)
