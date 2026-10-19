@@ -1,9 +1,14 @@
 """Build an ADC (APISIX Declarative CLI) config from an OpenAPI spec.
 
-Shared by every Frappe app on the bench that fronts its REST API with APISIX
-(oan_auth_service, oan_grievance_service). Each app keeps its own throttling tiers and
-its own `(method, path) -> tier` table, and calls `build_document` with them. The output
-is `adc.yaml`, which `adc lint|validate|diff|sync` apply to an APISIX running in etcd mode.
+Shared by every Frappe app that fronts its REST API with APISIX (oan_grievance_service,
+oan_a2c). Each app keeps its own throttling tiers and its own `(method, path) -> tier`
+table, and calls `build_document` with them. The output is `adc.yaml`, which
+`adc lint|validate|diff|sync` apply to an APISIX running in etcd mode, and the app's
+Ingress Controller chart (`write_helm_templates`).
+
+oan_auth_service is a library installed into each app's bench, not a service of its own,
+so it has no gateway config. Its endpoints are served by every bench that installs it,
+and each app adds them to its own config with `with_auth_routes`.
 
 Routes are grouped by policy, not by URL: one route per (tier, auth, method), carrying
 every path of that group in `uris`. A path is added to the gateway by assigning it a tier.
@@ -109,6 +114,112 @@ def reconcile(
 	for r in routes:
 		r["tier"] = tier_overrides[(r["method"], r["path"])]
 	return routes
+
+
+# ---------------------------------------------------------------------------
+# oan_auth_service's own endpoints
+# ---------------------------------------------------------------------------
+# Owned here, added to each app's config by `with_auth_routes` and pointed at that app's
+# Frappe. Tiers are prefixed `auth-` so they never collide with an app's own tier names.
+AUTH_SPEC_PATH = Path(__file__).resolve().parent.parent / "openapi" / "openapi_v1.public.yaml"
+AUTH_TIERS = {
+	"auth-credentials": {
+		"limit_by": "ip",
+		"minute": 5,
+		"hour": 30,
+		"policy": "redis",
+		"fail_open": False,
+		"note": "Credential-sensitive endpoints (login, register, logout, reset). Tight IP limits to prevent stuffing. Rejects requests when the limiter store is down.",
+	},
+	"auth-session": {
+		"limit_by": "consumer",
+		"minute": 120,
+		"hour": 4000,
+		"policy": "redis",
+		"note": "Logged-in user calls (e.g. /me) and token refresh. Cheap and frequent.",
+	},
+	"auth-admin": {
+		"limit_by": "consumer",
+		"minute": 60,
+		"hour": 1000,
+		"policy": "redis",
+		"note": "Admin user and role management. Low volume. Keyed per IP while GATEWAY_JWT is off; per token once the gateway verifies tokens.",
+	},
+	"auth-public-read": {
+		"limit_by": "ip",
+		"minute": 120,
+		"hour": 2000,
+		"policy": "redis",
+		"note": "Public discovery and health check endpoints.",
+	},
+}
+
+AUTH_TIER_OVERRIDES = {
+	("POST", "/v1/auth/register"): "auth-credentials",
+	("POST", "/v1/auth/login"): "auth-credentials",
+	("POST", "/v1/auth/refresh"): "auth-session",
+	("POST", "/v1/auth/logout"): "auth-credentials",
+	("POST", "/v1/auth/forgot-password"): "auth-credentials",
+	("POST", "/v1/auth/reset-password"): "auth-credentials",
+	("POST", "/v1/auth/password/forgot"): "auth-credentials",
+	("POST", "/v1/auth/password/reset"): "auth-credentials",
+	("POST", "/v1/auth/password/initial"): "auth-credentials",
+	("GET", "/v1/auth/me"): "auth-session",
+	("GET", "/v1/auth/keys"): "auth-public-read",
+	("GET", "/v1/auth/health"): "auth-public-read",
+	("GET", "/v1/auth/metadata"): "auth-public-read",
+	("GET", "/v1/admin/users"): "auth-admin",
+	("POST", "/v1/admin/users"): "auth-admin",
+	("GET", "/v1/admin/users/{user_id}"): "auth-admin",
+	("PATCH", "/v1/admin/users/{user_id}"): "auth-admin",
+	("DELETE", "/v1/admin/users/{user_id}/sessions"): "auth-admin",
+	("POST", "/v1/admin/users/{user_id}/temporary-password"): "auth-admin",
+	("GET", "/v1/admin/users/{user_id}/roles"): "auth-admin",
+	("POST", "/v1/admin/users/{user_id}/roles"): "auth-admin",
+	("DELETE", "/v1/admin/users/{user_id}/roles/{role}"): "auth-admin",
+	("GET", "/v1/admin/roles"): "auth-admin",
+	("GET", "/v1/admin/permissions"): "auth-admin",
+	("PUT", "/v1/admin/permissions"): "auth-admin",
+	("DELETE", "/v1/admin/permissions"): "auth-admin",
+	("POST", "/v1/admin/permissions/reset"): "auth-admin",
+	("GET", "/v1/notifications"): "auth-session",
+	("PATCH", "/v1/notifications"): "auth-session",
+	("DELETE", "/v1/notifications"): "auth-session",
+	("GET", "/v1/notifications/{notification_id}"): "auth-session",
+	("PATCH", "/v1/notifications/{notification_id}"): "auth-session",
+	("DELETE", "/v1/notifications/{notification_id}"): "auth-session",
+}
+
+
+def with_auth_routes(routes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+	"""An app's reconciled routes plus oan_auth_service's. Refuses a (method, path) both
+	declare, which would give one URL two routes."""
+	auth = reconcile(spec_routes(load_spec(AUTH_SPEC_PATH)), AUTH_TIER_OVERRIDES)
+	clash = {(r["method"], r["path"]) for r in routes} & {(r["method"], r["path"]) for r in auth}
+	if clash:
+		raise SystemExit(
+			"Declared by both the app and oan_auth_service:\n"
+			+ "\n".join(f"  {m} {p}" for m, p in sorted(clash))
+		)
+	return routes + auth
+
+
+def jwt_issuer_consumer() -> dict[str, Any]:
+	"""Verifies the RS256 bearer tokens oan_auth_service mints. Needed only by an app that
+	sets `gateway_jwt=True`."""
+	public_key = env("OAN_AUTH_JWT_PUBLIC_KEY", "")
+	if not public_key:
+		raise SystemExit("gateway_jwt is on: set OAN_AUTH_JWT_PUBLIC_KEY (PEM) to generate the consumer.")
+	return {
+		"username": "oan-auth-jwt-issuer",
+		"plugins": {
+			"jwt-auth": {
+				"key": env("OAN_JWT_ISSUER", "oan-auth"),
+				"algorithm": "RS256",
+				"public_key": public_key,
+			}
+		},
+	}
 
 
 def to_apisix_uri(path: str) -> str:
@@ -249,7 +360,8 @@ def service_plugins(
 	*, methods: str, credentials: bool, max_body_mb: int, cors_origins: str | None = None
 ) -> dict[str, Any]:
 	"""Plugins applied to every route of the service: CORS and body cap. `request-id` and
-	`prometheus` are global rules in the central, DevOps-owned adc.yaml."""
+	`prometheus` are gateway-wide global rules, owned by the central gateway config
+	(oan-helm `environments/<env>/values/apisix.yaml`), not by the apps."""
 	return {
 		"cors": {
 			# `allow_origins` must not be the default `*`; the regex list is the allowlist.
@@ -370,3 +482,203 @@ def report(path: Path, routes: list[dict[str, Any]], doc: dict[str, Any], spec: 
 		f"Wrote {path.name}: {len(routes)} operations from {len(spec['paths'])} paths -> "
 		f"{n_routes} routes in {len(doc['services'])} service(s)\n"
 	)
+
+
+# ---------------------------------------------------------------------------
+# Kubernetes: the same document as APISIX Ingress Controller resources
+# ---------------------------------------------------------------------------
+# Written as Helm templates for the app's gateway chart. `${NAME}` placeholders in the
+# document become `.Values` expressions, and one-item sentinel lists become loops over a
+# values list. The values themselves live in the deployment repository (oan-helm).
+HELM_COMMON_VALUES = {
+	"APISIX_REDIS_HOST": ".Values.redis.host",
+	"INGRESS_CLASS_NAME": ".Values.ingressClassName",
+}
+HELM_LISTS = {
+	"__HOSTS__": ".Values.hosts",
+	"__REALTIME_ORIGINS__": ".Values.realtimeAllowedOrigins",
+	"__CORS_ORIGIN_REGEXES__": ".Values.corsOriginRegexes",
+	"__IP_ALLOWLIST__": ".Values.ipAllowlist",
+}
+EXPR_OPS = {"~~": "RegexMatch", "~*": "RegexMatchCaseInsensitive", "in": "In", "==": "Equal"}
+EXPR_NEGATED = {
+	"RegexMatch": "RegexNotMatch",
+	"RegexMatchCaseInsensitive": "RegexNotMatchCaseInsensitive",
+	"In": "NotIn",
+	"Equal": "NotEqual",
+}
+
+
+def to_expr(var: list) -> dict[str, Any]:
+	"""An ADC `vars` entry (`[name, op, value]`, `[name, "!", op, value]`) as an ApisixRoute expr."""
+	name, *rest = var
+	negate = rest[0] == "!"
+	op, value = rest[1:] if negate else rest
+	op = EXPR_OPS[op]
+	if negate:
+		op = EXPR_NEGATED[op]
+	if name == "http_origin":
+		value = ["__REALTIME_ORIGINS__"]
+	return {
+		"subject": {"scope": "Variable", "name": name},
+		"op": op,
+		("set" if op in ("In", "NotIn") else "value"): value,
+	}
+
+
+def to_crd_plugins(plugins: dict[str, Any]) -> list[dict[str, Any]]:
+	out = []
+	for name, config in plugins.items():
+		config = copy.deepcopy(config)
+		if "redis_host" in config:
+			config["redis_host"] = "${APISIX_REDIS_HOST}"
+		if name == "cors":
+			config["allow_origins_by_regex"] = ["__CORS_ORIGIN_REGEXES__"]
+		if name == "ip-restriction":
+			config["whitelist"] = ["__IP_ALLOWLIST__"]
+		if name == "consumer-restriction":
+			# The Ingress Controller names an ApisixConsumer's APISIX consumer
+			# `<namespace>_<name>`.
+			config["whitelist"] = [f"{{{{ .Release.Namespace }}}}_{c}" for c in config["whitelist"]]
+		out.append({"name": name, "enable": True, "config": config})
+	return out
+
+
+def to_crd_route(
+	route: dict[str, Any], shared_plugins: dict[str, Any], backend: dict[str, Any]
+) -> dict[str, Any]:
+	match: dict[str, Any] = {"hosts": ["__HOSTS__"], "paths": route["uris"]}
+	if "methods" in route:
+		match["methods"] = route["methods"]
+	if route.get("vars"):
+		match["exprs"] = [to_expr(v) for v in route["vars"]]
+	rule: dict[str, Any] = {"name": route["name"]}
+	if "priority" in route:
+		rule["priority"] = route["priority"]
+	if route.get("enable_websocket"):
+		rule["websocket"] = True
+	rule["match"] = match
+	# Route plugins win over the service's, as in ADC.
+	rule["plugins"] = to_crd_plugins({**shared_plugins, **route.get("plugins", {})})
+	rule["backends"] = [dict(backend)]
+	return rule
+
+
+def to_crd_upstream(service: dict[str, Any], service_name: str, labels: dict[str, str]) -> dict[str, Any]:
+	"""Named after the Kubernetes Service it configures."""
+	up = service["upstream"]
+	spec: dict[str, Any] = {"scheme": up["scheme"], "passHost": up["pass_host"]}
+	if "upstream_host" in up:
+		spec["upstreamHost"] = up["upstream_host"]
+	spec["retries"] = up["retries"]
+	spec["timeout"] = {k: f"{v}s" for k, v in up["timeout"].items()}
+	return {
+		"apiVersion": "apisix.apache.org/v2",
+		"kind": "ApisixUpstream",
+		"metadata": {"name": service_name, "labels": labels},
+		"spec": spec,
+	}
+
+
+def to_crd_consumer(consumer: dict[str, Any], labels: dict[str, str]) -> dict[str, Any]:
+	"""A key-auth consumer. Its key is read from the Secret named after the consumer
+	(key `key`), provisioned in the release namespace outside Git."""
+	if set(consumer.get("plugins", {})) != {"key-auth"}:
+		raise SystemExit(f"Consumer {consumer['username']}: only key-auth consumers are supported.")
+	return {
+		"apiVersion": "apisix.apache.org/v2",
+		"kind": "ApisixConsumer",
+		"metadata": {"name": consumer["username"], "labels": labels},
+		"spec": {
+			"ingressClassName": "${INGRESS_CLASS_NAME}",
+			"authParameter": {"keyAuth": {"secretRef": {"name": consumer["username"]}}},
+		},
+	}
+
+
+def helm_render(text: str, values: dict[str, str], required: set[str], ints: set[str]) -> str:
+	"""Swap the `${NAME}` placeholders and list sentinels for Helm expressions.
+
+	Only names in `values` are replaced: nginx variables such as `${cookie_x}` stay.
+	A name in `required` fails the render when unset; a name in `ints` is left unquoted.
+	"""
+	for sentinel, path in HELM_LISTS.items():
+		loop = rf"{{{{- range {path} }}}}\n\1- {{{{ . | quote }}}}\n{{{{- end }}}}"
+		if sentinel == "__HOSTS__":
+			# No hosts: drop the key, so the route matches any host.
+			text = re.sub(
+				rf"^( *)hosts:\n *- {sentinel}$",
+				rf"{{{{- if {path} }}}}\n\1hosts:\n" + loop + r"\n{{- end }}",
+				text,
+				flags=re.M,
+			)
+		else:
+			text = re.sub(rf"^( *)- {sentinel}$", loop, text, flags=re.M)
+	out = []
+	for line in text.split("\n"):
+		whole = re.fullmatch(r"(\s*(?:- )?(?:[^\s:][^:]*:\s+)?)\$\{(\w+)\}", line)
+		if whole and whole[2] in values:
+			expr = values[whole[2]]
+			if whole[2] in required:
+				expr = f'required "{expr.removeprefix(".Values.")} is required" {expr}'
+			quote = "" if whole[2] in ints else " | quote"
+			line = f"{whole[1]}{{{{ {expr}{quote} }}}}"
+		else:
+			line = re.sub(
+				r"\$\{(\w+)\}",
+				lambda m: f"{{{{ {values[m[1]]} }}}}" if m[1] in values else m[0],
+				line,
+			)
+		out.append(line)
+	return "\n".join(out)
+
+
+def write_helm_templates(
+	doc: dict[str, Any],
+	out_dir: Path,
+	header_lines: list[str],
+	*,
+	app: str,
+	backends: dict[str, tuple[str, str]],
+	values: dict[str, str],
+	required: set[str],
+	ints: set[str],
+) -> None:
+	"""The ADC document as APISIX Ingress Controller resources, in Helm template form.
+
+	One ApisixRoute per ADC service, one ApisixUpstream per backend Service carrying the
+	service's upstream settings (rewritten Host, timeouts, retries), and one
+	ApisixConsumer per consumer. `backends` maps each ADC service name to the
+	`(service name, port)` placeholders of its Kubernetes Service. `values` maps the
+	app's own placeholders to `.Values` paths, on top of HELM_COMMON_VALUES.
+	"""
+	labels = {"app": app}
+	routes, upstreams = [], []
+	for service in doc["services"]:
+		svc_name, svc_port = backends[service["name"]]
+		backend = {"serviceName": svc_name, "servicePort": svc_port}
+		routes.append(
+			{
+				"apiVersion": "apisix.apache.org/v2",
+				"kind": "ApisixRoute",
+				"metadata": {"name": service["name"], "labels": labels},
+				"spec": {
+					"ingressClassName": "${INGRESS_CLASS_NAME}",
+					"http": [to_crd_route(r, service.get("plugins", {}), backend) for r in service["routes"]],
+				},
+			}
+		)
+		upstreams.append(to_crd_upstream(service, svc_name, labels))
+	consumers = [to_crd_consumer(c, labels) for c in doc.get("consumers", [])]
+
+	values = {**HELM_COMMON_VALUES, **values}
+	out_dir.mkdir(parents=True, exist_ok=True)
+	header = "".join(f"# {line}\n" for line in header_lines)
+	files = {"apisix-route.yaml": routes, "apisix-upstream.yaml": upstreams}
+	if consumers:
+		files["apisix-consumer.yaml"] = consumers
+	for filename, resources in files.items():
+		body = "---\n".join(
+			yaml.safe_dump(r, sort_keys=False, default_flow_style=False, width=100) for r in resources
+		)
+		(out_dir / filename).write_text(header + helm_render(body, values, required, ints))

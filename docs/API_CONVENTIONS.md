@@ -88,6 +88,9 @@ Plural nouns, lowercase kebab-case segments, lifecycle actions as `POST` sub-pat
 
 1. Declare the route with `prefixed("/api/v1/<resource>")`.
 2. Regenerate the specs: `python3 openapi/generate_openapi_spec.py`.
-3. Give the operation a throttling tier in `apisix/generate_apisix_config_from_spec.py`
-   (`TIER_OVERRIDES`, keyed by the public `/v1/...` path) and regenerate `adc.yaml`.
+3. Give the operation a throttling tier: in an app, the `tier=` on its `@route` (or the
+   app's `TIER_OVERRIDES`); in oan_auth_service, `AUTH_TIER_OVERRIDES` in
+   `gateway_apisix.py`, keyed by the public `/v1/...` path. Then regenerate the app's
+   `apisix/` output. oan_auth_service has no gateway config of its own: each app includes
+   its endpoints.
 4. Document the public `/v1/...` URL in READMEs and client docs, never `/api/v1/...`.
