@@ -46,13 +46,13 @@ services:
       latency_metrics: true
       bandwidth_metrics: true
   routes:
-  - name: post-api-v1-auth-login
+  - name: post-v1-auth-login
     methods:
     - POST
     paths:
-    - ~/api/v1/auth/login$
+    - ~/v1/auth/login$
     strip_path: false
-    regex_priority: 4
+    regex_priority: 3
     tags:
     - oan
     - auth
@@ -69,13 +69,13 @@ services:
         policy: redis
         fault_tolerant: true
         hide_client_headers: false
-  - name: post-api-v1-auth-register
+  - name: post-v1-auth-register
     methods:
     - POST
     paths:
-    - ~/api/v1/auth/register$
+    - ~/v1/auth/register$
     strip_path: false
-    regex_priority: 4
+    regex_priority: 3
     tags:
     - oan
     - auth
@@ -92,13 +92,13 @@ services:
         policy: redis
         fault_tolerant: true
         hide_client_headers: false
-  - name: post-api-v1-auth-refresh
+  - name: post-v1-auth-refresh
     methods:
     - POST
     paths:
-    - ~/api/v1/auth/refresh$
+    - ~/v1/auth/refresh$
     strip_path: false
-    regex_priority: 4
+    regex_priority: 3
     tags:
     - oan
     - auth
@@ -115,13 +115,13 @@ services:
         policy: redis
         fault_tolerant: true
         hide_client_headers: false
-  - name: post-api-v1-auth-logout
+  - name: post-v1-auth-logout
     methods:
     - POST
     paths:
-    - ~/api/v1/auth/logout$
+    - ~/v1/auth/logout$
     strip_path: false
-    regex_priority: 4
+    regex_priority: 3
     tags:
     - oan
     - auth
@@ -138,34 +138,11 @@ services:
         policy: redis
         fault_tolerant: true
         hide_client_headers: false
-  - name: post-api-v1-auth-password-initial
+  - name: post-v1-auth-password-initial
     methods:
     - POST
     paths:
-    - ~/api/v1/auth/password/initial$
-    strip_path: false
-    regex_priority: 5
-    tags:
-    - oan
-    - auth
-    - v1
-    - d02
-    - public-auth
-    - public
-    plugins:
-    - name: rate-limiting
-      config:
-        minute: 5
-        hour: 30
-        limit_by: ip
-        policy: redis
-        fault_tolerant: true
-        hide_client_headers: false
-  - name: post-api-v1-auth-forgot-password
-    methods:
-    - POST
-    paths:
-    - ~/api/v1/auth/forgot-password$
+    - ~/v1/auth/password/initial$
     strip_path: false
     regex_priority: 4
     tags:
@@ -184,13 +161,13 @@ services:
         policy: redis
         fault_tolerant: true
         hide_client_headers: false
-  - name: post-api-v1-auth-password-forgot
+  - name: post-v1-auth-forgot-password
     methods:
     - POST
     paths:
-    - ~/api/v1/auth/password/forgot$
+    - ~/v1/auth/forgot-password$
     strip_path: false
-    regex_priority: 5
+    regex_priority: 3
     tags:
     - oan
     - auth
@@ -207,11 +184,11 @@ services:
         policy: redis
         fault_tolerant: true
         hide_client_headers: false
-  - name: post-api-v1-auth-reset-password
+  - name: post-v1-auth-password-forgot
     methods:
     - POST
     paths:
-    - ~/api/v1/auth/reset-password$
+    - ~/v1/auth/password/forgot$
     strip_path: false
     regex_priority: 4
     tags:
@@ -230,13 +207,13 @@ services:
         policy: redis
         fault_tolerant: true
         hide_client_headers: false
-  - name: post-api-v1-auth-password-reset
+  - name: post-v1-auth-reset-password
     methods:
     - POST
     paths:
-    - ~/api/v1/auth/password/reset$
+    - ~/v1/auth/reset-password$
     strip_path: false
-    regex_priority: 5
+    regex_priority: 3
     tags:
     - oan
     - auth
@@ -253,13 +230,36 @@ services:
         policy: redis
         fault_tolerant: true
         hide_client_headers: false
-  - name: get-api-v1-auth-me
+  - name: post-v1-auth-password-reset
+    methods:
+    - POST
+    paths:
+    - ~/v1/auth/password/reset$
+    strip_path: false
+    regex_priority: 4
+    tags:
+    - oan
+    - auth
+    - v1
+    - d02
+    - public-auth
+    - public
+    plugins:
+    - name: rate-limiting
+      config:
+        minute: 5
+        hour: 30
+        limit_by: ip
+        policy: redis
+        fault_tolerant: true
+        hide_client_headers: false
+  - name: get-v1-auth-me
     methods:
     - GET
     paths:
-    - ~/api/v1/auth/me$
+    - ~/v1/auth/me$
     strip_path: false
-    regex_priority: 4
+    regex_priority: 3
     tags:
     - oan
     - auth
@@ -283,13 +283,13 @@ services:
         key_claim_name: iss
         header_names:
         - Authorization
-  - name: get-api-v1-auth-keys
+  - name: get-v1-auth-keys
     methods:
     - GET
     paths:
-    - ~/api/v1/auth/keys$
+    - ~/v1/auth/keys$
     strip_path: false
-    regex_priority: 4
+    regex_priority: 3
     tags:
     - oan
     - auth
@@ -306,13 +306,13 @@ services:
         policy: redis
         fault_tolerant: true
         hide_client_headers: false
-  - name: get-api-v1-auth-health
+  - name: get-v1-auth-health
     methods:
     - GET
     paths:
-    - ~/api/v1/auth/health$
+    - ~/v1/auth/health$
     strip_path: false
-    regex_priority: 4
+    regex_priority: 3
     tags:
     - oan
     - auth
@@ -329,13 +329,13 @@ services:
         policy: redis
         fault_tolerant: true
         hide_client_headers: false
-  - name: get-api-v1-auth-metadata
+  - name: get-v1-auth-metadata
     methods:
     - GET
     paths:
-    - ~/api/v1/auth/metadata$
+    - ~/v1/auth/metadata$
     strip_path: false
-    regex_priority: 4
+    regex_priority: 3
     tags:
     - oan
     - auth
@@ -352,6 +352,486 @@ services:
         policy: redis
         fault_tolerant: true
         hide_client_headers: false
+  - name: get-v1-admin-users
+    methods:
+    - GET
+    paths:
+    - ~/v1/admin/users$
+    strip_path: false
+    regex_priority: 3
+    tags:
+    - oan
+    - auth
+    - v1
+    - d05
+    - admin
+    - bearer
+    plugins:
+    - name: rate-limiting
+      config:
+        minute: 60
+        hour: 1000
+        limit_by: consumer
+        policy: redis
+        fault_tolerant: true
+        hide_client_headers: false
+    - name: jwt
+      config:
+        claims_to_verify:
+        - exp
+        key_claim_name: iss
+        header_names:
+        - Authorization
+  - name: post-v1-admin-users
+    methods:
+    - POST
+    paths:
+    - ~/v1/admin/users$
+    strip_path: false
+    regex_priority: 3
+    tags:
+    - oan
+    - auth
+    - v1
+    - d05
+    - admin
+    - bearer
+    plugins:
+    - name: rate-limiting
+      config:
+        minute: 60
+        hour: 1000
+        limit_by: consumer
+        policy: redis
+        fault_tolerant: true
+        hide_client_headers: false
+    - name: jwt
+      config:
+        claims_to_verify:
+        - exp
+        key_claim_name: iss
+        header_names:
+        - Authorization
+  - name: get-v1-admin-users-user_id
+    methods:
+    - GET
+    paths:
+    - ~/v1/admin/users/(?<user_id>[^/]+)$
+    strip_path: false
+    regex_priority: 4
+    tags:
+    - oan
+    - auth
+    - v1
+    - d05
+    - admin
+    - bearer
+    plugins:
+    - name: rate-limiting
+      config:
+        minute: 60
+        hour: 1000
+        limit_by: consumer
+        policy: redis
+        fault_tolerant: true
+        hide_client_headers: false
+    - name: jwt
+      config:
+        claims_to_verify:
+        - exp
+        key_claim_name: iss
+        header_names:
+        - Authorization
+  - name: patch-v1-admin-users-user_id
+    methods:
+    - PATCH
+    paths:
+    - ~/v1/admin/users/(?<user_id>[^/]+)$
+    strip_path: false
+    regex_priority: 4
+    tags:
+    - oan
+    - auth
+    - v1
+    - d05
+    - admin
+    - bearer
+    plugins:
+    - name: rate-limiting
+      config:
+        minute: 60
+        hour: 1000
+        limit_by: consumer
+        policy: redis
+        fault_tolerant: true
+        hide_client_headers: false
+    - name: jwt
+      config:
+        claims_to_verify:
+        - exp
+        key_claim_name: iss
+        header_names:
+        - Authorization
+  - name: post-v1-admin-users-user_id-temporary-password
+    methods:
+    - POST
+    paths:
+    - ~/v1/admin/users/(?<user_id>[^/]+)/temporary-password$
+    strip_path: false
+    regex_priority: 5
+    tags:
+    - oan
+    - auth
+    - v1
+    - d05
+    - admin
+    - bearer
+    plugins:
+    - name: rate-limiting
+      config:
+        minute: 60
+        hour: 1000
+        limit_by: consumer
+        policy: redis
+        fault_tolerant: true
+        hide_client_headers: false
+    - name: jwt
+      config:
+        claims_to_verify:
+        - exp
+        key_claim_name: iss
+        header_names:
+        - Authorization
+  - name: delete-v1-admin-users-user_id-sessions
+    methods:
+    - DELETE
+    paths:
+    - ~/v1/admin/users/(?<user_id>[^/]+)/sessions$
+    strip_path: false
+    regex_priority: 5
+    tags:
+    - oan
+    - auth
+    - v1
+    - d05
+    - admin
+    - bearer
+    plugins:
+    - name: rate-limiting
+      config:
+        minute: 60
+        hour: 1000
+        limit_by: consumer
+        policy: redis
+        fault_tolerant: true
+        hide_client_headers: false
+    - name: jwt
+      config:
+        claims_to_verify:
+        - exp
+        key_claim_name: iss
+        header_names:
+        - Authorization
+  - name: get-v1-admin-roles
+    methods:
+    - GET
+    paths:
+    - ~/v1/admin/roles$
+    strip_path: false
+    regex_priority: 3
+    tags:
+    - oan
+    - auth
+    - v1
+    - d05
+    - admin
+    - bearer
+    plugins:
+    - name: rate-limiting
+      config:
+        minute: 60
+        hour: 1000
+        limit_by: consumer
+        policy: redis
+        fault_tolerant: true
+        hide_client_headers: false
+    - name: jwt
+      config:
+        claims_to_verify:
+        - exp
+        key_claim_name: iss
+        header_names:
+        - Authorization
+  - name: get-v1-admin-users-user_id-roles
+    methods:
+    - GET
+    paths:
+    - ~/v1/admin/users/(?<user_id>[^/]+)/roles$
+    strip_path: false
+    regex_priority: 5
+    tags:
+    - oan
+    - auth
+    - v1
+    - d05
+    - admin
+    - bearer
+    plugins:
+    - name: rate-limiting
+      config:
+        minute: 60
+        hour: 1000
+        limit_by: consumer
+        policy: redis
+        fault_tolerant: true
+        hide_client_headers: false
+    - name: jwt
+      config:
+        claims_to_verify:
+        - exp
+        key_claim_name: iss
+        header_names:
+        - Authorization
+  - name: post-v1-admin-users-user_id-roles
+    methods:
+    - POST
+    paths:
+    - ~/v1/admin/users/(?<user_id>[^/]+)/roles$
+    strip_path: false
+    regex_priority: 5
+    tags:
+    - oan
+    - auth
+    - v1
+    - d05
+    - admin
+    - bearer
+    plugins:
+    - name: rate-limiting
+      config:
+        minute: 60
+        hour: 1000
+        limit_by: consumer
+        policy: redis
+        fault_tolerant: true
+        hide_client_headers: false
+    - name: jwt
+      config:
+        claims_to_verify:
+        - exp
+        key_claim_name: iss
+        header_names:
+        - Authorization
+  - name: delete-v1-admin-users-user_id-roles-role
+    methods:
+    - DELETE
+    paths:
+    - ~/v1/admin/users/(?<user_id>[^/]+)/roles/(?<role>[^/]+)$
+    strip_path: false
+    regex_priority: 6
+    tags:
+    - oan
+    - auth
+    - v1
+    - d05
+    - admin
+    - bearer
+    plugins:
+    - name: rate-limiting
+      config:
+        minute: 60
+        hour: 1000
+        limit_by: consumer
+        policy: redis
+        fault_tolerant: true
+        hide_client_headers: false
+    - name: jwt
+      config:
+        claims_to_verify:
+        - exp
+        key_claim_name: iss
+        header_names:
+        - Authorization
+  - name: get-v1-notifications
+    methods:
+    - GET
+    paths:
+    - ~/v1/notifications$
+    strip_path: false
+    regex_priority: 2
+    tags:
+    - oan
+    - auth
+    - v1
+    - d06
+    - authenticated-core
+    - bearer
+    plugins:
+    - name: rate-limiting
+      config:
+        minute: 120
+        hour: 4000
+        limit_by: consumer
+        policy: redis
+        fault_tolerant: true
+        hide_client_headers: false
+    - name: jwt
+      config:
+        claims_to_verify:
+        - exp
+        key_claim_name: iss
+        header_names:
+        - Authorization
+  - name: patch-v1-notifications
+    methods:
+    - PATCH
+    paths:
+    - ~/v1/notifications$
+    strip_path: false
+    regex_priority: 2
+    tags:
+    - oan
+    - auth
+    - v1
+    - d06
+    - authenticated-core
+    - bearer
+    plugins:
+    - name: rate-limiting
+      config:
+        minute: 120
+        hour: 4000
+        limit_by: consumer
+        policy: redis
+        fault_tolerant: true
+        hide_client_headers: false
+    - name: jwt
+      config:
+        claims_to_verify:
+        - exp
+        key_claim_name: iss
+        header_names:
+        - Authorization
+  - name: delete-v1-notifications
+    methods:
+    - DELETE
+    paths:
+    - ~/v1/notifications$
+    strip_path: false
+    regex_priority: 2
+    tags:
+    - oan
+    - auth
+    - v1
+    - d06
+    - authenticated-core
+    - bearer
+    plugins:
+    - name: rate-limiting
+      config:
+        minute: 120
+        hour: 4000
+        limit_by: consumer
+        policy: redis
+        fault_tolerant: true
+        hide_client_headers: false
+    - name: jwt
+      config:
+        claims_to_verify:
+        - exp
+        key_claim_name: iss
+        header_names:
+        - Authorization
+  - name: get-v1-notifications-notification_id
+    methods:
+    - GET
+    paths:
+    - ~/v1/notifications/(?<notification_id>[^/]+)$
+    strip_path: false
+    regex_priority: 3
+    tags:
+    - oan
+    - auth
+    - v1
+    - d06
+    - authenticated-core
+    - bearer
+    plugins:
+    - name: rate-limiting
+      config:
+        minute: 120
+        hour: 4000
+        limit_by: consumer
+        policy: redis
+        fault_tolerant: true
+        hide_client_headers: false
+    - name: jwt
+      config:
+        claims_to_verify:
+        - exp
+        key_claim_name: iss
+        header_names:
+        - Authorization
+  - name: patch-v1-notifications-notification_id
+    methods:
+    - PATCH
+    paths:
+    - ~/v1/notifications/(?<notification_id>[^/]+)$
+    strip_path: false
+    regex_priority: 3
+    tags:
+    - oan
+    - auth
+    - v1
+    - d06
+    - authenticated-core
+    - bearer
+    plugins:
+    - name: rate-limiting
+      config:
+        minute: 120
+        hour: 4000
+        limit_by: consumer
+        policy: redis
+        fault_tolerant: true
+        hide_client_headers: false
+    - name: jwt
+      config:
+        claims_to_verify:
+        - exp
+        key_claim_name: iss
+        header_names:
+        - Authorization
+  - name: delete-v1-notifications-notification_id
+    methods:
+    - DELETE
+    paths:
+    - ~/v1/notifications/(?<notification_id>[^/]+)$
+    strip_path: false
+    regex_priority: 3
+    tags:
+    - oan
+    - auth
+    - v1
+    - d06
+    - authenticated-core
+    - bearer
+    plugins:
+    - name: rate-limiting
+      config:
+        minute: 120
+        hour: 4000
+        limit_by: consumer
+        policy: redis
+        fault_tolerant: true
+        hide_client_headers: false
+    - name: jwt
+      config:
+        claims_to_verify:
+        - exp
+        key_claim_name: iss
+        header_names:
+        - Authorization
 consumers:
 - username: oan-auth-jwt-issuer
   tags:

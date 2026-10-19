@@ -33,6 +33,9 @@ from oan_auth_service.config import settings
 
 ACCESS_TOKEN_TYPE = "access"
 
+# Set by this module; an `on_access_token_claims` hook may not replace them.
+RESERVED_CLAIMS = frozenset({"iss", "sub", "aud", "iat", "nbf", "exp", "azp", "typ", "jti", "roles", "scope"})
+
 # 32 bytes of CSPRNG output, url-safe base64 encoded.
 REFRESH_TOKEN_BYTES = 32
 
@@ -74,6 +77,29 @@ def issue_access_token(user: str, roles: list[str], scope: list[str] | None = No
 
 	if scope is not None:
 		claims["scope"] = scope
+
+	# Consuming apps add claims their own clients read straight from the token
+	# (for example a user type used for routing). Registered claims are not theirs
+	# to override. A hook is on the sign-in path of every app, so a failing one is
+	# logged and skipped rather than allowed to break token issuance.
+	for hook_path in frappe.get_hooks("on_access_token_claims"):
+		try:
+			extra = frappe.get_attr(hook_path)(user=user, roles=roles)
+		except Exception:
+			frappe.log_error(
+				title=f"on_access_token_claims hook failed: {hook_path}",
+				message=frappe.get_traceback(),
+			)
+			continue
+		if extra is None:
+			continue
+		if not isinstance(extra, dict):
+			frappe.log_error(
+				title=f"on_access_token_claims hook invalid return: {hook_path}",
+				message=f"Expected dict | None, got {type(extra).__name__}: {extra!r}",
+			)
+			continue
+		claims.update({k: v for k, v in extra.items() if k not in RESERVED_CLAIMS})
 
 	token = jwt.encode(claims, private_key, algorithm=ALGORITHM, headers={"kid": kid})
 	return token, ttl

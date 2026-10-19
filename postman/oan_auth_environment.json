@@ -6,55 +6,141 @@
 			"key": "base_url",
 			"value": "",
 			"type": "default",
-			"enabled": true
+			"enabled": true,
+			"description": "Site URL, e.g. http://testsite.localhost:8000"
 		},
 		{
 			"key": "user_email",
 			"value": "",
 			"type": "default",
-			"enabled": true
+			"enabled": true,
+			"description": "Generated when blank. Register creates this account; Login uses it"
 		},
 		{
 			"key": "user_password",
 			"value": "",
 			"type": "secret",
-			"enabled": true
+			"enabled": true,
+			"description": "Generated when blank"
 		},
 		{
 			"key": "user_full_name",
 			"value": "",
 			"type": "default",
-			"enabled": true
+			"enabled": true,
+			"description": "Generated when blank"
 		},
 		{
 			"key": "user_phone_number",
 			"value": "",
 			"type": "default",
-			"enabled": true
-		},
-		{
-			"key": "reset_key",
-			"value": "",
-			"type": "secret",
-			"enabled": true
+			"enabled": true,
+			"description": "E.164. Generated when blank"
 		},
 		{
 			"key": "user_new_password",
 			"value": "",
 			"type": "secret",
-			"enabled": true
+			"enabled": true,
+			"description": "Generated when blank. Used by Reset Password and Set Initial Password"
+		},
+		{
+			"key": "reset_key",
+			"value": "",
+			"type": "secret",
+			"enabled": true,
+			"description": "From the password reset email link"
+		},
+		{
+			"key": "admin_username",
+			"value": "",
+			"type": "default",
+			"enabled": true,
+			"description": "A System Manager, used by Admin > Sign in as admin"
+		},
+		{
+			"key": "admin_password",
+			"value": "",
+			"type": "secret",
+			"enabled": true,
+			"description": "Password of admin_username"
+		},
+		{
+			"key": "admin_access_token",
+			"value": "",
+			"type": "secret",
+			"enabled": true,
+			"description": "Set by Admin > Sign in as admin"
 		},
 		{
 			"key": "access_token",
 			"value": "",
 			"type": "secret",
-			"enabled": true
+			"enabled": true,
+			"description": "Set by Register, Login and Refresh"
 		},
 		{
 			"key": "refresh_token",
 			"value": "",
 			"type": "secret",
-			"enabled": true
+			"enabled": true,
+			"description": "Set by Register, Login and Refresh"
+		},
+		{
+			"key": "target_email",
+			"value": "",
+			"type": "default",
+			"enabled": true,
+			"description": "Generated when blank. Login email of the user the admin onboards"
+		},
+		{
+			"key": "user_fayda_id",
+			"value": "",
+			"type": "default",
+			"enabled": true,
+			"description": "16 digits, new each run. Needed by the grievance app's registration hook"
+		},
+		{
+			"key": "target_fayda_id",
+			"value": "",
+			"type": "default",
+			"enabled": true,
+			"description": "16 digits, new each run. Needed by the grievance app's registration hook"
+		},
+		{
+			"key": "target_phone_number",
+			"value": "",
+			"type": "default",
+			"enabled": true,
+			"description": "E.164, new each run. Phone of the user the admin onboards"
+		},
+		{
+			"key": "target_role",
+			"value": "",
+			"type": "default",
+			"enabled": true,
+			"description": "Defaults to Grievance Submitter. Role the admin grants and revokes"
+		},
+		{
+			"key": "target_user_id",
+			"value": "",
+			"type": "default",
+			"enabled": true,
+			"description": "Set by Admin > Create User"
+		},
+		{
+			"key": "temporary_password",
+			"value": "",
+			"type": "secret",
+			"enabled": true,
+			"description": "Set by Admin > Create User and Issue Temporary Password"
+		},
+		{
+			"key": "notification_id",
+			"value": "",
+			"type": "default",
+			"enabled": true,
+			"description": "Set by Notifications > List my notifications"
 		}
 	],
 	"_postman_variable_scope": "environment"

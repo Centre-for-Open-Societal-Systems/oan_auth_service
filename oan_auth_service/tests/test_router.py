@@ -174,7 +174,7 @@ class TestRESTAuthEndpoints(unittest.TestCase):
 			self.assertEqual(reg_data["status"], "success")
 			user_id = reg_data["data"]["user"]
 			self.created_users.append(user_id)
-			self.assertTrue(bool(reg_data["data"]["refresh_token"]))
+			self.assertNotIn("refresh_token", reg_data["data"])
 
 			# 2. Login via REST POST /api/v1/auth/login
 			login_req = make_test_request(

@@ -1,0 +1,1504 @@
+{
+	"info": {
+		"_postman_id": "9b3c4f9a-6562-42ea-a45a-c6e3952f41b2",
+		"name": "OAN Authentication Service API",
+		"description": "JWT authentication and user lifecycle service for OpenAgriNet (OAN). Provides RESTful endpoints for user registration, login, token refresh, logout, password recovery, identity introspection, metadata aggregation, and admin user and role management.\n\nGenerated from openapi/openapi_v1.yaml by postman/generate_postman_collection.py; do not edit by hand.\n\nImport oan_auth_environment.json and set base_url, admin_username and admin_password. Every other variable is generated when blank. Run the collection top to bottom: Register and Login store the tokens protected requests use; the Admin folder signs in as the admin itself, and Onboard a user stores target_user_id for the rest. Reset Password is skipped unless reset_key is set, because that key only arrives by email.",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"auth": {
+		"type": "bearer",
+		"bearer": [
+			{
+				"key": "token",
+				"value": "{{access_token}}",
+				"type": "string"
+			}
+		]
+	},
+	"event": [
+		{
+			"listen": "prerequest",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					"var rand = Math.random().toString(36).slice(2, 8);",
+					"function fallback(key, value) { if (!pm.environment.get(key)) { pm.environment.set(key, value); } }",
+					"fallback('user_email', 'pm_user_' + rand + '@example.com');",
+					"fallback('user_password', 'Passw0rd!' + rand);",
+					"fallback('user_new_password', 'NewPassw0rd!' + rand);",
+					"fallback('user_full_name', 'Postman User');",
+					"fallback('user_phone_number', '+2519' + Math.floor(10000000 + Math.random() * 89999999));",
+					"fallback('target_email', 'pm_target_' + rand + '@example.com');",
+					"fallback('target_role', 'Grievance Submitter');",
+					"fallback('target_phone_number', '+2519' + Math.floor(10000000 + Math.random() * 89999999));",
+					"fallback('user_fayda_id', String(Math.floor(1e15 + Math.random() * 9e15)));",
+					"fallback('target_fayda_id', String(Math.floor(1e15 + Math.random() * 9e15)));"
+				]
+			}
+		}
+	],
+	"item": [
+		{
+			"name": "System & Keys",
+			"description": "Health check, public key discovery, and metadata",
+			"item": [
+				{
+					"name": "Service health status",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"pm.test('Response is a success envelope', function () {",
+									"    pm.response.to.be.json;",
+									"    pm.expect(pm.response.json().status).to.eql('success');",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/v1/auth/health",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"auth",
+								"health"
+							]
+						},
+						"description": "Health check endpoint for the auth service.",
+						"auth": {
+							"type": "noauth"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Public signing keys",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"pm.test('Response is a success envelope', function () {",
+									"    pm.response.to.be.json;",
+									"    pm.expect(pm.response.json().status).to.eql('success');",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/v1/auth/keys",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"auth",
+								"keys"
+							]
+						},
+						"description": "Retrieve the RS256 public keys (JWKS) that verify access tokens, and the active kid.",
+						"auth": {
+							"type": "noauth"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Aggregated form and reference metadata",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"pm.test('Response is a success envelope', function () {",
+									"    pm.response.to.be.json;",
+									"    pm.expect(pm.response.json().status).to.eql('success');",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/v1/auth/metadata",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"auth",
+								"metadata"
+							]
+						},
+						"description": "Aggregate public dropdown and reference metadata across installed apps.",
+						"auth": {
+							"type": "noauth"
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Authentication & Session",
+			"description": "User login, registration, and token lifecycle",
+			"item": [
+				{
+					"name": "Register a new user account",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"var rand = Math.random().toString(36).slice(2, 8);",
+									"function fresh(key, prefix, value) { var cur = pm.environment.get(key); if (!cur || String(cur).indexOf(prefix) === 0) { pm.environment.set(key, value); } }",
+									"fresh('user_email', 'pm_', 'pm_user_' + rand + '@example.com');",
+									"fresh('user_phone_number', '+2519', '+2519' + Math.floor(10000000 + Math.random() * 89999999));",
+									"pm.environment.set('user_fayda_id', String(Math.floor(1e15 + Math.random() * 9e15)));"
+								]
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"pm.test('Response is a success envelope', function () {",
+									"    pm.response.to.be.json;",
+									"    pm.expect(pm.response.json().status).to.eql('success');",
+									"});",
+									"var data = {}; try { data = pm.response.json().data || {}; } catch (e) {}",
+									"if (data.access_token) { pm.environment.set('access_token', data.access_token); }",
+									"if (data.refresh_token) { pm.environment.set('refresh_token', data.refresh_token); }"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/v1/auth/register",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"auth",
+								"register"
+							]
+						},
+						"description": "Register a new user account with password, full name, and either email or phone_number. When country_code is omitted, phone_number must be in full E.164 format (e.g. +251911223344). When country_code is provided (e.g. +251), phone_number is treated as the national subscriber number.",
+						"auth": {
+							"type": "noauth"
+						},
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"full_name\": \"{{user_full_name}}\",\n    \"email\": \"{{user_email}}\",\n    \"phone_number\": \"{{user_phone_number}}\",\n    \"password\": \"{{user_password}}\",\n    \"fayda_id\": \"{{user_fayda_id}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Login and obtain token pair",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"pm.test('Response is a success envelope', function () {",
+									"    pm.response.to.be.json;",
+									"    pm.expect(pm.response.json().status).to.eql('success');",
+									"});",
+									"var data = {}; try { data = pm.response.json().data || {}; } catch (e) {}",
+									"if (data.access_token) { pm.environment.set('access_token', data.access_token); }",
+									"if (data.refresh_token) { pm.environment.set('refresh_token', data.refresh_token); }"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/v1/auth/login",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"auth",
+								"login"
+							]
+						},
+						"description": "Authenticate with user credentials (email, phone number, or username) and password to receive an access token and single-use refresh token.",
+						"auth": {
+							"type": "noauth"
+						},
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"usr\": \"{{user_email}}\",\n    \"pwd\": \"{{user_password}}\",\n    \"remember_me\": false\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Exchange single-use refresh token",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"pm.test('Response is a success envelope', function () {",
+									"    pm.response.to.be.json;",
+									"    pm.expect(pm.response.json().status).to.eql('success');",
+									"});",
+									"var data = {}; try { data = pm.response.json().data || {}; } catch (e) {}",
+									"if (data.access_token) { pm.environment.set('access_token', data.access_token); }",
+									"if (data.refresh_token) { pm.environment.set('refresh_token', data.refresh_token); }"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/v1/auth/refresh",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"auth",
+								"refresh"
+							]
+						},
+						"description": "Exchange a valid single-use refresh token for a new access token and rotated refresh token.",
+						"auth": {
+							"type": "noauth"
+						},
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"refresh_token\": \"{{refresh_token}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Revoke refresh token",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"pm.test('Response is a success envelope', function () {",
+									"    pm.response.to.be.json;",
+									"    pm.expect(pm.response.json().status).to.eql('success');",
+									"});",
+									"pm.environment.unset('refresh_token');"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/v1/auth/logout",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"auth",
+								"logout"
+							]
+						},
+						"description": "Revoke an active refresh token session.",
+						"auth": {
+							"type": "noauth"
+						},
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"refresh_token\": \"{{refresh_token}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Identity & Profile",
+			"description": "User profile introspection and claims",
+			"item": [
+				{
+					"name": "Introspect current authenticated user",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"pm.test('Response is a success envelope', function () {",
+									"    pm.response.to.be.json;",
+									"    pm.expect(pm.response.json().status).to.eql('success');",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/v1/auth/me",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"auth",
+								"me"
+							]
+						},
+						"description": "Introspect identity details, contact information, assigned roles, and app-specific profiles for the authenticated user."
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Notifications",
+			"description": "Operations for Notifications",
+			"item": [
+				{
+					"name": "List my notifications",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"pm.test('Response is a success envelope', function () {",
+									"    pm.response.to.be.json;",
+									"    pm.expect(pm.response.json().status).to.eql('success');",
+									"});",
+									"var data = {}; try { data = pm.response.json().data || {}; } catch (e) {}",
+									"if (data.items && data.items.length > 0) { pm.environment.set('notification_id', data.items[0].id); }"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/v1/notifications",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"notifications"
+							]
+						},
+						"description": "Newest first, for the caller only. `status` is unread, read or all. `unread_count` ignores the filter and drives the badge."
+					},
+					"response": []
+				},
+				{
+					"name": "Mark many of my notifications read or unread",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"pm.test('Response is a success envelope', function () {",
+									"    pm.response.to.be.json;",
+									"    pm.expect(pm.response.json().status).to.eql('success');",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "PATCH",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/v1/notifications",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"notifications"
+							]
+						},
+						"description": "Send `ids` or `all=true`, plus `read` (default true).",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"all\": true,\n    \"read\": true\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Delete many of my notifications",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"pm.test('Response is a success envelope', function () {",
+									"    pm.response.to.be.json;",
+									"    pm.expect(pm.response.json().status).to.eql('success');",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "DELETE",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/v1/notifications",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"notifications"
+							]
+						},
+						"description": "Send `ids` or `all=true`.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"all\": true\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Get one of my notifications",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"pm.test('Response is a success envelope', function () {",
+									"    pm.response.to.be.json;",
+									"    pm.expect(pm.response.json().status).to.eql('success');",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/v1/notifications/{{notification_id}}",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"notifications",
+								"{{notification_id}}"
+							]
+						},
+						"description": "Get one of my notifications"
+					},
+					"response": []
+				},
+				{
+					"name": "Mark one of my notifications read or unread",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"pm.test('Response is a success envelope', function () {",
+									"    pm.response.to.be.json;",
+									"    pm.expect(pm.response.json().status).to.eql('success');",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "PATCH",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/v1/notifications/{{notification_id}}",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"notifications",
+								"{{notification_id}}"
+							]
+						},
+						"description": "Mark one of my notifications read or unread",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"read\": true\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Delete one of my notifications",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"pm.test('Response is a success envelope', function () {",
+									"    pm.response.to.be.json;",
+									"    pm.expect(pm.response.json().status).to.eql('success');",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "DELETE",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/v1/notifications/{{notification_id}}",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"notifications",
+								"{{notification_id}}"
+							]
+						},
+						"description": "Delete one of my notifications"
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Admin",
+			"description": "User and role management. Requires System Manager or Administrator.",
+			"item": [
+				{
+					"name": "Sign in as admin",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"pm.test('Response is a success envelope', function () {",
+									"    pm.response.to.be.json;",
+									"    pm.expect(pm.response.json().status).to.eql('success');",
+									"});",
+									"var data = {}; try { data = pm.response.json().data || {}; } catch (e) {}",
+									"if (data.access_token) { pm.environment.set('admin_access_token', data.access_token); }"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"auth": {
+							"type": "noauth"
+						},
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"usr\": \"{{admin_username}}\",\n    \"pwd\": \"{{admin_password}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/api/v1/auth/login",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"auth",
+								"login"
+							]
+						},
+						"description": "Signs in with admin_username / admin_password (a System Manager) and stores admin_access_token, which every request in this folder uses."
+					},
+					"response": []
+				},
+				{
+					"name": "List assignable roles",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"pm.test('Response is a success envelope', function () {",
+									"    pm.response.to.be.json;",
+									"    pm.expect(pm.response.json().status).to.eql('success');",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/v1/admin/roles",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"admin",
+								"roles"
+							]
+						},
+						"description": "Every enabled role that can be granted through this API."
+					},
+					"response": []
+				},
+				{
+					"name": "Onboard a user",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.environment.set('target_phone_number', '+2519' + Math.floor(10000000 + Math.random() * 89999999));",
+									"pm.environment.set('target_fayda_id', String(Math.floor(1e15 + Math.random() * 9e15)));",
+									"var cur = pm.environment.get('target_email');",
+									"if (!cur || String(cur).indexOf('pm_') === 0) { pm.environment.set('target_email', 'pm_target_' + Math.random().toString(36).slice(2, 8) + '@example.com'); }"
+								]
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 201', function () {",
+									"    pm.response.to.have.status(201);",
+									"});",
+									"pm.test('Response is a success envelope', function () {",
+									"    pm.response.to.be.json;",
+									"    pm.expect(pm.response.json().status).to.eql('success');",
+									"});",
+									"var data = {}; try { data = pm.response.json().data || {}; } catch (e) {}",
+									"if (data.user) { pm.environment.set('target_user_id', data.user); }",
+									"if (data.temporary_password) { pm.environment.set('temporary_password', data.temporary_password); }"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/v1/admin/users",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"admin",
+								"users"
+							]
+						},
+						"description": "Create an account with any roles and a temporary password the user must replace at first sign-in. No tokens are issued. A generated temporary password is returned once, in the response.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"full_name\": \"Onboarded User\",\n    \"email\": \"{{target_email}}\",\n    \"phone_number\": \"{{target_phone_number}}\",\n    \"roles\": [\n        \"{{target_role}}\"\n    ],\n    \"fayda_id\": \"{{target_fayda_id}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "List users",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"pm.test('Response is a success envelope', function () {",
+									"    pm.response.to.be.json;",
+									"    pm.expect(pm.response.json().status).to.eql('success');",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/v1/admin/users",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"admin",
+								"users"
+							],
+							"query": [
+								{
+									"key": "page",
+									"value": "1",
+									"description": "",
+									"disabled": true
+								},
+								{
+									"key": "page_size",
+									"value": "20",
+									"description": "",
+									"disabled": true
+								},
+								{
+									"key": "search",
+									"value": "",
+									"description": "Substring of name, user id, login email or mobile",
+									"disabled": true
+								},
+								{
+									"key": "email",
+									"value": "{{target_email}}",
+									"description": "Exact login email",
+									"disabled": true
+								},
+								{
+									"key": "phone_number",
+									"value": "",
+									"description": "Exact mobile number, E.164",
+									"disabled": true
+								},
+								{
+									"key": "role",
+									"value": "{{target_role}}",
+									"description": "Holds this role",
+									"disabled": true
+								},
+								{
+									"key": "enabled",
+									"value": "true",
+									"description": "",
+									"disabled": true
+								}
+							]
+						},
+						"description": "List user accounts, newest first. Filter by free-text `search`, exact `email` or `phone_number`, `role` and `enabled`."
+					},
+					"response": []
+				},
+				{
+					"name": "Get a user",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"pm.test('Response is a success envelope', function () {",
+									"    pm.response.to.be.json;",
+									"    pm.expect(pm.response.json().status).to.eql('success');",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/v1/admin/users/{{target_user_id}}",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"admin",
+								"users",
+								"{{target_user_id}}"
+							]
+						},
+						"description": "Account details, roles and app-specific profiles of any user."
+					},
+					"response": []
+				},
+				{
+					"name": "Update a user",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"pm.test('Response is a success envelope', function () {",
+									"    pm.response.to.be.json;",
+									"    pm.expect(pm.response.json().status).to.eql('success');",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "PATCH",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/v1/admin/users/{{target_user_id}}",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"admin",
+								"users",
+								"{{target_user_id}}"
+							]
+						},
+						"description": "Change name, login email, mobile number or enabled status. Only the fields sent are changed. Disabling revokes every refresh token.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"first_name\": \"Renamed\",\n    \"enabled\": true\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "List a user's roles",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"pm.test('Response is a success envelope', function () {",
+									"    pm.response.to.be.json;",
+									"    pm.expect(pm.response.json().status).to.eql('success');",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/v1/admin/users/{{target_user_id}}/roles",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"admin",
+								"users",
+								"{{target_user_id}}",
+								"roles"
+							]
+						},
+						"description": "Roles granted to the user, without the ones every user holds implicitly."
+					},
+					"response": []
+				},
+				{
+					"name": "Grant roles",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"pm.test('Response is a success envelope', function () {",
+									"    pm.response.to.be.json;",
+									"    pm.expect(pm.response.json().status).to.eql('success');",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/v1/admin/users/{{target_user_id}}/roles",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"admin",
+								"users",
+								"{{target_user_id}}",
+								"roles"
+							]
+						},
+						"description": "Add roles to a user. Roles already held are ignored. The user's refresh tokens are revoked so the next token carries the new roles.",
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"roles\": [\n        \"{{target_role}}\"\n    ]\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Revoke a role",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"pm.test('Response is a success envelope', function () {",
+									"    pm.response.to.be.json;",
+									"    pm.expect(pm.response.json().status).to.eql('success');",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "DELETE",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/v1/admin/users/{{target_user_id}}/roles/{{target_role}}",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"admin",
+								"users",
+								"{{target_user_id}}",
+								"roles",
+								"{{target_role}}"
+							]
+						},
+						"description": "Remove one role from a user. The user's refresh tokens are revoked; access tokens already issued keep the old role claim until they expire."
+					},
+					"response": []
+				},
+				{
+					"name": "Issue a temporary password",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"pm.test('Response is a success envelope', function () {",
+									"    pm.response.to.be.json;",
+									"    pm.expect(pm.response.json().status).to.eql('success');",
+									"});",
+									"var data = {}; try { data = pm.response.json().data || {}; } catch (e) {}",
+									"if (data.temporary_password) { pm.environment.set('temporary_password', data.temporary_password); }"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/v1/admin/users/{{target_user_id}}/temporary-password",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"admin",
+								"users",
+								"{{target_user_id}}",
+								"temporary-password"
+							]
+						},
+						"description": "Set a temporary password the user must replace before signing in, ending every existing session. A generated password is returned once, in the response.",
+						"body": {
+							"mode": "raw",
+							"raw": "{}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Revoke a user's sessions",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"pm.test('Response is a success envelope', function () {",
+									"    pm.response.to.be.json;",
+									"    pm.expect(pm.response.json().status).to.eql('success');",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "DELETE",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/v1/admin/users/{{target_user_id}}/sessions",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"admin",
+								"users",
+								"{{target_user_id}}",
+								"sessions"
+							]
+						},
+						"description": "Delete every refresh token the user holds. Access tokens already issued stay valid until they expire."
+					},
+					"response": []
+				}
+			],
+			"auth": {
+				"type": "bearer",
+				"bearer": [
+					{
+						"key": "token",
+						"value": "{{admin_access_token}}",
+						"type": "string"
+					}
+				]
+			}
+		},
+		{
+			"name": "Password Recovery",
+			"description": "Forgot password and reset flows via email or SMS OTP",
+			"item": [
+				{
+					"name": "Initiate password recovery",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200 (or 501 when the site has no outgoing email)', function () {",
+									"    pm.expect(pm.response.code).to.be.oneOf([200, 501]);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/v1/auth/password/forgot",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"auth",
+								"password",
+								"forgot"
+							]
+						},
+						"description": "Initiate password recovery for an account via email reset link or SMS OTP code.",
+						"auth": {
+							"type": "noauth"
+						},
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"usr\": \"{{user_email}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Complete password reset",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"if (!pm.environment.get('reset_key')) {",
+									"    console.log('reset_key is empty: the reset link is emailed, so this request is skipped.');",
+									"    pm.execution.skipRequest();",
+									"}"
+								]
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"pm.test('Response is a success envelope', function () {",
+									"    pm.response.to.be.json;",
+									"    pm.expect(pm.response.json().status).to.eql('success');",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/v1/auth/password/reset",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"auth",
+								"password",
+								"reset"
+							]
+						},
+						"description": "Complete password reset using either an emailed reset key or a phone SMS OTP code with a new password.",
+						"auth": {
+							"type": "noauth"
+						},
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"key\": \"{{reset_key}}\",\n    \"new_password\": \"{{user_new_password}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Replace a temporary password",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"pm.test('Response is a success envelope', function () {",
+									"    pm.response.to.be.json;",
+									"    pm.expect(pm.response.json().status).to.eql('success');",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/v1/auth/password/initial",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"auth",
+								"password",
+								"initial"
+							]
+						},
+						"description": "Replace an admin-issued temporary password with one only the account holder knows. The temporary password proves identity; no token is needed or issued. Sign in with the new password afterwards.",
+						"auth": {
+							"type": "noauth"
+						},
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"usr\": \"{{target_email}}\",\n    \"current_password\": \"{{temporary_password}}\",\n    \"new_password\": \"{{user_new_password}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": []
+				}
+			]
+		}
+	]
+}
