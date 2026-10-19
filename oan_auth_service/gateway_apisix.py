@@ -117,10 +117,14 @@ def to_apisix_uri(path: str) -> str:
 	return re.sub(r"\{(\w+)\}", r":\1", path)
 
 
-def limit_count(tier: dict[str, Any], gateway_jwt: bool) -> dict[str, Any]:
+def limit_count(tier: dict[str, Any], gateway_jwt: bool, auth: str = "bearer") -> dict[str, Any]:
 	# An unverified Authorization header is attacker-chosen, so keying on it would hand
 	# every forged value a fresh bucket. Without gateway JWT checks, limit by address.
-	var = LIMIT_KEYS[tier["limit_by"]] if gateway_jwt else LIMIT_KEYS["ip"]
+	# A route that takes no bearer token (such as refresh, which sends its token in the
+	# body) has no Authorization header to key on, so it would put every caller in one
+	# shared bucket: limit it by address as well.
+	by_token = gateway_jwt and auth == "bearer"
+	var = LIMIT_KEYS[tier["limit_by"]] if by_token else LIMIT_KEYS["ip"]
 	return {
 		# limit-count refuses two rules with the same key (they would share a counter),
 		# so each window gets its own suffix. Written `$var`, not `${var}`: ADC expands
@@ -134,8 +138,10 @@ def limit_count(tier: dict[str, Any], gateway_jwt: bool) -> dict[str, Any]:
 		"policy": "redis",
 		"redis_host": env("APISIX_REDIS_HOST", "redis"),
 		"redis_port": int(env("APISIX_REDIS_PORT", "6379")),
-		# Same as Kong's fault_tolerant: keep serving if the limiter store is down.
-		"allow_degradation": True,
+		# When the limiter store is down, `fail_open` tiers keep serving (Kong's
+		# fault_tolerant). Tiers that set it False reject instead, so an outage cannot
+		# be used to brute-force credentials.
+		"allow_degradation": tier.get("fail_open", True),
 	}
 
 
@@ -192,7 +198,7 @@ def build_document(
 
 	adc_routes = []
 	for (tier, auth, method), uris in sorted(groups.items()):
-		plugins = {"limit-count": limit_count(tiers[tier], gateway_jwt)}
+		plugins = {"limit-count": limit_count(tiers[tier], gateway_jwt, auth)}
 		if auth == "bearer" and gateway_jwt:
 			plugins["jwt-auth"] = jwt_auth()
 		adc_routes.append(

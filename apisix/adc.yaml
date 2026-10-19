@@ -36,12 +36,14 @@ services:
       - /api/$1/$2
   routes:
   - name: oan-auth-admin-bearer-delete
-    description: Admin user and role management. Low volume; per-consumer cap limits a leaked admin token.
+    description: Admin user and role management. Low volume. Keyed per IP while GATEWAY_JWT is off; per
+      token once the gateway verifies tokens.
     labels:
       app: oan-auth
       tier: admin
       auth: bearer
     uris:
+    - /v1/admin/permissions
     - /v1/admin/users/:user_id/roles/:role
     - /v1/admin/users/:user_id/sessions
     methods:
@@ -62,12 +64,14 @@ services:
         redis_port: 6379
         allow_degradation: true
   - name: oan-auth-admin-bearer-get
-    description: Admin user and role management. Low volume; per-consumer cap limits a leaked admin token.
+    description: Admin user and role management. Low volume. Keyed per IP while GATEWAY_JWT is off; per
+      token once the gateway verifies tokens.
     labels:
       app: oan-auth
       tier: admin
       auth: bearer
     uris:
+    - /v1/admin/permissions
     - /v1/admin/roles
     - /v1/admin/users
     - /v1/admin/users/:user_id
@@ -90,7 +94,8 @@ services:
         redis_port: 6379
         allow_degradation: true
   - name: oan-auth-admin-bearer-patch
-    description: Admin user and role management. Low volume; per-consumer cap limits a leaked admin token.
+    description: Admin user and role management. Low volume. Keyed per IP while GATEWAY_JWT is off; per
+      token once the gateway verifies tokens.
     labels:
       app: oan-auth
       tier: admin
@@ -115,7 +120,8 @@ services:
         redis_port: 6379
         allow_degradation: true
   - name: oan-auth-admin-bearer-post
-    description: Admin user and role management. Low volume; per-consumer cap limits a leaked admin token.
+    description: Admin user and role management. Low volume. Keyed per IP while GATEWAY_JWT is off; per
+      token once the gateway verifies tokens.
     labels:
       app: oan-auth
       tier: admin
@@ -141,8 +147,34 @@ services:
         redis_host: redis
         redis_port: 6379
         allow_degradation: true
+  - name: oan-auth-admin-bearer-put
+    description: Admin user and role management. Low volume. Keyed per IP while GATEWAY_JWT is off; per
+      token once the gateway verifies tokens.
+    labels:
+      app: oan-auth
+      tier: admin
+      auth: bearer
+    uris:
+    - /v1/admin/permissions
+    methods:
+    - PUT
+    plugins:
+      limit-count:
+        rules:
+        - count: 60
+          time_window: 60
+          key: $remote_addr:min
+        - count: 1000
+          time_window: 3600
+          key: $remote_addr:hour
+        rejected_code: 429
+        show_limit_quota_header: true
+        policy: redis
+        redis_host: redis
+        redis_port: 6379
+        allow_degradation: true
   - name: oan-auth-authenticated-core-bearer-delete
-    description: Logged-in user calls (e.g. /me). Cheap and frequent.
+    description: Logged-in user calls (e.g. /me) and token refresh. Cheap and frequent.
     labels:
       app: oan-auth
       tier: authenticated-core
@@ -168,7 +200,7 @@ services:
         redis_port: 6379
         allow_degradation: true
   - name: oan-auth-authenticated-core-bearer-get
-    description: Logged-in user calls (e.g. /me). Cheap and frequent.
+    description: Logged-in user calls (e.g. /me) and token refresh. Cheap and frequent.
     labels:
       app: oan-auth
       tier: authenticated-core
@@ -195,7 +227,7 @@ services:
         redis_port: 6379
         allow_degradation: true
   - name: oan-auth-authenticated-core-bearer-patch
-    description: Logged-in user calls (e.g. /me). Cheap and frequent.
+    description: Logged-in user calls (e.g. /me) and token refresh. Cheap and frequent.
     labels:
       app: oan-auth
       tier: authenticated-core
@@ -220,9 +252,34 @@ services:
         redis_host: redis
         redis_port: 6379
         allow_degradation: true
+  - name: oan-auth-authenticated-core-public-post
+    description: Logged-in user calls (e.g. /me) and token refresh. Cheap and frequent.
+    labels:
+      app: oan-auth
+      tier: authenticated-core
+      auth: public
+    uris:
+    - /v1/auth/refresh
+    methods:
+    - POST
+    plugins:
+      limit-count:
+        rules:
+        - count: 120
+          time_window: 60
+          key: $remote_addr:min
+        - count: 4000
+          time_window: 3600
+          key: $remote_addr:hour
+        rejected_code: 429
+        show_limit_quota_header: true
+        policy: redis
+        redis_host: redis
+        redis_port: 6379
+        allow_degradation: true
   - name: oan-auth-public-auth-public-post
     description: Credential-sensitive endpoints (login, register, logout, reset). Tight IP limits to prevent
-      stuffing.
+      stuffing. Rejects requests when the limiter store is down.
     labels:
       app: oan-auth
       tier: public-auth
@@ -234,7 +291,6 @@ services:
     - /v1/auth/password/forgot
     - /v1/auth/password/initial
     - /v1/auth/password/reset
-    - /v1/auth/refresh
     - /v1/auth/register
     - /v1/auth/reset-password
     methods:
@@ -253,7 +309,7 @@ services:
         policy: redis
         redis_host: redis
         redis_port: 6379
-        allow_degradation: true
+        allow_degradation: false
   - name: oan-auth-public-read-public-get
     description: Public discovery and health check endpoints.
     labels:

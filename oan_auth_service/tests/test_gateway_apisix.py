@@ -1,6 +1,7 @@
 """Tests for the realtime routes built by gateway_apisix.socket_service."""
 
 import unittest
+from typing import ClassVar
 
 from oan_auth_service import gateway_apisix as gw
 
@@ -51,3 +52,21 @@ class TestSocketService(unittest.TestCase):
 
 	def test_header_beats_cookie(self):
 		self.assertGreater(self.routes["bearer"]["priority"], self.routes["local"]["priority"])
+
+
+class TestLimitCount(unittest.TestCase):
+	TIER: ClassVar[dict] = {"limit_by": "consumer", "minute": 5, "hour": 30}
+
+	def key(self, **kw):
+		return gw.limit_count(self.TIER, **kw)["rules"][0]["key"]
+
+	def test_keys_by_address_without_gateway_jwt(self):
+		self.assertEqual(self.key(gateway_jwt=False), "$remote_addr:min")
+
+	def test_keys_by_token_only_on_bearer_routes(self):
+		self.assertEqual(self.key(gateway_jwt=True, auth="bearer"), "$http_authorization:min")
+		self.assertEqual(self.key(gateway_jwt=True, auth="public"), "$remote_addr:min")
+
+	def test_fails_closed_only_when_tier_says_so(self):
+		self.assertTrue(gw.limit_count(self.TIER, False)["allow_degradation"])
+		self.assertFalse(gw.limit_count({**self.TIER, "fail_open": False}, False)["allow_degradation"])
