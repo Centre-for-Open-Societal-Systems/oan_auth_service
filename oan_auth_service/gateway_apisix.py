@@ -249,7 +249,8 @@ def service_plugins(
 	*, methods: str, credentials: bool, max_body_mb: int, cors_origins: str | None = None
 ) -> dict[str, Any]:
 	"""Plugins applied to every route of the service: CORS and body cap. `request-id` and
-	`prometheus` are global rules in the central, DevOps-owned adc.yaml."""
+	`prometheus` are gateway-wide global rules, owned by the central gateway config
+	(oan-helm `environments/<env>/values/apisix.yaml`), not by the apps."""
 	return {
 		"cors": {
 			# `allow_origins` must not be the default `*`; the regex list is the allowlist.
