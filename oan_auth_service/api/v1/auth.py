@@ -490,7 +490,11 @@ def register_user(
 	roles: list[str] | str | None = None,
 	**kwargs,
 ):
-	"""Create a User and its role assignment, trigger registered hooks, and issue the first token pair.
+	"""Create a User and its role assignment and trigger registered hooks.
+
+	No tokens are issued: registering proves nothing about who owns the email or
+	phone number, so the caller must sign in (and, once verification exists,
+	verify) before holding a session.
 
 	- Guest callers can self-assign roles listed in `jwt_self_registerable_roles` in site_config.json.
 	- If no role is requested, `jwt_default_registration_role` is assigned (if configured).
@@ -539,10 +543,12 @@ def register_user(
 		hook_kwargs={k: v for k, v in kwargs.items() if k not in ("cmd", "phone", "country_code")},
 	)
 
-	pair = _issue_token_pair(user_doc.name, remember_me=False)
-	# Explicit commit to ensure user and initial token state are persisted
+	# Explicit commit to ensure the new user is persisted
 	frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
-	return success_response(data=pair)
+	return success_response(
+		data={"user": user_doc.name, "roles": tokens.resolve_roles(user_doc.name)},
+		message="User registered successfully",
+	)
 
 
 @route(

@@ -158,7 +158,7 @@ HTTP Status: `400`, `401`, `403`, `404`, `429`, or `500`
 
 ### 1. User Registration (`POST /api/v1/auth/register`)
 
-Registers a new user, creates canonical `User` and `Contact` records, triggers `on_user_registered` hooks across installed apps to link domain entities, and returns an initial access/refresh token pair.
+Registers a new user, creates canonical `User` and `Contact` records, triggers `on_user_registered` hooks across installed apps to link domain entities, and returns the new user id and roles. No tokens are issued: sign in with `POST /api/v1/auth/login` afterwards.
 
 - **HTTP Method**: `POST`
 - **Path**: `/api/v1/auth/register`
@@ -214,13 +214,8 @@ Registers a new user, creates canonical `User` and `Contact` records, triggers `
   "status": "success",
   "message": "User registered successfully",
   "data": {
-    "access_token": "eyJhbGciOiJIUzI1NiIsImtpZCI6...",
-    "refresh_token": "dGhpcyBpcyBhIHJhbmRvbSBzZWN1cmUgdG9rZW4...",
-    "token_type": "Bearer",
-    "expires_in": 900,
     "user": "USR-00001",
-    "roles": ["Farmer"],
-    "scope": null
+    "roles": ["Farmer"]
   },
   "meta": {
     "api_version": "v1",

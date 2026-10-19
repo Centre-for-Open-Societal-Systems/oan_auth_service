@@ -54,7 +54,7 @@ The app includes a declarative Werkzeug REST Router (`oan_auth_service.api.route
 
 | Method | REST Path                       | Description                              | Access                   |
 | ------ | ------------------------------- | ---------------------------------------- | ------------------------ |
-| `POST` | `/api/v1/auth/register`         | Register new account & return token pair | Public / Guest           |
+| `POST` | `/api/v1/auth/register`         | Register new account (no tokens issued)  | Public / Guest           |
 | `POST` | `/api/v1/auth/login`            | Authenticate & issue token pair          | Public / Guest           |
 | `POST` | `/api/v1/auth/refresh`          | Rotate single-use refresh token          | Public / Guest           |
 | `POST` | `/api/v1/auth/logout`           | Revoke active refresh token              | Public / Guest           |

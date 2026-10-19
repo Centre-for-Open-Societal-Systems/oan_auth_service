@@ -78,7 +78,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/TokenPairResponse'
+                $ref: '#/components/schemas/RegisterResponse'
         '400':
           description: Validation or Client Error
           content:
@@ -1366,6 +1366,22 @@ components:
       - user
       - roles
       description: Access token and refresh token pair
+    RegisterData:
+      type: object
+      properties:
+        user:
+          type: string
+          example: USR-0001
+          description: Canonical user ID or synthetic email
+        roles:
+          type: array
+          items:
+            type: string
+          description: Roles assigned to this user
+      required:
+      - user
+      - roles
+      description: The created account. No tokens are issued; sign in to obtain them.
     LogoutData:
       type: object
       properties:
@@ -2119,6 +2135,31 @@ components:
       - status
       - data
       description: Token pair response
+    RegisterResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: success
+          enum:
+          - success
+        message:
+          type: string
+          nullable: true
+          description: Optional response message
+        data:
+          $ref: '#/components/schemas/RegisterData'
+        meta:
+          $ref: '#/components/schemas/ApiMeta'
+        request_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Tracing correlation ID
+      required:
+      - status
+      - data
+      description: Registration response
     LogoutResponse:
       type: object
       properties:

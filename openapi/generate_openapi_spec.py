@@ -149,6 +149,18 @@ data(
 )
 
 data(
+	"RegisterData",
+	OBJ(
+		{
+			"user": S(example="USR-0001", description="Canonical user ID or synthetic email"),
+			"roles": ARR(S(), description="Roles assigned to this user"),
+		},
+		required=["user", "roles"],
+		description="The created account. No tokens are issued; sign in to obtain them.",
+	),
+)
+
+data(
 	"LogoutData",
 	OBJ(
 		{"revoked": B(description="Whether the refresh token was revoked")},
@@ -535,6 +547,7 @@ def make_envelope(
 # Envelope Schemas
 ENVELOPES: dict[str, Any] = {
 	"TokenPairResponse": make_envelope("TokenPairData", description="Token pair response"),
+	"RegisterResponse": make_envelope("RegisterData", description="Registration response"),
 	"LogoutResponse": make_envelope("LogoutData", description="Logout revocation response"),
 	"UserMeResponse": make_envelope("UserMeData", description="Authenticated user introspection response"),
 	"PublicKeysResponse": make_envelope("PublicKeysData", description="Public keys metadata response"),
@@ -634,7 +647,7 @@ def _determine_response_schema(
 
 	mapping = {
 		"login": "TokenPairResponse",
-		"register_user": "TokenPairResponse",
+		"register_user": "RegisterResponse",
 		"refresh": "TokenPairResponse",
 		"logout": "LogoutResponse",
 		"get_me": "UserMeResponse",

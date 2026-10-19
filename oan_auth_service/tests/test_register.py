@@ -66,10 +66,11 @@ class TestUserRegistration(unittest.TestCase):
 			self.assertTrue(user_id.endswith("@id.openagrinet.internal"))
 			self.assertEqual(len(user_id.split("@")[0]), 16)
 
-			# Token verification
-			claims = tokens.decode_access_token(data["access_token"])
-			self.assertEqual(claims["sub"], user_id)
-			self.assertEqual(claims["roles"], ["Customer"])
+			# Registering never opens a session
+			self.assertNotIn("access_token", data)
+			self.assertNotIn("refresh_token", data)
+			self.assertEqual(data["roles"], ["Customer"])
+			self.assertFalse(frappe.db.exists("OAN User Refresh Token", {"user": user_id}))
 
 			# User doctype verification
 			user_doc = frappe.get_doc("User", user_id)
