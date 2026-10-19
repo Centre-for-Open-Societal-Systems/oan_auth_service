@@ -60,7 +60,7 @@ def drifted_rules(doctype: str) -> list[dict]:
 
 
 def warn_permission_drift() -> None:
-	"""Print and log service DocTypes whose custom rules differ from their DocType JSON."""
+	"""Log service DocTypes whose custom rules differ from their DocType JSON."""
 	prefixes = settings.service_prefixes()
 	if not prefixes:
 		return
@@ -78,5 +78,4 @@ def warn_permission_drift() -> None:
 				f"Permission drift on {doctype}: custom rules differ from the DocType JSON for {rules}. "
 				"JSON permission changes do not apply until the custom rules are reset or patched."
 			)
-			print(message)
 			frappe.logger().warning(message)

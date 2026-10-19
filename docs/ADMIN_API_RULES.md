@@ -34,6 +34,6 @@ Only roles, doctypes and users of the calling service are visible.
 `/permissions` reads and edits permission rules, only for in-scope roles on in-scope doctypes. How Frappe's standard and custom rules interact, and the freeze the first edit causes, is in `DEVELOPMENT_BEST_PRACTICES.md` §5.1.1.
 
 - `POST /permissions/reset` deletes every custom rule of a doctype, for all roles, not only this service's. Admin changes on that doctype are lost.
-- After every `bench migrate`, service doctypes whose custom rules differ from their DocType JSON are printed and logged.
+- After every `bench migrate`, service doctypes whose custom rules differ from their DocType JSON are logged.
 - Owner-only rules (`if_owner`) are listed but cannot be created or edited. A `PUT` on a role and doctype that already has an owner-only rule at the same level is refused, because Frappe would update whichever of the two rules it finds first.
 - Audit: edits create a `Version` (this app enables `track_changes` on `Custom DocPerm`); deleted rules, including a reset, are kept in `Deleted Document`; each rule records who created it.
