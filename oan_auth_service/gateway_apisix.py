@@ -1,9 +1,14 @@
 """Build an ADC (APISIX Declarative CLI) config from an OpenAPI spec.
 
-Shared by every Frappe app on the bench that fronts its REST API with APISIX
-(oan_auth_service, oan_grievance_service, oan_a2c). Each app keeps its own throttling tiers and
-its own `(method, path) -> tier` table, and calls `build_document` with them. The output
-is `adc.yaml`, which `adc lint|validate|diff|sync` apply to an APISIX running in etcd mode.
+Shared by every Frappe app that fronts its REST API with APISIX (oan_grievance_service,
+oan_a2c). Each app keeps its own throttling tiers and its own `(method, path) -> tier`
+table, and calls `build_document` with them. The output is `adc.yaml`, which
+`adc lint|validate|diff|sync` apply to an APISIX running in etcd mode, and the app's
+Ingress Controller chart (`write_helm_templates`).
+
+oan_auth_service is a library installed into each app's bench, not a service of its own,
+so it has no gateway config. Its endpoints are served by every bench that installs it,
+and each app adds them to its own config with `with_auth_routes`.
 
 Routes are grouped by policy, not by URL: one route per (tier, auth, method), carrying
 every path of that group in `uris`. A path is added to the gateway by assigning it a tier.
@@ -109,6 +114,112 @@ def reconcile(
 	for r in routes:
 		r["tier"] = tier_overrides[(r["method"], r["path"])]
 	return routes
+
+
+# ---------------------------------------------------------------------------
+# oan_auth_service's own endpoints
+# ---------------------------------------------------------------------------
+# Owned here, added to each app's config by `with_auth_routes` and pointed at that app's
+# Frappe. Tiers are prefixed `auth-` so they never collide with an app's own tier names.
+AUTH_SPEC_PATH = Path(__file__).resolve().parent.parent / "openapi" / "openapi_v1.public.yaml"
+AUTH_TIERS = {
+	"auth-credentials": {
+		"limit_by": "ip",
+		"minute": 5,
+		"hour": 30,
+		"policy": "redis",
+		"fail_open": False,
+		"note": "Credential-sensitive endpoints (login, register, logout, reset). Tight IP limits to prevent stuffing. Rejects requests when the limiter store is down.",
+	},
+	"auth-session": {
+		"limit_by": "consumer",
+		"minute": 120,
+		"hour": 4000,
+		"policy": "redis",
+		"note": "Logged-in user calls (e.g. /me) and token refresh. Cheap and frequent.",
+	},
+	"auth-admin": {
+		"limit_by": "consumer",
+		"minute": 60,
+		"hour": 1000,
+		"policy": "redis",
+		"note": "Admin user and role management. Low volume. Keyed per IP while GATEWAY_JWT is off; per token once the gateway verifies tokens.",
+	},
+	"auth-public-read": {
+		"limit_by": "ip",
+		"minute": 120,
+		"hour": 2000,
+		"policy": "redis",
+		"note": "Public discovery and health check endpoints.",
+	},
+}
+
+AUTH_TIER_OVERRIDES = {
+	("POST", "/v1/auth/register"): "auth-credentials",
+	("POST", "/v1/auth/login"): "auth-credentials",
+	("POST", "/v1/auth/refresh"): "auth-session",
+	("POST", "/v1/auth/logout"): "auth-credentials",
+	("POST", "/v1/auth/forgot-password"): "auth-credentials",
+	("POST", "/v1/auth/reset-password"): "auth-credentials",
+	("POST", "/v1/auth/password/forgot"): "auth-credentials",
+	("POST", "/v1/auth/password/reset"): "auth-credentials",
+	("POST", "/v1/auth/password/initial"): "auth-credentials",
+	("GET", "/v1/auth/me"): "auth-session",
+	("GET", "/v1/auth/keys"): "auth-public-read",
+	("GET", "/v1/auth/health"): "auth-public-read",
+	("GET", "/v1/auth/metadata"): "auth-public-read",
+	("GET", "/v1/admin/users"): "auth-admin",
+	("POST", "/v1/admin/users"): "auth-admin",
+	("GET", "/v1/admin/users/{user_id}"): "auth-admin",
+	("PATCH", "/v1/admin/users/{user_id}"): "auth-admin",
+	("DELETE", "/v1/admin/users/{user_id}/sessions"): "auth-admin",
+	("POST", "/v1/admin/users/{user_id}/temporary-password"): "auth-admin",
+	("GET", "/v1/admin/users/{user_id}/roles"): "auth-admin",
+	("POST", "/v1/admin/users/{user_id}/roles"): "auth-admin",
+	("DELETE", "/v1/admin/users/{user_id}/roles/{role}"): "auth-admin",
+	("GET", "/v1/admin/roles"): "auth-admin",
+	("GET", "/v1/admin/permissions"): "auth-admin",
+	("PUT", "/v1/admin/permissions"): "auth-admin",
+	("DELETE", "/v1/admin/permissions"): "auth-admin",
+	("POST", "/v1/admin/permissions/reset"): "auth-admin",
+	("GET", "/v1/notifications"): "auth-session",
+	("PATCH", "/v1/notifications"): "auth-session",
+	("DELETE", "/v1/notifications"): "auth-session",
+	("GET", "/v1/notifications/{notification_id}"): "auth-session",
+	("PATCH", "/v1/notifications/{notification_id}"): "auth-session",
+	("DELETE", "/v1/notifications/{notification_id}"): "auth-session",
+}
+
+
+def with_auth_routes(routes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+	"""An app's reconciled routes plus oan_auth_service's. Refuses a (method, path) both
+	declare, which would give one URL two routes."""
+	auth = reconcile(spec_routes(load_spec(AUTH_SPEC_PATH)), AUTH_TIER_OVERRIDES)
+	clash = {(r["method"], r["path"]) for r in routes} & {(r["method"], r["path"]) for r in auth}
+	if clash:
+		raise SystemExit(
+			"Declared by both the app and oan_auth_service:\n"
+			+ "\n".join(f"  {m} {p}" for m, p in sorted(clash))
+		)
+	return routes + auth
+
+
+def jwt_issuer_consumer() -> dict[str, Any]:
+	"""Verifies the RS256 bearer tokens oan_auth_service mints. Needed only by an app that
+	sets `gateway_jwt=True`."""
+	public_key = env("OAN_AUTH_JWT_PUBLIC_KEY", "")
+	if not public_key:
+		raise SystemExit("gateway_jwt is on: set OAN_AUTH_JWT_PUBLIC_KEY (PEM) to generate the consumer.")
+	return {
+		"username": "oan-auth-jwt-issuer",
+		"plugins": {
+			"jwt-auth": {
+				"key": env("OAN_JWT_ISSUER", "oan-auth"),
+				"algorithm": "RS256",
+				"public_key": public_key,
+			}
+		},
+	}
 
 
 def to_apisix_uri(path: str) -> str:
