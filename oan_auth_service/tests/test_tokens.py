@@ -43,6 +43,8 @@ class TestAccessTokenRoundTrip(unittest.TestCase):
 
 		self.assertEqual(claims["sub"], "a@example.com")
 		self.assertEqual(claims["roles"], ["Bank Agent"])
+		for reserved in ("aud", "azp", "nbf"):
+			self.assertNotIn(reserved, claims)
 		self.assertEqual(claims["typ"], tokens.ACCESS_TOKEN_TYPE)
 		self.assertEqual(claims["iss"], "test-issuer")
 		self.assertEqual(ttl, 15 * 60)
@@ -87,7 +89,22 @@ class TestAccessTokenRoundTrip(unittest.TestCase):
 
 
 def _extra_claims(user, roles):
-	return {"user_type": "farmer", "sub": "attacker@example.com", "roles": ["System Manager"]}
+	return {
+		"user_type": "farmer",
+		"sub": "attacker@example.com",
+		"roles": ["System Manager"],
+		"aud": "elsewhere",
+		"azp": "elsewhere",
+		"nbf": 4102444800,
+	}
+
+
+def _raising_claims(user, roles):
+	raise RuntimeError("boom")
+
+
+def _non_dict_claims(user, roles):
+	return ["not", "a", "dict"]
 
 
 class TestAccessTokenClaimsHook(unittest.TestCase):
@@ -105,6 +122,31 @@ class TestAccessTokenClaimsHook(unittest.TestCase):
 
 		self.assertEqual(claims["sub"], "a@example.com")
 		self.assertEqual(claims["roles"], ["Bank Agent"])
+
+
+class TestBrokenClaimsHook(unittest.TestCase):
+	def _issue(self, *hook_paths):
+		hooks = {"on_access_token_claims": list(hook_paths)}
+		with (
+			configured_keys(),
+			patch.object(tokens.frappe, "get_hooks", lambda name: hooks.get(name, [])),
+			patch.object(tokens.frappe, "log_error") as log_error,
+		):
+			token, _ = tokens.issue_access_token("a@example.com", ["Bank Agent"])
+			return tokens.decode_access_token(token), log_error
+
+	def test_raising_hook_is_skipped_and_logged(self):
+		claims, log_error = self._issue(
+			"oan_auth_service.tests.test_tokens._raising_claims",
+			"oan_auth_service.tests.test_tokens._extra_claims",
+		)
+		self.assertEqual(claims["user_type"], "farmer")
+		log_error.assert_called_once()
+
+	def test_non_dict_return_is_skipped_and_logged(self):
+		claims, log_error = self._issue("oan_auth_service.tests.test_tokens._non_dict_claims")
+		self.assertEqual(claims["sub"], "a@example.com")
+		log_error.assert_called_once()
 
 
 class TestAccessTokenRejection(unittest.TestCase):
