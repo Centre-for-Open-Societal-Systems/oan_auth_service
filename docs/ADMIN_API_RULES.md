@@ -10,7 +10,7 @@ Every endpoint requires System Manager or Administrator. Frappe's own `/api/reso
 
 Only roles, doctypes and users of the calling service are visible.
 
-- A role or doctype is in scope when its name starts with a configured prefix. A user is in scope when they hold at least one such role.
+- A role or doctype is in scope when its name is a configured prefix, or starts with the prefix and a space: prefix `A2C` matches `A2C Lead` and `A2C`, not `A2Cfoo`. The auth service adds the space, so a dependent app declares the bare prefix. This follows the `<Service> <Entity>` naming rule in `DEVELOPMENT_BEST_PRACTICES.md` §1.1. A user is in scope when they hold at least one such role.
 - A dependent app declares its prefix with the `oan_service_prefix` hook in `hooks.py`, for example `oan_service_prefix = "A2C"`. The `service_prefix` site config key (a string or a list) takes precedence. With neither, scoped endpoints answer 400.
 - An out-of-scope user answers 404. Granting a role outside the prefix answers 400; removing one answers 403. The admin API therefore cannot grant `System Manager` or `Administrator`.
 - A new user needs at least one in-scope role, or they would be invisible right after creation.
@@ -31,4 +31,9 @@ Only roles, doctypes and users of the calling service are visible.
 
 ## Role permissions
 
-`/permissions` reads and edits `Custom DocPerm` rows, only for in-scope roles on in-scope doctypes.
+`/permissions` reads and edits permission rules, only for in-scope roles on in-scope doctypes. How Frappe's standard and custom rules interact, and the freeze the first edit causes, is in `DEVELOPMENT_BEST_PRACTICES.md` §5.1.1.
+
+- `POST /permissions/reset` deletes every custom rule of a doctype, for all roles, not only this service's. Admin changes on that doctype are lost.
+- After every `bench migrate`, service doctypes whose custom rules differ from their DocType JSON are printed and logged.
+- Owner-only rules (`if_owner`) are listed but cannot be created or edited. A `PUT` on a role and doctype that already has an owner-only rule at the same level is refused, because Frappe would update whichever of the two rules it finds first.
+- Audit: edits create a `Version` (this app enables `track_changes` on `Custom DocPerm`); deleted rules, including a reset, are kept in `Deleted Document`; each rule records who created it.

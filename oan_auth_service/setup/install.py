@@ -24,6 +24,26 @@ MUST_CHANGE_PASSWORD_FIELD = "oan_must_change_password"
 def after_install():
 	create_login_email_field()
 	create_must_change_password_field()
+	enable_custom_docperm_tracking()
+
+
+def enable_custom_docperm_tracking():
+	"""Turn on `track_changes` for Custom DocPerm, so permission edits leave a Version."""
+	from frappe.custom.doctype.property_setter.property_setter import make_property_setter
+
+	if frappe.db.exists(
+		"Property Setter",
+		{"doc_type": "Custom DocPerm", "doctype_or_field": "DocType", "property": "track_changes"},
+	):
+		frappe.db.set_value(
+			"Property Setter",
+			{"doc_type": "Custom DocPerm", "doctype_or_field": "DocType", "property": "track_changes"},
+			"value",
+			"1",
+		)
+	else:
+		make_property_setter("Custom DocPerm", None, "track_changes", 1, "Check", for_doctype=True)
+	frappe.clear_cache(doctype="Custom DocPerm")
 
 
 def create_login_email_field():

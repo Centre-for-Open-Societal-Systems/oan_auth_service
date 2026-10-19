@@ -11,7 +11,7 @@ from frappe.permissions import rights as RIGHTS
 from frappe.query_builder.functions import Count
 from pydantic import BaseModel, Field, field_validator
 
-from oan_auth_service.api import tokens
+from oan_auth_service.api import permission_rules, tokens
 from oan_auth_service.api.iam_users import is_delegated_user
 from oan_auth_service.api.router import prefixed
 from oan_auth_service.api.utils import (
@@ -117,16 +117,24 @@ class PermissionTargetSchema(BaseModel):
 
 
 class SetPermissionSchema(PermissionTargetSchema):
+	model_config = {"extra": "forbid"}
+
 	permlevel: int = Field(default=0, ge=0, le=9)
-	if_owner: bool = False
 	permissions: dict[str, bool] = Field(
 		..., min_length=1, description='Right name to granted flag, e.g. {"read": true, "write": false}'
 	)
 
 
 class DeletePermissionSchema(PermissionTargetSchema):
+	model_config = {"extra": "forbid"}
+
 	permlevel: int = Field(default=0, ge=0, le=9)
-	if_owner: bool = False
+
+
+class PermissionResetSchema(BaseModel):
+	model_config = {"extra": "forbid"}
+
+	doctype: str = Field(..., min_length=1)
 
 
 class AdminTemporaryPasswordSchema(UserRefSchema):
@@ -152,7 +160,7 @@ def _generate_temporary_password(length: int = 16) -> str:
 
 
 def _service_prefix() -> tuple[str, ...]:
-	"""The configured prefixes; `str.startswith` accepts the tuple directly."""
+	"""The configured service prefixes, or 400 when there are none."""
 	prefixes = settings.service_prefixes()
 	if not prefixes:
 		frappe.throw(
@@ -167,20 +175,26 @@ def _escape_like(value: str) -> str:
 	return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
+def _in_scope(name: str) -> bool:
+	return settings.name_in_scope(name, _service_prefix())
+
+
+def _name_filters(prefixes: tuple[str, ...]) -> list[list[str]]:
+	"""`or_filters` matching names equal to a prefix, or starting with it and a space."""
+	return [f for p in prefixes for f in (["name", "=", p], ["name", "like", f"{_escape_like(p)} %"])]
+
+
 def _like_any(column, prefixes: tuple[str, ...]):
-	"""Query Builder condition matching `column` against any prefix."""
-	cond = column.like(f"{_escape_like(prefixes[0])}%")
-	for p in prefixes[1:]:
-		cond = cond | column.like(f"{_escape_like(p)}%")
+	"""Query Builder condition matching `column` against any prefix, as `_name_filters` does."""
+	cond = None
+	for p in prefixes:
+		part = (column == p) | column.like(f"{_escape_like(p)} %")
+		cond = part if cond is None else cond | part
 	return cond
 
 
 def _holds_role(user: str, prefixes: tuple[str, ...] | None = None, role: str | None = None) -> bool:
-	"""Whether `user` has a granted `Has Role` row for `role`, or a role starting with a prefix.
-
-	Reads the grants directly. `frappe.get_roles` is no use here: it returns every
-	role for Administrator and hides the Administrator role from everyone else.
-	"""
+	"""Whether `user` holds `role`, or a role starting with one of `prefixes`, read from Has Role."""
 	has_role = frappe.qb.DocType("Has Role")
 	cond = (has_role.parenttype == "User") & (has_role.parent == user)
 	cond &= (has_role.role == role) if role else _like_any(has_role.role, prefixes)
@@ -205,12 +219,7 @@ def _guard_protected(user: str, action: str) -> None:
 
 
 def _guard_privileged(user: str) -> None:
-	"""Refuse changes to the Administrator account, or to a holder of the Administrator role, unless the caller is Administrator.
-
-	Contact edits, password resets, role changes and session revocation each let
-	a caller sign in as, or lock out, the target. A System Manager must not do
-	that to the top-level account.
-	"""
+	"""Refuse changes to an Administrator account unless the caller is Administrator."""
 	caller = frappe.session.user
 	if caller == "Administrator" or user == caller:
 		return
@@ -228,9 +237,8 @@ def _guard_role_change(user: str) -> None:
 
 def _validate_roles(roles: list[str]) -> list[str]:
 	"""Check every role exists and the caller may grant it."""
-	prefix = _service_prefix()
 	for r in roles:
-		if not r.startswith(prefix) or r in _AMBIENT_ROLES or not frappe.db.exists("Role", r):
+		if not _in_scope(r) or r in _AMBIENT_ROLES or not frappe.db.exists("Role", r):
 			frappe.throw(_("Role '{0}' cannot be assigned").format(r), frappe.ValidationError)
 		if r == "Administrator" and frappe.session.user != "Administrator":
 			frappe.throw(
@@ -576,7 +584,7 @@ def revoke_sessions(user_id: str):
 	"/roles",
 	methods=("GET",),
 	summary="Admin: list assignable roles",
-	description="Every enabled role of this service, meaning the ones whose names start with a configured service prefix.",
+	description="Every enabled role of this service, meaning the ones whose names are a configured service prefix, or start with one and a space.",
 )
 @handle_api_errors
 @require_role(ADMIN_ROLES)
@@ -585,11 +593,11 @@ def list_roles():
 	roles = frappe.get_all(
 		"Role",
 		filters={"disabled": 0},
-		or_filters=[["name", "like", f"{_escape_like(p)}%"] for p in prefix],
+		or_filters=_name_filters(prefix),
 		fields=["name", "desk_access"],
 		order_by="name asc",
 	)
-	roles = [r for r in roles if r.name.startswith(prefix) and r.name not in _AMBIENT_ROLES]
+	roles = [r for r in roles if _in_scope(r.name) and r.name not in _AMBIENT_ROLES]
 	return success_response(data=roles)
 
 
@@ -652,7 +660,7 @@ def remove_role(user_id: str, role: str):
 	user = _resolve_target(user_id)
 	_guard_privileged(user)
 	_guard_role_change(user)
-	if not role.startswith(_service_prefix()):
+	if not _in_scope(role):
 		frappe.throw(_("Role '{0}' is not managed by this service.").format(role), frappe.PermissionError)
 
 	if role in tokens.resolve_roles(user):
@@ -671,13 +679,11 @@ def remove_role(user_id: str, role: str):
 # Role permissions (service-scoped)
 # ---------------------------------------------------------------------------
 
-_PERMISSION_FIELDS = ("role", "permlevel", "if_owner", *RIGHTS)
-
 
 def _scoped_role(role: str) -> str:
 	"""Return `role` if it is a service role that exists, else raise."""
 	role = role.strip()
-	if not role.startswith(_service_prefix()) or not frappe.db.exists("Role", role):
+	if not _in_scope(role) or not frappe.db.exists("Role", role):
 		frappe.throw(_("Role '{0}' is not managed by this service.").format(role), frappe.PermissionError)
 	return role
 
@@ -685,48 +691,49 @@ def _scoped_role(role: str) -> str:
 def _scoped_doctype(doctype: str) -> str:
 	"""Return `doctype` if it is a service doctype that exists, else raise."""
 	doctype = doctype.strip()
-	if not doctype.startswith(_service_prefix()) or not frappe.db.exists("DocType", doctype):
+	if not _in_scope(doctype) or not frappe.db.exists("DocType", doctype):
 		frappe.throw(
 			_("DocType '{0}' is not managed by this service.").format(doctype), frappe.PermissionError
 		)
 	return doctype
 
 
-def _permission_rows(role: str, doctype: str | None = None) -> list[dict]:
+def _service_roles() -> set[str]:
 	prefix = _service_prefix()
-	rows = permission_manager.get_permissions(doctype=doctype, role=role)
-	return [
-		{"doctype": r.parent, **{f: r.get(f) for f in _PERMISSION_FIELDS}}
-		for r in rows
-		if r.parent.startswith(prefix)
-	]
+	roles = frappe.get_all(
+		"Role",
+		filters={"disabled": 0},
+		or_filters=_name_filters(prefix),
+		pluck="name",
+	)
+	return {r for r in roles if _in_scope(r)}
+
+
+def _service_doctypes() -> list[str]:
+	prefix = _service_prefix()
+	doctypes = frappe.get_all(
+		"DocType",
+		filters={"istable": 0},
+		or_filters=_name_filters(prefix),
+		pluck="name",
+		order_by="name asc",
+	)
+	return [d for d in doctypes if _in_scope(d)]
 
 
 @route(
 	"/permissions",
 	methods=("GET",),
 	summary="Admin: list role permissions",
-	description="Doctype permissions of the roles this service owns, limited to doctypes it owns. Both are the ones whose names start with a configured service prefix. Filter by `role` and `doctype`.",
+	description="Permission rules of this service's roles on its doctypes (names that are a configured service prefix, or start with one and a space). Filter by `role` and `doctype`. Each rule says whether the doctype runs on its standard rules (the DocType JSON) or on custom rules, whether it is active, and whether it differs from the standard. `if_owner` rules are listed but cannot be edited here.",
 )
 @validate_request(PermissionQuerySchema)
 @handle_api_errors
 @require_role(ADMIN_ROLES)
 def list_permissions(role: str | None = None, doctype: str | None = None):
-	prefix = _service_prefix()
-	if doctype:
-		doctype = _scoped_doctype(doctype)
-	if role:
-		roles = [_scoped_role(role)]
-	else:
-		roles = frappe.get_all(
-			"Role",
-			filters={"disabled": 0},
-			or_filters=[["name", "like", f"{_escape_like(p)}%"] for p in prefix],
-			pluck="name",
-			order_by="name asc",
-		)
-		roles = [r for r in roles if r.startswith(prefix)]
-	rows = [row for r in roles for row in _permission_rows(r, doctype)]
+	doctypes = [_scoped_doctype(doctype)] if doctype else _service_doctypes()
+	roles = {_scoped_role(role)} if role else _service_roles()
+	rows = [row for d in doctypes for row in permission_rules.rule_rows(d, roles)]
 	return success_response(data=rows)
 
 
@@ -734,40 +741,71 @@ def list_permissions(role: str | None = None, doctype: str | None = None):
 	"/permissions",
 	methods=("PUT",),
 	summary="Admin: set role permissions on a doctype",
-	description="Grant or revoke individual rights (`read`, `write`, `create`, ...) for a service role on a service doctype. The rule is created when missing. Rights not named are left as they are.",
+	description="Grant or revoke individual rights (`read`, `write`, `create`, ...) for a service role on a service doctype. The rule is created when missing. Rights not named are left as they are. The first change to a doctype copies all its standard rules into custom rules; from then on, permission changes in the app's DocType JSON no longer apply on migrate until the doctype is reset.",
 )
 @validate_request(SetPermissionSchema)
 @handle_api_errors
 @require_role(ADMIN_ROLES)
-def set_permissions(
-	role: str, doctype: str, permissions: dict[str, bool], permlevel: int = 0, if_owner: bool = False
-):
+def set_permissions(role: str, doctype: str, permissions: dict[str, bool], permlevel: int = 0, **kwargs):
 	role = _scoped_role(role)
 	doctype = _scoped_doctype(doctype)
 	if unknown := [p for p in permissions if p not in RIGHTS]:
 		frappe.throw(_("Unknown rights: {0}").format(", ".join(unknown)), frappe.ValidationError)
 
 	permission_manager.add(doctype, role, permlevel)
-	for ptype, granted in permissions.items():
-		permission_manager.update(
-			doctype, role, permlevel, ptype, str(int(granted)), if_owner=str(int(if_owner))
+	rules = frappe.db.count("Custom DocPerm", {"parent": doctype, "role": role, "permlevel": permlevel})
+	if rules > 1:
+		frappe.throw(
+			_("{0} has several rules for {1} at level {2}; edit them in the desk.").format(
+				doctype, role, permlevel
+			),
+			frappe.ValidationError,
 		)
+	for ptype, granted in permissions.items():
+		permission_manager.update(doctype, role, permlevel, ptype, str(int(granted)))
 	frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
-	return success_response(data=_permission_rows(role, doctype), message=_("Permissions updated"))
+	return success_response(
+		data=permission_rules.rule_rows(doctype, {role}), message=_("Permissions updated")
+	)
 
 
 @route(
 	"/permissions",
 	methods=("DELETE",),
 	summary="Admin: remove a role permission rule",
-	description="Delete one permission rule (role, doctype, permlevel, if_owner) for a service role on a service doctype.",
+	description="Delete the unconditional permission rule (role, doctype, permlevel) for a service role on a service doctype. The first change to a doctype copies all its standard rules into custom rules; from then on, permission changes in the app's DocType JSON no longer apply on migrate until the doctype is reset.",
 )
 @validate_request(DeletePermissionSchema)
 @handle_api_errors
 @require_role(ADMIN_ROLES)
-def delete_permission(role: str, doctype: str, permlevel: int = 0, if_owner: bool = False):
+def delete_permission(role: str, doctype: str, permlevel: int = 0, **kwargs):
 	role = _scoped_role(role)
 	doctype = _scoped_doctype(doctype)
-	permission_manager.remove(doctype, role, permlevel, if_owner=str(int(if_owner)))
+	permission_manager.remove(doctype, role, permlevel)
 	frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
-	return success_response(data=_permission_rows(role, doctype), message=_("Permission removed"))
+	return success_response(data=permission_rules.rule_rows(doctype, {role}), message=_("Permission removed"))
+
+
+@route(
+	"/permissions/reset",
+	methods=("POST",),
+	summary="Admin: reset a doctype to its standard permissions",
+	description="Delete every custom rule of a service doctype, for all roles, so its DocType JSON applies again.",
+)
+@validate_request(PermissionResetSchema)
+@handle_api_errors
+@require_role(ADMIN_ROLES)
+def reset_permissions(doctype: str, **kwargs):
+	doctype = _scoped_doctype(doctype)
+	removed = frappe.db.count("Custom DocPerm", {"parent": doctype})
+	if removed:
+		permission_manager.reset(doctype)
+	frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
+	return success_response(
+		data={
+			"doctype": doctype,
+			"removed_rules": removed,
+			"rules": permission_rules.rule_rows(doctype, _service_roles()),
+		},
+		message=_("Permissions reset"),
+	)

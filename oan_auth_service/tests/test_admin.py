@@ -293,32 +293,45 @@ class TestAdminEndpoints(unittest.TestCase):
 		status, body = call(f"/api/v1/admin/users/{quote(peer)}/temporary-password", "POST")
 		self.assertEqual(status, 200, body)
 
+	def _reset_note_permissions(self):
+		"""Editing "Notification Log" copies its standard rules into Custom DocPerm; undo that."""
+		frappe.db.delete("Custom DocPerm", {"parent": "Notification Log"})
+		frappe.clear_cache(doctype="Notification Log")
+		frappe.db.commit()  # nosemgrep: frappe-manual-commit
+
 	def test_permissions_scoped_to_service_prefix(self):
-		# "Note" is a core doctype, so it stands in for a service doctype.
-		ensure_role("Note Perm Role")
-		with override_conf(service_prefix="Note"):
+		# "Notification Log" is a core doctype, so it stands in for a service doctype.
+		ensure_role("Notification Perm Role")
+		self.addCleanup(self._reset_note_permissions)
+		with override_conf(service_prefix="Notification"):
 			status, body = call(
 				"/api/v1/admin/permissions",
 				"PUT",
-				{"role": "Note Perm Role", "doctype": "Note", "permissions": {"read": True, "write": True}},
+				{
+					"role": "Notification Perm Role",
+					"doctype": "Notification Log",
+					"permissions": {"read": True, "write": True},
+				},
 			)
 			self.assertEqual(status, 200, body)
-			row = next(r for r in body["data"] if r["role"] == "Note Perm Role")
+			row = next(r for r in body["data"] if r["role"] == "Notification Perm Role")
 			self.assertEqual((row["read"], row["write"], row["create"]), (1, 1, 0))
 
-			status, body = call("/api/v1/admin/permissions", "GET", {"role": "Note Perm Role"})
+			status, body = call("/api/v1/admin/permissions", "GET", {"role": "Notification Perm Role"})
 			self.assertEqual(status, 200, body)
-			self.assertTrue(all(r["doctype"].startswith("Note") for r in body["data"]))
+			self.assertTrue(all(r["doctype"].startswith("Notification") for r in body["data"]))
 
 			status, body = call(
-				"/api/v1/admin/permissions", "DELETE", {"role": "Note Perm Role", "doctype": "Note"}
+				"/api/v1/admin/permissions",
+				"DELETE",
+				{"role": "Notification Perm Role", "doctype": "Notification Log"},
 			)
 			self.assertEqual(status, 200, body)
-			self.assertFalse([r for r in body["data"] if r["role"] == "Note Perm Role"])
+			self.assertFalse([r for r in body["data"] if r["role"] == "Notification Perm Role"])
 
 			for data in (
-				{"role": "System Manager", "doctype": "Note", "permissions": {"read": True}},
-				{"role": "Note Perm Role", "doctype": "User", "permissions": {"read": True}},
+				{"role": "System Manager", "doctype": "Notification Log", "permissions": {"read": True}},
+				{"role": "Notification Perm Role", "doctype": "User", "permissions": {"read": True}},
 			):
 				status, _body = call("/api/v1/admin/permissions", "PUT", data)
 				self.assertEqual(status, 403, data)
@@ -336,16 +349,94 @@ class TestAdminEndpoints(unittest.TestCase):
 		self.assertEqual(status, 200, body)
 		self.assertTrue(all(r["name"].startswith("Svc") for r in body["data"]))
 
+	def test_permissions_show_source_and_reset(self):
+		ensure_role("Notification Reset Role")
+		self._reset_note_permissions()
+		self.addCleanup(self._reset_note_permissions)
+		with override_conf(service_prefix="Notification"):
+			url = "/api/v1/admin/permissions"
+			status, body = call(url, "GET", {"doctype": "Notification Log"})
+			self.assertEqual(status, 200, body)
+			self.assertTrue(all(r["source"] == "standard" for r in body["data"]))
+			self.assertFalse(any(r["differs_from_standard"] for r in body["data"]))
+
+			status, body = call(
+				url,
+				"PUT",
+				{
+					"role": "Notification Reset Role",
+					"doctype": "Notification Log",
+					"permissions": {"read": True},
+				},
+			)
+			self.assertEqual(status, 200, body)
+			row = body["data"][0]
+			self.assertEqual((row["source"], row["differs_from_standard"]), ("custom", True))
+
+			from oan_auth_service.api.permission_rules import drifted_rules
+
+			self.assertEqual(
+				[r["role"] for r in drifted_rules("Notification Log")], ["Notification Reset Role"]
+			)
+
+			status, body = call(f"{url}/reset", "POST", {"doctype": "Notification Log"})
+			self.assertEqual(status, 200, body)
+			self.assertGreater(body["data"]["removed_rules"], 0)
+			self.assertFalse(frappe.db.exists("Custom DocPerm", {"parent": "Notification Log"}))
+			self.assertEqual(drifted_rules("Notification Log"), [])
+
+			status, _body = call(f"{url}/reset", "POST", {"doctype": "User"})
+			self.assertEqual(status, 403)
+
+	def test_custom_docperm_tracking_is_enabled_once(self):
+		# Frappe skips Version records under tests (`ignore_version = frappe.in_test`), so
+		# this checks the setting that makes edits versioned, not a Version row.
+		from oan_auth_service.setup.install import enable_custom_docperm_tracking
+
+		enable_custom_docperm_tracking()
+		enable_custom_docperm_tracking()
+		self.assertEqual(frappe.get_meta("Custom DocPerm").track_changes, 1)
+		self.assertEqual(
+			frappe.db.count("Property Setter", {"doc_type": "Custom DocPerm", "property": "track_changes"}), 1
+		)
+
+	def test_permissions_refuse_if_owner(self):
+		ensure_role("Notification Owner Role")
+		self._reset_note_permissions()
+		self.addCleanup(self._reset_note_permissions)
+		with override_conf(service_prefix="Notification"):
+			base = {"role": "Notification Owner Role", "doctype": "Notification Log"}
+			for method, data in (
+				("PUT", {**base, "permissions": {"write": True}, "if_owner": True}),
+				("DELETE", {**base, "if_owner": True}),
+			):
+				status, _body = call("/api/v1/admin/permissions", method, data)
+				self.assertEqual(status, 400, method)
+			self.assertFalse(
+				frappe.db.exists(
+					"Custom DocPerm", {"parent": "Notification Log", "role": "Notification Owner Role"}
+				)
+			)
+
+	def test_prefix_needs_a_word_boundary(self):
+		ensure_role("Svcfoo Role")
+		with override_conf(service_prefix="Svc"):
+			status, body = call("/api/v1/admin/roles")
+		self.assertEqual(status, 200, body)
+		names = {r["name"] for r in body["data"]}
+		self.assertIn("Svc Customer", names)
+		self.assertNotIn("Svcfoo Role", names)
+
 	def test_permissions_need_service_prefix(self):
 		with override_conf(service_prefix=""):
 			status, _body = call("/api/v1/admin/permissions")
 		self.assertEqual(status, 400)
 
 	def test_list_roles_only_service_roles(self):
-		ensure_role("Note Listed Role")
-		with override_conf(service_prefix="Note"):
+		ensure_role("Notification Listed Role")
+		with override_conf(service_prefix="Notification"):
 			status, body = call("/api/v1/admin/roles")
 		self.assertEqual(status, 200)
 		names = {r["name"] for r in body["data"]}
-		self.assertIn("Note Listed Role", names)
-		self.assertTrue(all(n.startswith("Note") for n in names))
+		self.assertIn("Notification Listed Role", names)
+		self.assertTrue(all(n.startswith("Notification") for n in names))

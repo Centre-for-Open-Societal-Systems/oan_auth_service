@@ -396,6 +396,30 @@ wrappers around `frappe.get_all`.
 - **Hiding the Desk is not the security wall.** The wall is the JWT middleware plus the
   scoping hooks. No Desk access (§1.5) only removes a second, unreviewed way in.
 
+### 5.1.1 Changing DocPerm on a Live Site
+
+Frappe keeps two copies of a DocType's role rules: the standard rules in the DocType JSON
+(loaded into `DocPerm` by migrate) and site-level `Custom DocPerm` rows, written by the
+desk's Role Permissions Manager or the admin permissions API. Once a DocType has any
+`Custom DocPerm` row, Frappe ignores the JSON for it. The first admin edit copies every
+standard rule into `Custom DocPerm`, so from then on JSON permission changes do nothing on
+that site. Frappe does not warn about this.
+
+- **Own DocTypes:** change permissions in the DocType JSON. If any deployed site may
+  have customised that DocType, also ship a patch (§6.3) that applies the same change
+  with `frappe.permissions.add_permission` / `update_permission_property`. Those write to
+  `Custom DocPerm` when it exists, so the change lands on top of the admin's rules
+  instead of being ignored. This is how ERPNext and Helpdesk ship permission changes
+  (`erpnext/patches/v12_0/add_permission_in_lower_deduction.py`,
+  `helpdesk/patches/add_user_invitation_perms.py`).
+- **Another app's DocType** (including Frappe core): never edit its JSON. Grant your
+  role with a patch, as above (`helpdesk/patches/communication_read_perm_agent.py`).
+- **Never export customizations with permissions** for app DocTypes. On migrate Frappe
+  deletes every `Custom DocPerm` row of the DocType and re-inserts the exported ones
+  (`frappe/modules/utils.py`), wiping the site's admin changes.
+- **Check for drift** before relying on a JSON change. `oan_auth_service` lists drift,
+  resets a DocType to its JSON and warns on migrate; see its `docs/ADMIN_API_RULES.md`.
+
 ### 5.2 What Belongs in `permissions.py`
 
 1. The Frappe hooks registered in `hooks.py`.

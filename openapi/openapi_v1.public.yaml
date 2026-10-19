@@ -808,8 +808,8 @@ paths:
       tags:
       - Admin
       summary: 'Admin: list assignable roles'
-      description: Every enabled role of this service, meaning the ones whose names start with a configured
-        service prefix.
+      description: Every enabled role of this service, meaning the ones whose names are a configured service
+        prefix, or start with one and a space.
       operationId: get_api_v1_admin_roles
       responses:
         '200':
@@ -1021,8 +1021,11 @@ paths:
       tags:
       - Admin
       summary: 'Admin: list role permissions'
-      description: Doctype permissions of the roles this service owns, limited to doctypes it owns. Both
-        are the ones whose names start with a configured service prefix. Filter by `role` and `doctype`.
+      description: Permission rules of this service's roles on its doctypes (names that are a configured
+        service prefix, or start with one and a space). Filter by `role` and `doctype`. Each rule says
+        whether the doctype runs on its standard rules (the DocType JSON) or on custom rules, whether
+        it is active, and whether it differs from the standard. `if_owner` rules are listed but cannot
+        be edited here.
       operationId: get_api_v1_admin_permissions
       responses:
         '200':
@@ -1063,6 +1066,8 @@ paths:
       summary: 'Admin: set role permissions on a doctype'
       description: Grant or revoke individual rights (`read`, `write`, `create`, ...) for a service role
         on a service doctype. The rule is created when missing. Rights not named are left as they are.
+        The first change to a doctype copies all its standard rules into custom rules; from then on, permission
+        changes in the app's DocType JSON no longer apply on migrate until the doctype is reset.
       operationId: put_api_v1_admin_permissions
       responses:
         '200':
@@ -1107,8 +1112,10 @@ paths:
       tags:
       - Admin
       summary: 'Admin: remove a role permission rule'
-      description: Delete one permission rule (role, doctype, permlevel, if_owner) for a service role
-        on a service doctype.
+      description: Delete the unconditional permission rule (role, doctype, permlevel) for a service role
+        on a service doctype. The first change to a doctype copies all its standard rules into custom
+        rules; from then on, permission changes in the app's DocType JSON no longer apply on migrate until
+        the doctype is reset.
       operationId: delete_api_v1_admin_permissions
       responses:
         '200':
@@ -1149,6 +1156,53 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/DeletePermissionSchema'
+  /v1/admin/permissions/reset:
+    post:
+      tags:
+      - Admin
+      summary: 'Admin: reset a doctype to its standard permissions'
+      description: Delete every custom rule of a service doctype, for all roles, so its DocType JSON applies
+        again.
+      operationId: post_api_v1_admin_permissions_reset
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '400':
+          description: Validation or Client Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '401':
+          description: Unauthorized / Authentication Required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '403':
+          description: Caller lacks System Manager / Administrator, or the target account is protected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      security:
+      - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PermissionResetSchema'
   /v1/notifications:
     get:
       tags:
@@ -1930,6 +1984,7 @@ components:
       title: PermissionQuerySchema
       type: object
     SetPermissionSchema:
+      additionalProperties: false
       properties:
         role:
           minLength: 1
@@ -1945,10 +2000,6 @@ components:
           minimum: 0
           title: Permlevel
           type: integer
-        if_owner:
-          default: false
-          title: If Owner
-          type: boolean
         permissions:
           additionalProperties:
             type: boolean
@@ -1963,6 +2014,7 @@ components:
       title: SetPermissionSchema
       type: object
     DeletePermissionSchema:
+      additionalProperties: false
       properties:
         role:
           minLength: 1
@@ -1978,14 +2030,21 @@ components:
           minimum: 0
           title: Permlevel
           type: integer
-        if_owner:
-          default: false
-          title: If Owner
-          type: boolean
       required:
       - role
       - doctype
       title: DeletePermissionSchema
+      type: object
+    PermissionResetSchema:
+      additionalProperties: false
+      properties:
+        doctype:
+          minLength: 1
+          title: Doctype
+          type: string
+      required:
+      - doctype
+      title: PermissionResetSchema
       type: object
     ListNotificationsSchema:
       properties:

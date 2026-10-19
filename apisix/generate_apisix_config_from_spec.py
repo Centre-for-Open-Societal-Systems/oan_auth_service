@@ -100,6 +100,7 @@ TIER_OVERRIDES = {
 	("GET", "/v1/admin/permissions"): "admin",
 	("PUT", "/v1/admin/permissions"): "admin",
 	("DELETE", "/v1/admin/permissions"): "admin",
+	("POST", "/v1/admin/permissions/reset"): "admin",
 	("GET", "/v1/notifications"): "authenticated-core",
 	("PATCH", "/v1/notifications"): "authenticated-core",
 	("DELETE", "/v1/notifications"): "authenticated-core",

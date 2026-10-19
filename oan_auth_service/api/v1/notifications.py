@@ -221,7 +221,8 @@ def delete_notification(notification_id: str):
 @validate_request(BulkSchema)
 @handle_api_errors
 def bulk_delete_notifications(ids=None, all: bool = False):
-	names = frappe.get_all(DOCTYPE, filters=_own_filters({"ids": ids, "all": all}), pluck="name")
-	for name in names:
-		frappe.delete_doc(DOCTYPE, name, ignore_permissions=True, force=True)
-	return success_response(data={"deleted": len(names)}, message="Notifications deleted")
+	filters = _own_filters({"ids": ids, "all": all})
+	deleted = frappe.db.count(DOCTYPE, filters=filters)
+	if deleted:
+		frappe.db.delete(DOCTYPE, filters)
+	return success_response(data={"deleted": deleted}, message="Notifications deleted")

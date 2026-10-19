@@ -8,3 +8,4 @@ Business rules for `/api/v1/notifications`. Code: `oan_auth_service/api/v1/notif
 - `notify_users` skips the acting user.
 - Bulk read, unread and delete take either `ids` or `all=true`. Sending neither, or both, is an error, so a client bug cannot clear every record with an empty body. `ids` holds at most 500 entries.
 - `message` carries `email_content` unchanged and can contain HTML. Clients must sanitize it before rendering.
+- Bulk delete is one `DELETE` query, so `all=true` stays cheap on thousands of rows. Bulk-deleted notifications are not kept in `Deleted Document`; deleting a single notification is.

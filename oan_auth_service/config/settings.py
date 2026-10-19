@@ -100,8 +100,13 @@ def self_registerable_roles() -> list[str]:
 	return list(frappe.conf.get("jwt_self_registerable_roles") or [])
 
 
+def name_in_scope(name: str, prefixes: tuple[str, ...]) -> bool:
+	"""Whether `name` is a prefix itself or starts with a prefix and a space (`A2C Lead`, not `A2Cfoo`)."""
+	return any(name == p or name.startswith(f"{p} ") for p in prefixes)
+
+
 def service_prefixes() -> tuple[str, ...]:
-	"""Name prefixes of the roles and doctypes this deployment's services own, e.g. `("A2C",)`.
+	"""Bare name prefixes of the roles and doctypes this deployment's services own, e.g. `("A2C",)`.
 
 	The admin endpoints expose only roles, doctypes and users matching one. A
 	consuming app declares its prefix with the `oan_service_prefix` hook; the
