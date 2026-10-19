@@ -9,11 +9,11 @@ services:
   upstream:
     scheme: http
     nodes:
-    - host: oan-auth.internal.svc
+    - host: ${OAN_AUTH_UPSTREAM_HOST}
       port: 8000
       weight: 1
     pass_host: rewrite
-    upstream_host: mysite.localhost
+    upstream_host: ${FRAPPE_SITE_NAME}
     timeout:
       connect: 5
       send: 20

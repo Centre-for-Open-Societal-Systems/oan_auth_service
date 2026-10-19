@@ -1,0 +1,5 @@
+apiVersion: v2
+name: oan-auth-gateway
+description: APISIX Ingress Controller routes for the OAN Authentication Service
+type: application
+version: 0.1.0
