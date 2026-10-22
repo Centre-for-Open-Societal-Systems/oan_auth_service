@@ -1,6 +1,7 @@
 """Tests for the admin user and role management endpoints under /api/v1/admin."""
 
 import json
+import random
 import unittest
 from urllib.parse import quote
 
@@ -151,9 +152,8 @@ class TestAdminEndpoints(unittest.TestCase):
 		self.assertEqual([p.phone for p in contact.phone_nos], ["+251911223399"])
 
 	def test_patch_cannot_clear_both_email_and_phone(self):
-		data = self._create(
-			email=f"both_{frappe.generate_hash(length=6)}@example.com", phone_number="+251911223344"
-		)
+		phone = f"+2519{random.randint(10000000, 99999999)}"
+		data = self._create(email=f"both_{frappe.generate_hash(length=6)}@example.com", phone_number=phone)
 		url = f"/api/v1/admin/users/{data['user']}"
 		status, _body = call(url, "PATCH", {"email": None, "phone_number": None})
 		self.assertEqual(status, 400)
@@ -335,6 +335,23 @@ class TestAdminEndpoints(unittest.TestCase):
 			):
 				status, _body = call("/api/v1/admin/permissions", "PUT", data)
 				self.assertEqual(status, 403, data)
+
+	def test_own_doctypes_stay_out_of_scope(self):
+		# `OAN IAM Service` decides which tokens are accepted and which roles they
+		# grant: an `OAN` service prefix must not bring it into the admin API.
+		with override_conf(service_prefix="OAN"):
+			status, body = call("/api/v1/admin/permissions", "GET")
+			self.assertEqual(status, 200, body)
+			self.assertFalse([r for r in body["data"] if r["doctype"].startswith("OAN IAM Service")])
+			for method, data in (
+				("GET", {"doctype": "OAN IAM Service"}),
+				(
+					"PUT",
+					{"role": "System Manager", "doctype": "OAN IAM Service", "permissions": {"read": True}},
+				),
+			):
+				status, _body = call("/api/v1/admin/permissions", method, data)
+				self.assertEqual(status, 403, (method, data))
 
 	def test_prefix_from_hook(self):
 		from unittest.mock import patch

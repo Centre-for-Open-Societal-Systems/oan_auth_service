@@ -18,6 +18,10 @@ Comprehensive API documentation for the **OAN Authentication Service** (`oan_aut
   - [2. User Login (`POST /api/v1/auth/login`)](#2-user-login-post-apiv1authlogin)
   - [3. Token Refresh (`POST /api/v1/auth/refresh`)](#3-token-refresh-post-apiv1authrefresh)
   - [4. User Logout (`POST /api/v1/auth/logout`)](#4-user-logout-post-apiv1authlogout)
+- [Login Option Endpoints](#login-option-endpoints)
+  - [12. List Login Options (`GET /api/v1/auth/iam/providers`)](#12-list-login-options-get-apiv1authiamproviders)
+  - [13. Start a Login Option (`POST /api/v1/auth/iam/login`)](#13-start-a-login-option-post-apiv1authiamlogin)
+  - [14. IAM Sessions: Refresh and Logout](#14-iam-sessions-refresh-and-logout)
 - [Password Recovery Endpoints](#password-recovery-endpoints)
   - [5. Forgot Password (`POST /api/v1/auth/password/forgot`)](#5-forgot-password-post-apiv1authpasswordforgot)
   - [6. Reset Password (`POST /api/v1/auth/password/reset`)](#6-reset-password-post-apiv1authpasswordreset)
@@ -144,6 +148,8 @@ HTTP Status: `400`, `401`, `403`, `404`, `429`, or `500`
 | `POST` | `/api/v1/auth/login`            | Authenticate & obtain token pair               | Public / Guest   | Constant-time flow     |
 | `POST` | `/api/v1/auth/refresh`          | Exchange single-use refresh token              | Public / Guest   | Single-use rotation    |
 | `POST` | `/api/v1/auth/logout`           | Revoke active refresh token                    | Public / Guest   | No                     |
+| `GET`  | `/api/v1/auth/iam/providers`    | List enabled login options                     | Public / Guest   | Gateway                |
+| `POST` | `/api/v1/auth/iam/login`        | Start an IAM login option                      | Public / Guest   | Gateway                |
 | `POST` | `/api/v1/auth/password/forgot`  | Initiate password recovery (SMS / Email)       | Public / Guest   | 10 req / hour / IP     |
 | `POST` | `/api/v1/auth/password/reset`   | Complete password reset (Email Key or SMS OTP) | Public / Guest   | 20 OTP req / hour / IP |
 | `POST` | `/api/v1/auth/password/initial` | Replace a temporary password                   | Public / Guest   | 10 req / 5 min / IP    |
@@ -371,6 +377,105 @@ Revokes the specified refresh token in the database, terminating the persistent 
 
 ---
 
+## Login Option Endpoints
+
+Login options are `OAN IAM Service` rows, edited in desk by a System Manager. The frontend only ever sends a row's `key`; it never holds an IAM URL or a provider id. Design: `docs/IAM_LOGIN_DISCOVERY_PLAN.md`. Sequence: `docs/IAM_LOGIN_DISCOVERY_FLOW.md`.
+
+### 12. List Login Options (`GET /api/v1/auth/iam/providers`)
+
+Enabled login options in display order, one button each. Read from the database only, so an IAM outage never hides a button. Key `local` means "show the username and password form" (`POST /api/v1/auth/login`). Only display fields are returned. No enabled rows: an empty list.
+
+#### Response: `200 OK`
+
+```json
+{
+  "status": "success",
+  "message": "Success",
+  "data": {
+    "providers": [
+      { "key": "local", "label": "Sign in", "icon_url": "" },
+      {
+        "key": "staff",
+        "label": "Sign in with Staff SSO",
+        "icon_url": "/files/staff.png"
+      },
+      { "key": "bene", "label": "Login with eSignet", "icon_url": "" }
+    ]
+  }
+}
+```
+
+### 13. Start a Login Option (`POST /api/v1/auth/iam/login`)
+
+Starts the chosen option at its IAM and returns the identity provider URL. The frontend sets `window.location = redirect_url`. After IAM's callback the browser lands on `return_url`, and the access token is in the `<cookie_prefix>X-Access-Token` cookie.
+
+#### Request Body Parameters
+
+| Field        | Type     | Required | Description                                                                                  |
+| :----------- | :------- | :------- | :------------------------------------------------------------------------------------------- |
+| `key`        | `string` | Yes      | Key of an enabled login option other than `local`.                                           |
+| `return_url` | `string` | Yes      | Absolute URL. Its origin must be one of the option's return origins (IAM does not check it). |
+
+#### Response: `200 OK`
+
+```json
+{
+  "status": "success",
+  "message": "Success",
+  "data": {
+    "redirect_url": "https://kc.example.org/realms/agent/protocol/openid-connect/auth?...",
+    "iam": "agent",
+    "cookie_prefix": "agent-"
+  }
+}
+```
+
+#### Errors
+
+| Status | Code                  | When                                                                                         |
+| :----- | :-------------------- | :------------------------------------------------------------------------------------------- |
+| `400`  | `VALIDATION_ERROR`    | Unknown, disabled or `local` key; `return_url` off the allowed origins. No IAM call is made. |
+| `502`  | `BAD_GATEWAY`         | IAM answered `4xx`, or without an `http(s)` `redirectUrl`.                                   |
+| `503`  | `SERVICE_UNAVAILABLE` | IAM unreachable, timed out or answered `5xx`.                                                |
+
+### 14. IAM Sessions: Refresh and Logout
+
+IAM sessions are refreshed and ended through the same routes as this app's own sessions, `POST /api/v1/auth/refresh` and `POST /api/v1/auth/logout`. Send `access_token` instead of `refresh_token`: an IAM access token, expired or not, in the body. Its `iss` picks the login option, so no key is sent. Forward that option's IAM cookies (`<cookie_prefix>X-Access-Token`, `X-ID-Token`, `X-Session-Id`) and relay every `Set-Cookie` header of the response to the browser unchanged.
+
+#### Request Body
+
+| Field           | Type     | Required       | Description                                          |
+| :-------------- | :------- | :------------- | :--------------------------------------------------- |
+| `refresh_token` | `string` | One of the two | This app's refresh token. Local sessions, unchanged. |
+| `access_token`  | `string` | One of the two | An IAM access token. Expired is fine.                |
+
+#### Refresh response: `200 OK`
+
+```json
+{ "status": "success", "data": { "refreshed": true } }
+```
+
+`refreshed` is `false` when the access token was still valid and IAM set no new cookie.
+
+#### Logout response: `200 OK`
+
+```json
+{ "status": "success", "data": { "logged_out": true, "provider_logout": true } }
+```
+
+When the identity provider could not be reached server-to-server, `provider_logout` is `false` and `data.logout_url` is present: send the browser there. When IAM had no session left, `provider_logout` is `false` with no `logout_url`.
+
+#### Errors
+
+| Status | Code                   | When                                                                                                |
+| :----- | :--------------------- | :-------------------------------------------------------------------------------------------------- |
+| `400`  | `VALIDATION_ERROR`     | Both or neither credential, or an `access_token` issued by this app (use `refresh_token`).          |
+| `401`  | `AUTHENTICATION_ERROR` | Issuer of no enabled option, `azp` mismatch, no session cookie (refresh), or IAM refused (refresh). |
+| `502`  | `BAD_GATEWAY`          | IAM answered another `4xx`.                                                                         |
+| `503`  | `SERVICE_UNAVAILABLE`  | IAM unreachable, timed out or answered `5xx`. Keep the session and retry later.                     |
+
+---
+
 ## Password Recovery Endpoints
 
 ### 5. Forgot Password (`POST /api/v1/auth/password/forgot`)
@@ -577,18 +682,20 @@ Returns the profile, identity attributes, and assigned roles of the currently au
 
 #### Response Fields (`data`)
 
-| Field          | Type               | Description                                                                  |
-| :------------- | :----------------- | :--------------------------------------------------------------------------- |
-| `user`         | `string`           | Unique User ID / internal handle.                                            |
-| `first_name`   | `string` \| `null` | First name.                                                                  |
-| `last_name`    | `string` \| `null` | Last name.                                                                   |
-| `full_name`    | `string`           | Display name.                                                                |
-| `login_email`  | `string` \| `null` | Authoritative login email address.                                           |
-| `mobile_no`    | `string` \| `null` | Complete international mobile number (E.164 format).                         |
-| `country_code` | `string` \| `null` | Extracted country calling code (e.g. `+251`).                                |
-| `phone_number` | `string` \| `null` | Extracted national subscriber phone number (e.g. `911223344`).               |
-| `roles`        | `array[string]`    | Active roles assigned to the user.                                           |
-| `profiles`     | `object`           | Namespaced domain profiles supplied by installed apps via `on_user_profile`. |
+| Field           | Type               | Description                                                                  |
+| :-------------- | :----------------- | :--------------------------------------------------------------------------- |
+| `user`          | `string`           | Unique User ID / internal handle.                                            |
+| `first_name`    | `string` \| `null` | First name.                                                                  |
+| `last_name`     | `string` \| `null` | Last name.                                                                   |
+| `full_name`     | `string`           | Display name.                                                                |
+| `login_email`   | `string` \| `null` | Authoritative login email address.                                           |
+| `mobile_no`     | `string` \| `null` | Complete international mobile number (E.164 format).                         |
+| `country_code`  | `string` \| `null` | Extracted country calling code (e.g. `+251`).                                |
+| `phone_number`  | `string` \| `null` | Extracted national subscriber phone number (e.g. `911223344`).               |
+| `roles`         | `array[string]`    | Active roles assigned to the user.                                           |
+| `login_option`  | `string`           | Login option the token came through: an `OAN IAM Service` key, or `local`.   |
+| `cookie_prefix` | `string` \| `null` | That option's IAM cookie prefix; `null` for `local`.                         |
+| `profiles`      | `object`           | Namespaced domain profiles supplied by installed apps via `on_user_profile`. |
 
 ---
 
@@ -696,12 +803,14 @@ Aggregates public reference metadata, registration parameters, and domain metada
 
 ## Common Error Codes Reference
 
-| HTTP Status             | Error Code (`code`)        | Trigger Reason                                                                                                          |
-| :---------------------- | :------------------------- | :---------------------------------------------------------------------------------------------------------------------- |
-| `400 Bad Request`       | `VALIDATION_ERROR`         | Malformed JSON, missing mandatory fields, invalid phone/email, or failed password complexity.                           |
-| `401 Unauthorized`      | `AUTHENTICATION_ERROR`     | Invalid credentials, expired/replayed refresh token, or invalid/expired password reset code.                            |
-| `403 Forbidden`         | `PERMISSION_ERROR`         | Requesting a role not permitted for public self-registration.                                                           |
-| `403 Forbidden`         | `PASSWORD_CHANGE_REQUIRED` | Correct credentials, but the account holds a temporary password. Send the user to `POST /api/v1/auth/password/initial`. |
-| `403 Forbidden`         | `HTTPS_REQUIRED`           | Request made over plain HTTP when `jwt_enforce_https` is enabled.                                                       |
-| `429 Too Many Requests` | `RATE_LIMIT_EXCEEDED`      | Exceeded rate limit on forgot-password or OTP verification endpoints.                                                   |
-| `500 Server Error`      | `INTERNAL_SERVER_ERROR`    | Unhandled runtime exception or key configuration error.                                                                 |
+| HTTP Status               | Error Code (`code`)        | Trigger Reason                                                                                                          |
+| :------------------------ | :------------------------- | :---------------------------------------------------------------------------------------------------------------------- |
+| `400 Bad Request`         | `VALIDATION_ERROR`         | Malformed JSON, missing mandatory fields, invalid phone/email, or failed password complexity.                           |
+| `401 Unauthorized`        | `AUTHENTICATION_ERROR`     | Invalid credentials, expired/replayed refresh token, or invalid/expired password reset code.                            |
+| `403 Forbidden`           | `PERMISSION_ERROR`         | Requesting a role not permitted for public self-registration.                                                           |
+| `403 Forbidden`           | `PASSWORD_CHANGE_REQUIRED` | Correct credentials, but the account holds a temporary password. Send the user to `POST /api/v1/auth/password/initial`. |
+| `403 Forbidden`           | `HTTPS_REQUIRED`           | Request made over plain HTTP when `jwt_enforce_https` is enabled.                                                       |
+| `429 Too Many Requests`   | `RATE_LIMIT_EXCEEDED`      | Exceeded rate limit on forgot-password or OTP verification endpoints.                                                   |
+| `502 Bad Gateway`         | `BAD_GATEWAY`              | An IAM answered a login or logout call with something unusable (wrong `base_url` or `provider_id` on the row).          |
+| `503 Service Unavailable` | `SERVICE_UNAVAILABLE`      | An IAM is unreachable, timed out or answered `5xx`. Do not log the user out.                                            |
+| `500 Server Error`        | `INTERNAL_SERVER_ERROR`    | Unhandled runtime exception or key configuration error.                                                                 |

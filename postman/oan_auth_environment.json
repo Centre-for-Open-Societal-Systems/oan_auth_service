@@ -52,6 +52,20 @@
 			"description": "From the password reset email link"
 		},
 		{
+			"key": "iam_login_key",
+			"value": "",
+			"type": "default",
+			"enabled": true,
+			"description": "Key of an enabled OAN IAM Service row, e.g. staff"
+		},
+		{
+			"key": "iam_return_url",
+			"value": "",
+			"type": "default",
+			"enabled": true,
+			"description": "Absolute URL on one of that row's return origins"
+		},
+		{
 			"key": "admin_username",
 			"value": "",
 			"type": "default",

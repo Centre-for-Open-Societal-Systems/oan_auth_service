@@ -301,7 +301,7 @@
 					"response": []
 				},
 				{
-					"name": "Exchange single-use refresh token",
+					"name": "Refresh a session",
 					"event": [
 						{
 							"listen": "test",
@@ -342,7 +342,7 @@
 								"refresh"
 							]
 						},
-						"description": "Exchange a valid single-use refresh token for a new access token and rotated refresh token.",
+						"description": "Send exactly one credential. `refresh_token` (this app's session): exchanged for a new access token and rotated refresh token. `access_token` (an IAM session, expired token accepted): its issuer picks the IAM, which refreshes from the forwarded IAM cookies (`<cookie_prefix>X-Access-Token`, `X-ID-Token`, `X-Session-Id`); relay every `Set-Cookie` of the response to the browser unchanged, they carry the new tokens. The IAM answer is `refreshed: true` when a new access token was issued, `false` when the current one is still valid. Session over: 401, log the user out. IAM unreachable: 503, keep the session and retry.",
 						"auth": {
 							"type": "noauth"
 						},
@@ -359,7 +359,7 @@
 					"response": []
 				},
 				{
-					"name": "Revoke refresh token",
+					"name": "End a session",
 					"event": [
 						{
 							"listen": "test",
@@ -398,13 +398,69 @@
 								"logout"
 							]
 						},
-						"description": "Revoke an active refresh token session.",
+						"description": "Send exactly one credential. `refresh_token` (this app's session): revoked; access tokens expire on their own. `access_token` (an IAM session, expired token accepted): its issuer picks the IAM; forward that IAM's cookies (`<cookie_prefix>X-Access-Token`, `X-ID-Token`, `X-Session-Id`) and relay every `Set-Cookie` of the response, they clear IAM's cookies. `provider_logout: true` means the identity provider session was ended too; otherwise, when `logout_url` is present, send the browser there to end it.",
 						"auth": {
 							"type": "noauth"
 						},
 						"body": {
 							"mode": "raw",
 							"raw": "{\n    \"refresh_token\": \"{{refresh_token}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Start a login option",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"pm.test('Response is a success envelope', function () {",
+									"    pm.response.to.be.json;",
+									"    pm.expect(pm.response.json().status).to.eql('success');",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/v1/auth/iam/login",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"auth",
+								"iam",
+								"login"
+							]
+						},
+						"description": "Start the login of an enabled IAM login option and return the identity provider URL to send the browser to (`window.location = redirect_url`). `return_url` must be absolute and on one of the option's return origins. Also returns the option's `cookie_prefix`: after the IAM callback, the access token is in the `<cookie_prefix>X-Access-Token` cookie. Unknown, disabled or `local` key, or a `return_url` off the allowed origins: 400. IAM answered unusably: 502. IAM unreachable: 503.",
+						"auth": {
+							"type": "noauth"
+						},
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"key\": \"{{iam_login_key}}\",\n    \"return_url\": \"{{iam_return_url}}\"\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -499,7 +555,7 @@
 								"notifications"
 							]
 						},
-						"description": "Newest first, for the caller only. `status` is unread, read or all. `unread_count` ignores the filter and drives the badge."
+						"description": "Newest first, for the caller only. `status` is unread, read or all. `unread_count` ignores the filter and drives the badge. `message` may contain HTML: clients must sanitize it before rendering."
 					},
 					"response": []
 				},
@@ -541,7 +597,7 @@
 								"notifications"
 							]
 						},
-						"description": "Send `ids` or `all=true`, plus `read` (default true).",
+						"description": "Send `ids` (at most 500) or `all=true`, plus `read` (default true).",
 						"body": {
 							"mode": "raw",
 							"raw": "{\n    \"all\": true,\n    \"read\": true\n}",
@@ -592,7 +648,7 @@
 								"notifications"
 							]
 						},
-						"description": "Send `ids` or `all=true`.",
+						"description": "Send `ids` (at most 500) or `all=true`.",
 						"body": {
 							"mode": "raw",
 							"raw": "{\n    \"all\": true\n}",
@@ -639,7 +695,7 @@
 								"{{notification_id}}"
 							]
 						},
-						"description": "Get one of my notifications"
+						"description": "`message` may contain HTML: clients must sanitize it before rendering."
 					},
 					"response": []
 				},
@@ -830,7 +886,7 @@
 								"roles"
 							]
 						},
-						"description": "Every enabled role that can be granted through this API."
+						"description": "Every enabled role of this service, meaning the ones whose names are a configured service prefix, or start with one and a space."
 					},
 					"response": []
 				},
@@ -979,7 +1035,7 @@
 								}
 							]
 						},
-						"description": "List user accounts, newest first. Filter by free-text `search`, exact `email` or `phone_number`, `role` and `enabled`."
+						"description": "List user accounts holding a role of this service, newest first. Filter by free-text `search`, exact `email` or `phone_number`, `role` and `enabled`."
 					},
 					"response": []
 				},
@@ -1062,7 +1118,7 @@
 								"{{target_user_id}}"
 							]
 						},
-						"description": "Change name, login email, mobile number or enabled status. Only the fields sent are changed. Disabling revokes every refresh token.",
+						"description": "Change name, login email, mobile number or enabled status. Only the fields sent are changed. An email or a phone number must remain. Disabling revokes every refresh token.",
 						"body": {
 							"mode": "raw",
 							"raw": "{\n    \"first_name\": \"Renamed\",\n    \"enabled\": true\n}",
@@ -1305,6 +1361,159 @@
 						"description": "Delete every refresh token the user holds. Access tokens already issued stay valid until they expire."
 					},
 					"response": []
+				},
+				{
+					"name": "List role permissions",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"pm.test('Response is a success envelope', function () {",
+									"    pm.response.to.be.json;",
+									"    pm.expect(pm.response.json().status).to.eql('success');",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/v1/admin/permissions",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"admin",
+								"permissions"
+							]
+						},
+						"description": "Permission rules of this service's roles on its doctypes (names that are a configured service prefix, or start with one and a space). Filter by `role` and `doctype`. Each rule says whether the doctype runs on its standard rules (the DocType JSON) or on custom rules, whether it is active, and whether it differs from the standard. `if_owner` rules are listed but cannot be edited here."
+					},
+					"response": []
+				},
+				{
+					"name": "Set role permissions on a doctype",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"pm.test('Response is a success envelope', function () {",
+									"    pm.response.to.be.json;",
+									"    pm.expect(pm.response.json().status).to.eql('success');",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "PUT",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/v1/admin/permissions",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"admin",
+								"permissions"
+							]
+						},
+						"description": "Grant or revoke individual rights (`read`, `write`, `create`, ...) for a service role on a service doctype. The rule is created when missing. Rights not named are left as they are. The first change to a doctype copies all its standard rules into custom rules; from then on, permission changes in the app's DocType JSON no longer apply on migrate until the doctype is reset."
+					},
+					"response": []
+				},
+				{
+					"name": "Remove a role permission rule",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"pm.test('Response is a success envelope', function () {",
+									"    pm.response.to.be.json;",
+									"    pm.expect(pm.response.json().status).to.eql('success');",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "DELETE",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/v1/admin/permissions",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"admin",
+								"permissions"
+							]
+						},
+						"description": "Delete the unconditional permission rule (role, doctype, permlevel) for a service role on a service doctype. The first change to a doctype copies all its standard rules into custom rules; from then on, permission changes in the app's DocType JSON no longer apply on migrate until the doctype is reset."
+					},
+					"response": []
+				},
+				{
+					"name": "Reset a doctype to its standard permissions",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"pm.test('Response is a success envelope', function () {",
+									"    pm.response.to.be.json;",
+									"    pm.expect(pm.response.json().status).to.eql('success');",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/v1/admin/permissions/reset",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"admin",
+								"permissions",
+								"reset"
+							]
+						},
+						"description": "Delete every custom rule of a service doctype, for all roles, so its DocType JSON applies again."
+					},
+					"response": []
 				}
 			],
 			"auth": {
@@ -1494,6 +1703,54 @@
 									"language": "json"
 								}
 							}
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Auth",
+			"description": "Operations for Auth",
+			"item": [
+				{
+					"name": "List login options",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"pm.test('Response is a success envelope', function () {",
+									"    pm.response.to.be.json;",
+									"    pm.expect(pm.response.json().status).to.eql('success');",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/v1/auth/iam/providers",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"auth",
+								"iam",
+								"providers"
+							]
+						},
+						"description": "Enabled login options in display order: one button per entry. Key `local` means this app's own username and password form, which posts to `/api/v1/auth/login`; any other key starts through `/api/v1/auth/iam/login`. Display fields only. Reads the database, never an IAM, so an IAM outage does not hide its button.",
+						"auth": {
+							"type": "noauth"
 						}
 					},
 					"response": []

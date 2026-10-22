@@ -1,8 +1,8 @@
-"""Tests for login delegated to the OpenG2P IAM service.
+"""Tests for login delegated to the OpenG2P IAM services.
 
 IAM is faked at the HTTP boundary: `GET /auth/get_user_profile` answers with a
 principal for tokens it knows and 401 for anything else, as the real service
-does.
+does. Login options are real `OAN IAM Service` rows.
 """
 
 import unittest
@@ -20,12 +20,43 @@ from oan_auth_service.api.middleware import validate_jwt_request
 from oan_auth_service.api.router import ensure_routes_registered
 from oan_auth_service.api.v1.auth import _resolve_login_identifier, issue_temporary_password
 from oan_auth_service.tests.test_router import make_test_request
-from oan_auth_service.tests.utils import cleanup_user, configured_keys, ensure_role, override_conf
+from oan_auth_service.tests.utils import (
+	cleanup_user,
+	configured_keys,
+	delete_iam_service,
+	ensure_role,
+	make_iam_service,
+)
 
-IAM_URL = "https://iam.test"
+STAFF = "t-staff"
+AGENT = "t-agent"
+BENE = "t-bene"
+STAFF_URL = "https://staff-iam.test"
+AGENT_URL = "https://agent-iam.test"
+BENE_URL = "https://bene-iam.test"
+STAFF_ISS = "https://idp.test/realms/staff"
+AGENT_ISS = "https://idp.test/realms/agent"
+BENE_ISS = "https://esignet.test"
 APP = "oan-grievance"
 OFFICER = "IAM Test Officer"
 VIEWER = "IAM Test Viewer"
+FARMER = "IAM Test Farmer"
+
+# Login hooks under test, set per test and called by dotted path through frappe.get_hooks.
+HOOK_CALLS = []
+HOOK_BEHAVIOUR = {"raise": None, "return": False}
+
+
+def recording_hook(user, principal, login_option):
+	HOOK_CALLS.append(("first", user, principal, login_option))
+	if HOOK_BEHAVIOUR["raise"] is not None:
+		raise HOOK_BEHAVIOUR["raise"]
+	return HOOK_BEHAVIOUR["return"]
+
+
+def second_hook(user, principal, login_option):
+	HOOK_CALLS.append(("second", user, principal, login_option))
+	return False
 
 
 class _Response:
@@ -40,85 +71,138 @@ class _Response:
 
 
 class FakeIAM:
-	"""IAM's profile endpoint: knows the principals registered with `issue`."""
+	"""The profile endpoint of every IAM: knows the principals registered with `issue`."""
 
 	def __init__(self):
 		self.principals = {}
-		self.calls = 0
+		self.urls = []
 		self.down = False
 		self.override = None
 
-	def issue(self, sub, client_roles=None, name="Test Officer"):
+	@property
+	def calls(self):
+		return len(self.urls)
+
+	def issue(self, sub, client_roles=None, name="Test Officer", iss=STAFF_ISS, base_url=STAFF_URL, **claims):
 		# Default grants a role: principals with none are rejected.
-		# Any non-local issuer routes to IAM; the signature is IAM's concern, not ours.
+		# The signature is IAM's concern, not ours.
 		token = jwt.encode(
 			{
-				"iss": "https://idp.test/realms/staff",
+				"iss": iss,
 				"sub": sub,
 				"jti": str(uuid.uuid4()),
 				"exp": int((datetime.now(UTC) + timedelta(minutes=5)).timestamp()),
+				**claims,
 			},
 			"idp-secret",
 			algorithm="HS256",
 		)
-		self.principals[token] = {
-			"scheme": "bearer",
-			"sub": sub,
-			"name": name,
-			"client_roles": client_roles if client_roles is not None else {APP: [OFFICER]},
-		}
+		self.principals[token] = (
+			base_url,
+			{
+				"scheme": "bearer",
+				"sub": sub,
+				"name": name,
+				"client_roles": client_roles if client_roles is not None else {APP: [OFFICER]},
+			},
+		)
 		return token
 
 	def get(self, url, headers=None, **_kwargs):
-		self.calls += 1
+		self.urls.append(url)
 		if self.down:
 			raise requests.ConnectionError("IAM down")
-		assert url == f"{IAM_URL}/auth/get_user_profile"
 		if self.override is not None:
 			return self.override
 		token = (headers or {}).get("Authorization", "").removeprefix("Bearer ")
 		if token not in self.principals:
 			return _Response(401, {"errors": [{"code": "G2P-AUT-401"}]})
-		return _Response(200, self.principals[token])
+		base_url, principal = self.principals[token]
+		# Each IAM knows only the tokens of its own provider in this fake, so a
+		# token sent to the wrong IAM fails, as routing must never do.
+		if url != f"{base_url}/auth/get_user_profile":
+			return _Response(401, {})
+		return _Response(200, principal)
 
 
 class TestIAMDelegatedLogin(unittest.TestCase):
 	def setUp(self):
 		ensure_routes_registered()
-		for role in (OFFICER, VIEWER):
+		for role in (OFFICER, VIEWER, FARMER):
 			ensure_role(role)
+		make_iam_service(
+			STAFF,
+			base_url=STAFF_URL,
+			provider_id=1,
+			issuer=STAFF_ISS,
+			application=APP,
+			return_origins=["https://ui.test"],
+			sort_order=1,
+		)
+		make_iam_service(
+			AGENT,
+			base_url=AGENT_URL,
+			provider_id=10,
+			issuer=AGENT_ISS,
+			application=APP,
+			cookie_prefix="agent-",
+			return_origins=["https://ui.test"],
+			sort_order=2,
+		)
+		make_iam_service(
+			BENE,
+			base_url=BENE_URL,
+			provider_id=1,
+			issuer=BENE_ISS,
+			default_roles=[FARMER],
+			cookie_prefix="bene-",
+			return_origins=["https://ui.test"],
+			sort_order=3,
+		)
 		frappe.cache.delete_keys("oan_auth:iam_")
+		frappe.cache.delete_keys("oan_auth:login_hook_done:")
 		self.iam = FakeIAM()
-		self.subs = []
+		self.users = []
+		HOOK_CALLS.clear()
+		HOOK_BEHAVIOUR.update({"raise": None, "return": False})
 
 	def tearDown(self):
-		for sub in self.subs:
-			cleanup_user(iam_users.user_name_for_sub(sub))
+		for user in self.users:
+			cleanup_user(user)
+		for key in (STAFF, AGENT, BENE):
+			delete_iam_service(key)
 		frappe.set_user("Administrator")
 
-	def _sub(self):
+	def _sub(self, key=STAFF):
 		sub = str(uuid.uuid4())
-		self.subs.append(sub)
+		self.users.append(iam_users.user_name_for_sub(sub, key))
 		return sub
 
-	def _authenticate_cookies(
-		self, cookies, method="GET", headers=None, protected=False, form_dict=None, **conf
-	):
+	def _patches(self, hooks=None):
+		real_get_hooks = frappe.get_hooks
+
+		def get_hooks(name=None, *a, **kw):
+			if name == iam_users.LOGIN_HOOK:
+				return list(hooks or [])
+			return real_get_hooks(name, *a, **kw)
+
+		return (
+			configured_keys(),
+			patch("oan_auth_service.api.iam_tokens.requests.get", side_effect=self.iam.get),
+			patch("frappe.get_hooks", side_effect=get_hooks),
+		)
+
+	def _authenticate_cookies(self, cookies, method="GET", headers=None, protected=False, form_dict=None):
 		"""`protected` makes the test path non-exempt, as every real endpoint but login-style ones."""
-		conf = {"iam_base_url": IAM_URL, "iam_application": APP, **conf}
 		env = {"HTTP_COOKIE": "; ".join(f"{k}={v}" for k, v in cookies.items())}
 		real_match = middleware._match_namespace
 
 		def match(path):
 			config = real_match(path)
-			return {**config, "exempt_paths": []} if config and protected else config
+			return {**config, "exempt_paths": middleware._PathTable()} if config and protected else config
 
-		with (
-			configured_keys(),
-			override_conf(**conf),
-			patch("oan_auth_service.api.iam_tokens.requests.get", side_effect=self.iam.get),
-			patch.object(middleware, "_match_namespace", side_effect=match),
-		):
+		keys, iam, hooks = self._patches()
+		with keys, iam, hooks, patch.object(middleware, "_match_namespace", side_effect=match):
 			req = make_test_request(
 				"/api/v1/auth/health", method=method, headers=headers or {}, environ_base=env
 			)
@@ -128,15 +212,11 @@ class TestIAMDelegatedLogin(unittest.TestCase):
 			validate_jwt_request(req)
 		return frappe.session.user
 
-	def _authenticate(self, token, **conf):
-		conf = {"iam_base_url": IAM_URL, "iam_application": APP, **conf}
-		with (
-			configured_keys(),
-			override_conf(**conf),
-			patch("oan_auth_service.api.iam_tokens.requests.get", side_effect=self.iam.get),
-		):
+	def _authenticate(self, token, method="GET", hooks=None):
+		keys, iam, get_hooks = self._patches(hooks)
+		with keys, iam, get_hooks:
 			req = make_test_request(
-				"/api/v1/auth/health", method="GET", headers={"Authorization": f"Bearer {token}"}
+				"/api/v1/auth/health", method=method, headers={"Authorization": f"Bearer {token}"}
 			)
 			frappe.set_user("Guest")
 			frappe.local.session = frappe._dict({"user": "Guest"})
@@ -145,6 +225,8 @@ class TestIAMDelegatedLogin(unittest.TestCase):
 
 	def _roles(self, user):
 		return set(frappe.get_all("Has Role", filters={"parent": user, "parenttype": "User"}, pluck="role"))
+
+	# -- provisioning ---------------------------------------------------------
 
 	def test_first_login_creates_user_with_application_roles(self):
 		sub = self._sub()
@@ -155,17 +237,18 @@ class TestIAMDelegatedLogin(unittest.TestCase):
 		)
 		user = self._authenticate(token)
 
-		self.assertEqual(user, iam_users.user_name_for_sub(sub))
+		self.assertEqual(user, iam_users.user_name_for_sub(sub, STAFF))
 		self.assertEqual(frappe.db.get_value("User", user, ["first_name", "last_name"]), ("Dev", "Submitter"))
 		# Only this application's roles, and only those that exist in Frappe.
 		self.assertEqual(self._roles(user), {OFFICER})
 		self.assertEqual(frappe.local.oan_auth_issuer_kind, "iam")
+		self.assertEqual(frappe.local.oan_auth_login_option, STAFF)
 		self.assertEqual(frappe.local.oan_auth_claims["sub"], sub)
 
 	def test_case_and_odd_characters_in_sub_map_to_distinct_valid_users(self):
 		base = uuid.uuid4().hex
 		subs = [f"Ab{base}", f"aB{base}", f"ab{base}", f"a/b+c d={base}"]
-		self.subs.extend(subs)
+		self.users.extend(iam_users.user_name_for_sub(s, STAFF) for s in subs)
 		users = [self._authenticate(self.iam.issue(sub)) for sub in subs]
 		self.assertEqual(len(set(users)), len(subs))
 		for user in users:
@@ -177,6 +260,14 @@ class TestIAMDelegatedLogin(unittest.TestCase):
 		second = self._authenticate(self.iam.issue(sub))
 		self.assertEqual(first, second)
 
+	def test_same_sub_from_two_rows_gives_two_users(self):
+		sub = self._sub(STAFF)
+		self.users.append(iam_users.user_name_for_sub(sub, AGENT))
+		staff_user = self._authenticate(self.iam.issue(sub))
+		agent_user = self._authenticate(self.iam.issue(sub, iss=AGENT_ISS, base_url=AGENT_URL))
+		self.assertNotEqual(staff_user, agent_user)
+		self.assertEqual(agent_user, iam_users.user_name_for_sub(sub, AGENT))
+
 	def test_roles_follow_iam_exactly(self):
 		sub = self._sub()
 		user = self._authenticate(self.iam.issue(sub, {APP: [OFFICER, VIEWER]}))
@@ -185,18 +276,54 @@ class TestIAMDelegatedLogin(unittest.TestCase):
 		self._authenticate(self.iam.issue(sub, {APP: [VIEWER]}))
 		self.assertEqual(self._roles(user), {VIEWER})
 
-	def test_principal_without_app_roles_is_rejected_and_not_created(self):
+	def test_application_is_per_row(self):
+		frappe.db.set_value("OAN IAM Service", AGENT, "application", "agent-app")
+		frappe.db.commit()  # nosemgrep: frappe-manual-commit
+		frappe.cache.delete_keys("oan_auth:iam_")
+		sub = self._sub(AGENT)
+		token = self.iam.issue(
+			sub, {APP: [OFFICER], "agent-app": [VIEWER]}, iss=AGENT_ISS, base_url=AGENT_URL
+		)
+		user = self._authenticate(token)
+		self.assertEqual(self._roles(user), {VIEWER})
+
+	def test_default_roles_granted_without_roles_in_token(self):
+		# eSignet: identity only, no resource_access.
+		sub = self._sub(BENE)
+		user = self._authenticate(self.iam.issue(sub, {}, iss=BENE_ISS, base_url=BENE_URL))
+		self.assertEqual(self._roles(user), {FARMER})
+
+	def test_removing_a_default_role_removes_it_on_next_token(self):
+		sub = self._sub(BENE)
+		user = self._authenticate(self.iam.issue(sub, {}, iss=BENE_ISS, base_url=BENE_URL))
+		doc = frappe.get_doc("OAN IAM Service", BENE)
+		doc.default_roles = []
+		doc.append("default_roles", {"role": VIEWER})
+		doc.save(ignore_permissions=True)
+		frappe.db.commit()  # nosemgrep: frappe-manual-commit
+
+		self._authenticate(self.iam.issue(sub, {}, iss=BENE_ISS, base_url=BENE_URL))
+		self.assertEqual(self._roles(user), {VIEWER})
+
+	def test_principal_without_roles_is_rejected_and_not_created(self):
 		for roles in ({}, {"other-app": [OFFICER]}, {APP: ["No Such Role"]}):
 			sub = self._sub()
 			with self.assertRaises(frappe.AuthenticationError):
 				self._authenticate(self.iam.issue(sub, roles))
-			self.assertFalse(frappe.db.exists("User", iam_users.user_name_for_sub(sub)))
+			self.assertFalse(frappe.db.exists("User", iam_users.user_name_for_sub(sub, STAFF)))
 
-	def test_unset_iam_application_is_rejected(self):
-		sub = self._sub()
-		with self.assertRaises(frappe.AuthenticationError):
-			self._authenticate(self.iam.issue(sub), iam_application="")
-		self.assertFalse(frappe.db.exists("User", iam_users.user_name_for_sub(sub)))
+	def test_application_without_roles_logs_warning(self):
+		with patch("oan_auth_service.api.iam_tokens.frappe.log_error") as log_error:
+			with self.assertRaises(frappe.AuthenticationError):
+				self._authenticate(self.iam.issue(self._sub(), {"other-app": [OFFICER]}))
+		titles = [c.kwargs.get("title") for c in log_error.call_args_list]
+		self.assertIn("oan_auth_service: IAM token has no roles for application", titles)
+
+	def test_default_roles_only_row_does_not_warn(self):
+		with patch("oan_auth_service.api.iam_tokens.frappe.log_error") as log_error:
+			self._authenticate(self.iam.issue(self._sub(BENE), {}, iss=BENE_ISS, base_url=BENE_URL))
+		titles = [c.kwargs.get("title") for c in log_error.call_args_list]
+		self.assertNotIn("oan_auth_service: IAM token has no roles for application", titles)
 
 	def test_user_losing_all_roles_is_stripped_and_rejected(self):
 		# Safe method (GET): the strip is committed before the 401, so it persists.
@@ -222,12 +349,6 @@ class TestIAMDelegatedLogin(unittest.TestCase):
 			)
 		commit.assert_not_called()
 
-	def test_principal_is_cached_per_token(self):
-		token = self.iam.issue(self._sub())
-		self._authenticate(token)
-		self._authenticate(token)
-		self.assertEqual(self.iam.calls, 1)
-
 	def test_disabled_user_is_rejected(self):
 		sub = self._sub()
 		user = self._authenticate(self.iam.issue(sub))
@@ -236,8 +357,92 @@ class TestIAMDelegatedLogin(unittest.TestCase):
 		with self.assertRaises(frappe.AuthenticationError):
 			self._authenticate(self.iam.issue(sub))
 
+	def test_delegated_user_cannot_use_password_flows(self):
+		user = self._authenticate(self.iam.issue(self._sub()))
+
+		self.assertIsNone(_resolve_login_identifier(user))
+		with self.assertRaises(frappe.ValidationError):
+			issue_temporary_password(user, "Temp1234")
+
+	# -- routing by issuer ----------------------------------------------------
+
+	def test_token_routed_to_iam_of_its_issuer(self):
+		self._authenticate(self.iam.issue(self._sub(AGENT), iss=AGENT_ISS, base_url=AGENT_URL))
+		self.assertEqual(self.iam.urls, [f"{AGENT_URL}/auth/get_user_profile"])
+
+	def test_unknown_issuer_is_rejected_without_iam_call(self):
+		token = self.iam.issue(self._sub(), iss="https://idp.test/realms/other")
+		with self.assertRaises(frappe.AuthenticationError):
+			self._authenticate(token)
+		self.assertEqual(self.iam.calls, 0)
+
+	def test_issuer_match_is_exact(self):
+		token = self.iam.issue(self._sub(), iss=f"{STAFF_ISS}/")
+		with self.assertRaises(frappe.AuthenticationError):
+			self._authenticate(token)
+		self.assertEqual(self.iam.calls, 0)
+
+	def test_disabled_row_cuts_off_its_tokens_cached_included(self):
+		token = self.iam.issue(self._sub())
+		self._authenticate(token)
+		doc = frappe.get_doc("OAN IAM Service", STAFF)
+		doc.enabled = 0
+		doc.save(ignore_permissions=True)
+		frappe.db.commit()  # nosemgrep: frappe-manual-commit
+
+		with self.assertRaises(frappe.AuthenticationError):
+			self._authenticate(token)
+		self.assertEqual(self.iam.calls, 1)
+
+	def test_azp_mismatch_is_rejected_without_iam_call(self):
+		frappe.db.set_value("OAN IAM Service", STAFF, "client_id", "staff-portal")
+		frappe.db.commit()  # nosemgrep: frappe-manual-commit
+		frappe.cache.delete_keys("oan_auth:iam_")
+
+		for claims in ({"azp": "agent-portal"}, {}):
+			with self.assertRaises(frappe.AuthenticationError):
+				self._authenticate(self.iam.issue(self._sub(), **claims))
+		self.assertEqual(self.iam.calls, 0)
+
+		self._authenticate(self.iam.issue(self._sub(), azp="staff-portal"))
+		self.assertEqual(self.iam.calls, 1)
+
+	def test_expired_token_is_refused_without_iam_call(self):
+		token = self.iam.issue(self._sub(), exp=int(datetime.now(UTC).timestamp()) - 60)
+		with self.assertRaises(frappe.AuthenticationError):
+			self._authenticate(token)
+		self.assertEqual(self.iam.calls, 0)
+
+	def test_me_reports_login_option_and_cookie_prefix(self):
+		from oan_auth_service.api.v1.auth import get_me
+
+		self._authenticate(self.iam.issue(self._sub(AGENT), iss=AGENT_ISS, base_url=AGENT_URL))
+		data = get_me()["data"]
+		self.assertEqual((data["login_option"], data["cookie_prefix"]), (AGENT, "agent-"))
+
+		# A session picked up from cookies alone, as after signing in through another OpenG2P UI.
+		self._authenticate_cookies({"X-Access-Token": self.iam.issue(self._sub())})
+		data = get_me()["data"]
+		self.assertEqual((data["login_option"], data["cookie_prefix"]), (STAFF, ""))
+
+	def test_me_reports_local_for_own_tokens(self):
+		from oan_auth_service.api import tokens
+		from oan_auth_service.api.v1.auth import get_me
+
+		with configured_keys():
+			own, _ = tokens.issue_access_token("Administrator", ["System Manager"])
+		self._authenticate_cookies({"X-Access-Token": own})
+		data = get_me()["data"]
+		self.assertEqual((data["login_option"], data["cookie_prefix"]), ("local", None))
+
+	def test_principal_is_cached_per_token(self):
+		token = self.iam.issue(self._sub())
+		self._authenticate(token)
+		self._authenticate(token)
+		self.assertEqual(self.iam.calls, 1)
+
 	def test_token_iam_rejects_is_rejected(self):
-		unknown = jwt.encode({"iss": "https://idp.test/realms/staff", "sub": "x"}, "k", algorithm="HS256")
+		unknown = jwt.encode({"iss": STAFF_ISS, "sub": "x"}, "k", algorithm="HS256")
 		with self.assertRaises(frappe.AuthenticationError):
 			self._authenticate(unknown)
 
@@ -248,7 +453,7 @@ class TestIAMDelegatedLogin(unittest.TestCase):
 			self.iam.override = _Response(200, payload)
 			with self.assertRaises(frappe.AuthenticationError):
 				self._authenticate(token)
-			self.assertFalse(frappe.db.exists("User", iam_users.user_name_for_sub(sub)))
+			self.assertFalse(frappe.db.exists("User", iam_users.user_name_for_sub(sub, STAFF)))
 
 	def test_iam_unreachable_is_503_not_401(self):
 		token = self.iam.issue(self._sub())
@@ -270,23 +475,23 @@ class TestIAMDelegatedLogin(unittest.TestCase):
 					self._authenticate(self.iam.issue(self._sub()))
 		self.assertEqual(log_error.call_count, 1)
 
-	def test_iam_not_configured_is_rejected(self):
-		token = self.iam.issue(self._sub())
-		with self.assertRaises(frappe.AuthenticationError):
-			self._authenticate(token, iam_base_url="")
+	def test_http_iam_url_rejected_and_logged_once(self):
+		frappe.cache.delete_value("oan_auth:iam_insecure_url_logged")
+		with patch("oan_auth_service.api.iam_tokens.frappe.log_error") as log_error:
+			for _ in range(3):
+				with self.assertRaises(TokenError):
+					iam_tokens._require_https("http://iam.cluster.local")
+			self.assertEqual(log_error.call_count, 1)
+		# Loopback stays allowed for local development; there is no other opt-out.
+		iam_tokens._require_https("http://localhost:8020")
 
-	def test_delegated_user_cannot_use_password_flows(self):
-		user = self._authenticate(self.iam.issue(self._sub()))
-
-		self.assertIsNone(_resolve_login_identifier(user))
-		with self.assertRaises(frappe.ValidationError):
-			issue_temporary_password(user, "Temp1234")
+	# -- cookies --------------------------------------------------------------
 
 	def test_cookie_session_authenticates_get_without_bearer(self):
 		sub = self._sub()
 		token = self.iam.issue(sub, {APP: [OFFICER]})
 		user = self._authenticate_cookies({"X-Access-Token": token})
-		self.assertEqual(user, iam_users.user_name_for_sub(sub))
+		self.assertEqual(user, iam_users.user_name_for_sub(sub, STAFF))
 		self.assertEqual(self._roles(user), {OFFICER})
 
 	def test_cookie_token_iam_rejects_is_401_like_bearer(self):
@@ -309,21 +514,34 @@ class TestIAMDelegatedLogin(unittest.TestCase):
 			)
 		self._authenticate_cookies(cookies, method="POST", headers={"X-CSRF-Token": "abc"}, protected=True)
 
-	def test_cookie_names_follow_iam_prefix(self):
+	def test_cookie_names_follow_row_prefix(self):
 		# Mirrors iam_core: the prefix applies to every auth cookie, never the CSRF header.
-		sub = self._sub()
-		token = self.iam.issue(sub)
-		prefixed = {"staff_X-Access-Token": token, "staff_X-CSRF-Token": "abc"}
+		sub = self._sub(AGENT)
+		token = self.iam.issue(sub, iss=AGENT_ISS, base_url=AGENT_URL)
 
-		# A cookie under the other name is not seen at all (the health path is exempt).
-		self.assertEqual(self._authenticate_cookies(prefixed), "Guest")
-		self.assertEqual(
-			self._authenticate_cookies({"X-Access-Token": token}, iam_auth_cookie_prefix="staff_"), "Guest"
-		)
+		# A cookie under a prefix no row uses is not seen at all (the health path is exempt).
+		self.assertEqual(self._authenticate_cookies({"other-X-Access-Token": token}), "Guest")
+		# The CSRF cookie must carry the same prefix as the access cookie.
+		with self.assertRaises(frappe.AuthenticationError):
+			self._authenticate_cookies(
+				{"agent-X-Access-Token": token, "X-CSRF-Token": "abc"},
+				method="POST",
+				headers={"X-CSRF-Token": "abc"},
+				protected=True,
+			)
 		user = self._authenticate_cookies(
-			prefixed, method="POST", headers={"X-CSRF-Token": "abc"}, iam_auth_cookie_prefix="staff_"
+			{"agent-X-Access-Token": token, "agent-X-CSRF-Token": "abc"},
+			method="POST",
+			headers={"X-CSRF-Token": "abc"},
 		)
-		self.assertEqual(user, iam_users.user_name_for_sub(sub))
+		self.assertEqual(user, iam_users.user_name_for_sub(sub, AGENT))
+
+	def test_first_cookie_in_sort_order_wins(self):
+		staff_sub = self._sub(STAFF)
+		staff = self.iam.issue(staff_sub)
+		agent = self.iam.issue(self._sub(AGENT), iss=AGENT_ISS, base_url=AGENT_URL)
+		user = self._authenticate_cookies({"agent-X-Access-Token": agent, "X-Access-Token": staff})
+		self.assertEqual(user, iam_users.user_name_for_sub(staff_sub, STAFF))
 
 	def test_stale_cookie_does_not_block_exempt_post(self):
 		# A browser resends its expired cookie to /login, /refresh and the like.
@@ -359,18 +577,6 @@ class TestIAMDelegatedLogin(unittest.TestCase):
 				cookies, method="POST", headers={"X-CSRF-Token": "abc"}, protected=True
 			)
 
-	def test_http_iam_url_rejected_and_logged_once(self):
-		frappe.cache.delete_value("oan_auth:iam_insecure_url_logged")
-		with patch("oan_auth_service.api.iam_tokens.frappe.log_error") as log_error:
-			for _ in range(3):
-				with self.assertRaises(TokenError):
-					iam_tokens._require_https("http://iam.cluster.local")
-			self.assertEqual(log_error.call_count, 1)
-
-	def test_http_iam_url_allowed_with_opt_out(self):
-		with override_conf(iam_allow_insecure_http=True):
-			iam_tokens._require_https("http://iam.cluster.local")
-
 	def test_non_ascii_csrf_is_rejected_not_500(self):
 		# compare_digest raises TypeError on non-ASCII str; both sides are client-controlled.
 		token = self.iam.issue(self._sub())
@@ -386,7 +592,7 @@ class TestIAMDelegatedLogin(unittest.TestCase):
 	def test_bearer_post_needs_no_csrf(self):
 		token = self.iam.issue(self._sub())
 		# Same helper path as a Bearer call: no cookie, so no CSRF requirement.
-		self._authenticate(token)
+		self._authenticate(token, method="POST")
 
 	def test_cookie_carries_our_own_token_too(self):
 		# Transport and issuer are independent: our token in the cookie verifies
@@ -399,3 +605,63 @@ class TestIAMDelegatedLogin(unittest.TestCase):
 		self.assertEqual(self.iam.calls, 0)
 		with self.assertRaises(frappe.AuthenticationError):
 			self._authenticate_cookies({"X-Access-Token": own}, method="POST", protected=True)
+
+	# -- login hook -----------------------------------------------------------
+
+	HOOK = f"{__name__}.recording_hook"
+	SECOND_HOOK = f"{__name__}.second_hook"
+
+	def test_login_hook_runs_once_per_token(self):
+		sub = self._sub()
+		token = self.iam.issue(sub)
+		user = self._authenticate(token, hooks=[self.HOOK])
+		self._authenticate(token, hooks=[self.HOOK])
+		self.assertEqual(len(HOOK_CALLS), 1)
+		_name, hook_user, principal, login_option = HOOK_CALLS[0]
+		self.assertEqual(hook_user, user)
+		self.assertEqual(login_option, STAFF)
+		self.assertEqual(principal, self.iam.principals[token][1])
+
+		# A new token runs it again.
+		self._authenticate(self.iam.issue(sub), hooks=[self.HOOK])
+		self.assertEqual(len(HOOK_CALLS), 2)
+
+	def test_login_hook_runs_again_after_failure(self):
+		token = self.iam.issue(self._sub())
+		HOOK_BEHAVIOUR["raise"] = RuntimeError("registry down")
+		with (
+			patch("oan_auth_service.api.iam_users.frappe.log_error") as log_error,
+			self.assertRaises(frappe.ServiceUnavailableError),
+		):
+			self._authenticate(token, hooks=[self.HOOK])
+		hook_logs = [
+			c for c in log_error.call_args_list if iam_users.LOGIN_HOOK in (c.kwargs.get("title") or "")
+		]
+		self.assertEqual(len(hook_logs), 1)
+		self.assertTrue(hook_logs[0].kwargs["defer_insert"])
+		self.assertEqual(frappe.session.user, "Guest")
+
+		HOOK_BEHAVIOUR["raise"] = None
+		self._authenticate(token, hooks=[self.HOOK])
+		self.assertEqual(len(HOOK_CALLS), 2)
+
+	def test_login_denied_is_403_and_commits_nothing(self):
+		sub = self._sub()
+		HOOK_BEHAVIOUR["raise"] = iam_users.LoginDenied("Not in the farmer registry")
+		with patch("frappe.db.commit") as commit, self.assertRaises(frappe.PermissionError):
+			self._authenticate(self.iam.issue(sub), hooks=[self.HOOK])
+		commit.assert_not_called()
+		self.assertEqual(frappe.local.response["message"], "Not in the farmer registry")
+		self.assertFalse(frappe.db.exists("User", iam_users.user_name_for_sub(sub, STAFF)))
+
+	def test_login_hook_change_commits_on_get(self):
+		token = self.iam.issue(self._sub())
+		self._authenticate(token)  # user exists, no change left to commit
+		HOOK_BEHAVIOUR["return"] = True
+		with patch("frappe.db.commit") as commit:
+			self._authenticate(self.iam.issue(self.iam.principals[token][1]["sub"]), hooks=[self.HOOK])
+		commit.assert_called_once()
+
+	def test_all_login_hooks_run(self):
+		self._authenticate(self.iam.issue(self._sub()), hooks=[self.HOOK, self.SECOND_HOOK])
+		self.assertEqual([c[0] for c in HOOK_CALLS], ["first", "second"])

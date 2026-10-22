@@ -14,13 +14,11 @@ Configuration (site_config.json), all optional:
     "password_reset_otp_ttl": 600,
     "password_reset_otp_length": 6,
     "password_reset_otp_max_attempts": 5,
-    "jwt_self_registerable_roles": [],
-    "iam_base_url": "https://iam.example.org",
-    "iam_application": "oan-grievance",
-    "iam_auth_cookie_prefix": ""
+    "jwt_self_registerable_roles": []
 
-The `iam_*` keys configure login delegated to the OpenG2P IAM service; see
-api/iam_tokens.py and api/iam_users.py.
+Login delegated to the OpenG2P IAM service is not configured here: each login
+option is a row of the `OAN IAM Service` DocType, read through `iam_services()`
+below. See api/iam_tokens.py and api/iam_users.py.
 """
 
 import frappe
@@ -119,34 +117,105 @@ def service_prefixes() -> tuple[str, ...]:
 	return tuple(dict.fromkeys(v.strip() for v in values if v and v.strip()))
 
 
-def iam_base_url() -> str:
-	"""Base URL of the OpenG2P IAM API that validates delegated-login tokens."""
-	return (frappe.conf.get("iam_base_url") or "").rstrip("/")
+IAM_SERVICE_DOCTYPE = "OAN IAM Service"
+IAM_SERVICES_CACHE_KEY = "oan_auth:iam_services"
+# The row key reserved for this app's own username and password login.
+LOCAL_LOGIN_KEY = "local"
+
+_IAM_SERVICE_FIELDS = (
+	"key",
+	"label",
+	"icon",
+	"sort_order",
+	"base_url",
+	"provider_id",
+	"issuer",
+	"client_id",
+	"application",
+	"cookie_prefix",
+	"userinfo_url",
+	"jwks_url",
+)
 
 
-def iam_allow_insecure_http() -> bool:
-	"""Opt out of the https requirement on `iam_base_url`.
+def iam_services() -> list[frappe._dict]:
+	"""Enabled login options (`OAN IAM Service` rows) in `sort_order`.
 
-	For a trusted in-cluster IAM reached over plain http. Bearer tokens then
-	cross the network unencrypted, so enable it only on a private network.
+	Cached until a row changes (the DocType clears the cache on save and
+	delete), so token validation costs no query per request. Each entry carries
+	its `default_roles` and `return_origins` as plain lists.
 	"""
-	return bool(frappe.conf.get("iam_allow_insecure_http"))
+	services = frappe.cache.get_value(IAM_SERVICES_CACHE_KEY)
+	if services is None:
+		services = _load_iam_services()
+		frappe.cache.set_value(IAM_SERVICES_CACHE_KEY, services)
+	return [frappe._dict(s) for s in services]
 
 
-def iam_application() -> str:
-	"""This app's application mnemonic in IAM: whose `client_roles` become Frappe roles.
+def _load_iam_services() -> list[dict]:
+	# Not bank-scoped or otherwise permission-filtered: this is server-side
+	# configuration, read on behalf of every request, guests included.
+	rows = frappe.get_all(
+		IAM_SERVICE_DOCTYPE,
+		filters={"enabled": 1},
+		fields=list(_IAM_SERVICE_FIELDS),
+		order_by="sort_order asc, name asc",
+	)
+	if not rows:
+		return []
 
-	The same identifier the registries configure as their client id. Roles IAM
-	lists under other applications are ignored.
-	"""
-	return frappe.conf.get("iam_application") or ""
+	names = [r.key for r in rows]
+	roles: dict[str, list[str]] = {}
+	for d in frappe.get_all(
+		"OAN IAM Service Role",
+		filters={"parenttype": IAM_SERVICE_DOCTYPE, "parent": ("in", names)},
+		fields=["parent", "role"],
+		order_by="idx asc",
+	):
+		roles.setdefault(d.parent, []).append(d.role)
+	origins: dict[str, list[str]] = {}
+	for d in frappe.get_all(
+		"OAN IAM Service Return Origin",
+		filters={"parenttype": IAM_SERVICE_DOCTYPE, "parent": ("in", names)},
+		fields=["parent", "origin"],
+		order_by="idx asc",
+	):
+		origins.setdefault(d.parent, []).append(d.origin)
+
+	return [
+		{
+			**{f: r.get(f) for f in _IAM_SERVICE_FIELDS},
+			"base_url": (r.base_url or "").rstrip("/"),
+			"cookie_prefix": r.cookie_prefix or "",
+			"userinfo_url": r.userinfo_url or "",
+			"jwks_url": r.jwks_url or "",
+			"default_roles": roles.get(r.key, []),
+			"return_origins": origins.get(r.key, []),
+		}
+		for r in rows
+	]
 
 
-def iam_auth_cookie_prefix() -> str:
-	"""Prefix on IAM's auth cookie names, mirroring iam_core's `auth_cookie_prefix`.
+def clear_iam_services_cache() -> None:
+	frappe.cache.delete_value(IAM_SERVICES_CACHE_KEY)
 
-	Must hold the same value as the IAM deployment whose cookies reach this app
-	(its `common_auth_cookie_prefix` env). Empty, the default, means IAM's
-	unprefixed names.
-	"""
-	return frappe.conf.get("iam_auth_cookie_prefix") or ""
+
+def iam_service(key: str) -> frappe._dict | None:
+	"""The enabled IAM login option named `key`, or None. Never the `local` row."""
+	if not key or key == LOCAL_LOGIN_KEY:
+		return None
+	service = next((s for s in iam_services() if s.key == key), None)
+	if service is not None:
+		return service
+	if key == "bene":
+		return next((s for s in iam_services() if s.key == "beneficiary"), None)
+	if key == "beneficiary":
+		return next((s for s in iam_services() if s.key == "bene"), None)
+	return None
+
+
+def iam_service_for_issuer(iss: str) -> frappe._dict | None:
+	"""The enabled IAM login option whose `issuer` is exactly `iss`, or None."""
+	if not iss:
+		return None
+	return next((s for s in iam_services() if s.key != LOCAL_LOGIN_KEY and s.issuer == iss), None)

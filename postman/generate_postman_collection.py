@@ -58,6 +58,8 @@ REQUEST_ORDER = [
 	("POST", "/api/v1/auth/login"),
 	("POST", "/api/v1/auth/refresh"),
 	("POST", "/api/v1/auth/logout"),
+	("GET", "/api/v1/auth/iam/providers"),
+	("POST", "/api/v1/auth/iam/login"),
 	("POST", "/api/v1/auth/password/forgot"),
 	("POST", "/api/v1/auth/password/reset"),
 	("POST", "/api/v1/auth/password/initial"),
@@ -78,6 +80,10 @@ REQUEST_ORDER = [
 	("DELETE", "/api/v1/admin/users/{user_id}/roles/{role}"),
 	("POST", "/api/v1/admin/users/{user_id}/temporary-password"),
 	("DELETE", "/api/v1/admin/users/{user_id}/sessions"),
+	("GET", "/api/v1/admin/permissions"),
+	("PUT", "/api/v1/admin/permissions"),
+	("DELETE", "/api/v1/admin/permissions"),
+	("POST", "/api/v1/admin/permissions/reset"),
 ]
 
 # Path parameter -> environment variable.
@@ -102,6 +108,7 @@ BODIES = {
 	},
 	("POST", "/api/v1/auth/refresh"): {"refresh_token": "{{refresh_token}}"},
 	("POST", "/api/v1/auth/logout"): {"refresh_token": "{{refresh_token}}"},
+	("POST", "/api/v1/auth/iam/login"): {"key": "{{iam_login_key}}", "return_url": "{{iam_return_url}}"},
 	("POST", "/api/v1/auth/password/forgot"): {"usr": "{{user_email}}"},
 	("POST", "/api/v1/auth/password/reset"): {
 		"key": "{{reset_key}}",
@@ -189,6 +196,8 @@ VARIABLES = {
 	"user_phone_number": ("default", "E.164. Generated when blank"),
 	"user_new_password": ("secret", "Generated when blank. Used by Reset Password and Set Initial Password"),
 	"reset_key": ("secret", "From the password reset email link"),
+	"iam_login_key": ("default", "Key of an enabled OAN IAM Service row, e.g. staff"),
+	"iam_return_url": ("default", "Absolute URL on one of that row's return origins"),
 	"admin_username": ("default", "A System Manager, used by Admin > Sign in as admin"),
 	"admin_password": ("secret", "Password of admin_username"),
 	"admin_access_token": ("secret", "Set by Admin > Sign in as admin"),

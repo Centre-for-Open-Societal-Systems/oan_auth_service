@@ -122,7 +122,17 @@ In the consumer's `hooks.py`:
 required_apps = ["oan_auth_service"]
 ```
 
-so bench installs this app first and the refresh-token doctype exists before the consumer migrates. The consumer then registers its API namespace and exempt paths with `api.middleware.register_namespace()`.
+so bench installs this app first and the refresh-token doctype exists before the consumer migrates. The consumer then registers its API namespace with `api.middleware.register_namespace()`.
+
+Each path in a namespace accepts exactly one scheme, declared on the route (`@route(..., auth=...)`):
+
+| `auth`            | Accepts                                                                                                     | Refuses                                                                                                                                       |
+| ----------------- | ----------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `"jwt"` (default) | Bearer JWT (this app's or an IAM token), or an IAM access cookie                                            | `token`/`Basic` credentials and desk `sid` sessions, so no other way in skips `revocation_check`, `must_change_password` or the `scope` check |
+| `"api_key"`       | A session Frappe set from `Authorization: token <key>:<secret>`; with `roles=[...]`, its user must hold one | Bearer, cookies, `sid` sessions, no credentials                                                                                               |
+| `"public"`        | Nothing required (`allow_guest=True` is the older spelling)                                                 | —                                                                                                                                             |
+
+A path takes one scheme for all its methods. Paths may carry `<param>` segments. A consumer that declares routes with this app's `rest`/`prefixed` calls `api.router.register_declared_paths()` after importing its route modules; one that keeps its own router passes `exempt_paths` and `api_key_paths` to `register_namespace()`.
 
 A consumer can add its own claims to every access token with the `on_access_token_claims` hook. The handler takes `user` and `roles` and returns a dict. It cannot override `iss`, `sub`, `iat`, `exp`, `typ`, `jti`, `roles` or `scope`.
 
@@ -130,35 +140,71 @@ A consumer can add its own claims to every access token with the `on_access_toke
 on_access_token_claims = ["my_app.auth.access_token_claims"]
 ```
 
-## Delegated login through the OpenG2P IAM service
+## Delegated login through the OpenG2P IAM services
 
-Staff can sign in through the OpenG2P IAM service instead of a local password. This app never talks to the identity provider behind IAM (Keycloak, eSignet, ...), so it does not care which one is used. The frontend runs IAM's login flow. Its server then forwards the access token as `Authorization: Bearer <token>`. The same middleware accepts it next to this app's own tokens, so consumers need no change.
+People can sign in through an OpenG2P IAM service (staff, agent, beneficiary portal) instead of a local password. This app never talks to the identity provider behind IAM (Keycloak, eSignet, ...) for login, so it does not care which one is used. The frontend asks this app which login options exist, starts one through this app, and after IAM's callback forwards the access token as `Authorization: Bearer <token>`. The same middleware accepts it next to this app's own tokens, so consumers need no change. Design: `docs/IAM_LOGIN_DISCOVERY_PLAN.md`; end-to-end sequence: `docs/IAM_LOGIN_DISCOVERY_FLOW.md`.
 
-- **Validation.** A token whose `iss` is not this site's issuer is sent to IAM's `GET /auth/get_user_profile`. If IAM rejects it, so do we. If IAM accepts it, it returns a provider-neutral principal (`sub`, `name`, `client_roles`). The principal is cached until the token's `exp`.
-- **Identity.** The local user is `<sha256(sub)[:32]>@iam.internal` (valid for any `sub`, case-sensitive), created on first login with no password. `sub` never changes when the person's email or username does.
+### Login options: the `OAN IAM Service` DocType
+
+One row is one button on the login page. Rows are edited in desk by a System Manager (the only role with DocPerm), with `track_changes` on. Nothing about IAM is configured in `site_config.json`.
+
+| Field                                    | Meaning                                                                                                                                                                                                                           |
+| ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `key`                                    | Sent by the frontend (`staff`, `agent`, `bene`). `[a-z0-9-]+`, cannot change after saving. `local` is reserved for this app's own username and password login and takes no other field                                            |
+| `enabled`, `label`, `icon`, `sort_order` | What the login page shows. A disabled row is hidden, cannot start a login, and its tokens are refused. `icon` must be a public file                                                                                               |
+| `base_url`                               | IAM API root as this server reaches it. `https`, or `http` to loopback only. There is no opt-out                                                                                                                                  |
+| `provider_id`                            | Row id in that IAM's `login_providers` table                                                                                                                                                                                      |
+| `issuer`                                 | Exact `iss` of that provider's tokens, including the trailing slash if any. Unique among enabled rows                                                                                                                             |
+| `client_id`                              | Optional. When set, a token whose `azp` differs is refused                                                                                                                                                                        |
+| `application`                            | Keycloak client id whose `client_roles` become Frappe roles. A wrong value is silent apart from an Error Log warning: tokens validate with no roles                                                                               |
+| `default_roles`                          | Frappe roles every user of this row gets, whatever the token says (eSignet tokens carry no roles). Granted to anyone the provider authenticates, so `System Manager`, `Administrator`, `Guest`, `All` and `Desk User` are refused |
+| `cookie_prefix`                          | That IAM's `auth_cookie_prefix`                                                                                                                                                                                                   |
+| `return_origins`                         | Frontend origins (`https://ui.example.org`, no path) allowed as `return_url`. Empty refuses every login on the row                                                                                                                |
+
+Each IAM row needs `application` or at least one default role. Rows are cached (`oan_auth:iam_services`) and the cache is cleared on save and delete.
+
+### Endpoints
+
+- `GET /api/v1/auth/iam/providers` (guest): enabled rows in `sort_order`, `key`, `label` and `icon_url` only. No IAM call. Key `local` means "show the password form" (`POST /api/v1/auth/login`).
+- `POST /api/v1/auth/iam/login {key, return_url}` (guest): checks `return_url`'s origin against the row's `return_origins` (IAM does not check it, so this is the open-redirect guard), calls IAM's `start_authentication_transaction`, and returns `{redirect_url, iam, cookie_prefix}`. Unknown, disabled or `local` key, or a bad `return_url`: `400`, no IAM call. IAM answered unusably: `502`. IAM down: `503`.
+- `POST /api/v1/auth/refresh` and `POST /api/v1/auth/logout` serve IAM sessions too. Send exactly one of `refresh_token` (this app's session, unchanged) or `access_token` (an IAM token, expired is fine, in the body because the middleware would refuse an expired Bearer). The token's `iss` picks the row, as in validation; the client sends no key. This app's own issuer: `400`. Unknown issuer: `401`, no IAM call. Forward the row's `<prefix>X-Access-Token`, `X-ID-Token` and `X-Session-Id` cookies and relay every `Set-Cookie` of the response:
+  - refresh calls IAM's `get_user_profile`, which refreshes from its session cookie, and returns `{refreshed}`; `401` when the session is over (log the user out), `503` when IAM is down (keep the session);
+  - logout calls IAM's `/auth/logout` and the provider's `end_session_endpoint` server-to-server, and returns `{logged_out, provider_logout}`, plus `logout_url` for the browser when the provider call failed.
+- `GET /api/v1/auth/me` also returns `login_option` and `cookie_prefix` (`local` and `null` for this app's tokens). A user who signed in through another OpenG2P UI arrives with IAM cookies only: the UI forwards them to `/me` and stores the answer as if the user had clicked that option.
+
+A UI using these endpoints needs no IAM URL. One that has not switched can keep calling IAM directly; nothing here breaks that.
+
+### Token validation
+
+- **Routing by issuer.** A token whose `iss` is not this site's issuer must match the `issuer` of an enabled row exactly, or it gets a `401` with no IAM call. IAM accepts any issuer in its own table and skips `aud`, so this match is what separates staff, agent and beneficiary tokens. If the row has `client_id`, the token's `azp` must equal it.
+- **Validation.** The row's IAM checks the token at `GET {base_url}/auth/get_user_profile` and returns a provider-neutral principal (`sub`, `name`, `client_roles`). The principal is cached per row and token until the token's `exp`. The row lookup runs before the cache, so disabling a row cuts its tokens off on the next request.
+- **Identity.** The local user is `<sha256(f"{key}:{sub}")[:32]>@iam.internal`, created on first login with no password. Two providers' `sub` values cannot collide.
 - **No password, ever.** Login, password reset and temporary-password flows refuse these accounts, so removing someone from the identity provider cannot leave a local way in.
-- **Roles.** IAM is the only source of these users' roles. Their Frappe roles are set to exactly `client_roles[iam_application]` (names used as-is, roles that do not exist in Frappe ignored). There is no allowlist: whoever administers this app's client in IAM can grant any existing Frappe role, including `System Manager`. See "Known limits" in `docs/IAM_DELEGATED_LOGIN_PLAN.md`. IAM's answer is cached until the token's `exp`, so a role change in IAM applies when the user gets a new token, not on the next request.
-- **Bearer or cookie.** `Authorization: Bearer <token>` is the primary path and the only one for mobile and server-to-server callers. A browser may instead send the access token in the `X-Access-Token` cookie and no Authorization header. Where the token comes from only decides whether CSRF applies; its `iss` alone decides how it is verified, so the cookie may carry an IAM token or one of this app's own. Then:
-  - an expired token gets a `401`, the same as over Bearer. Refreshing is the client's job (through IAM for IAM tokens); this app never refreshes or sets cookies;
-  - state-changing requests (anything but GET, HEAD, OPTIONS) must repeat the `X-CSRF-Token` cookie as an `X-CSRF-Token` header;
-  - the browser must send IAM's cookies to this host (IAM's cookie `Domain` has to cover it) and the API must allow credentialed CORS for the frontend origin; neither is configured by this app;
-  - cookie names are IAM's, with `iam_auth_cookie_prefix` applied the way iam_core applies `auth_cookie_prefix`. Set it to the same value as the IAM deployment whose cookies reach this app (its `common_auth_cookie_prefix`); the default `""` matches IAM's default. The `X-CSRF-Token` header is never prefixed.
+- **Roles.** The row is the only source of these users' roles: exactly `default_roles` plus `client_roles[application]`, limited to roles that exist in Frappe. There is no allowlist for token roles: whoever administers the client in Keycloak can grant any existing Frappe role, including `System Manager`. A role change applies with the user's next token.
+- **Bearer or cookie.** `Authorization: Bearer <token>` is the primary path and the only one for mobile and server-to-server callers. A browser may instead send the access token in an IAM access cookie, `<cookie_prefix>X-Access-Token` of any enabled row, tried in `sort_order`; the first one found wins. Where the token comes from only decides whether CSRF applies; its `iss` alone decides how it is verified. Then:
+  - an expired token gets a `401`, the same as over Bearer;
+  - state-changing requests must repeat the same prefix's `X-CSRF-Token` cookie as an `X-CSRF-Token` header (the header is never prefixed);
+  - the browser must send IAM's cookies to this host and the API must allow credentialed CORS for the frontend origin; neither is configured by this app.
 - **IAM outage.** If IAM is unreachable, times out or answers 5xx, the request gets a `503`, not a `401`, so a frontend retries instead of logging the user out. The outage is logged once a minute, not once per request.
-- **Expiry.** A Bearer access token keeps working until its `exp`, as it does in every OpenG2P service. Refreshing a Bearer token is the caller's job, through IAM. To cut someone off sooner, disable their local `User`.
+- **Expiry.** A Bearer access token keeps working until its `exp`, as it does in every OpenG2P service. To cut someone off sooner, disable their local `User` or the row.
 
-`site_config.json`:
+### Consumer hook after delegated login
 
-```json
-"iam_base_url": "https://iam.example.org",
-"iam_application": "oan-grievance",
-"iam_auth_cookie_prefix": ""
+A consumer app can act on a delegated login (map a Keycloak claim to its own records, check a registry) with a hook in its `hooks.py`:
+
+```python
+oan_auth_on_delegated_login = ["my_app.auth.on_delegated_login"]
+
+
+def on_delegated_login(user: str, principal: dict, login_option: str) -> bool:
+    ...  # return True if it changed anything
 ```
 
-`iam_base_url` must be `https`: bearer tokens are sent there, so a plain `http` URL is refused (`401`). `localhost`, `127.0.0.1` and `::1` are allowed over `http` for local development.
-
-For a trusted in-cluster IAM reachable only over `http`, set `"iam_allow_insecure_http": true`. Tokens then cross the network unencrypted, so use it on a private network only. A rejected URL is logged once an hour in Error Log, not per request.
-
-`iam_auth_cookie_prefix` is optional; leave it unset unless IAM sets `common_auth_cookie_prefix`.
+- `user` is the local `User`, already created, enabled and role-synced; `principal` is IAM's answer as received (claims only in the access token); `login_option` is the row key.
+- It runs once per token, not per request, in app install order. It must be idempotent: two workers can run it for the same token.
+- Raise `oan_auth_service.api.iam_users.LoginDenied(reason)` to refuse the login: `403`, nothing committed. Any other exception is logged and refuses the request with `503`, and the hook runs again on the next request.
+- On GET the middleware commits when a hook returns `True`; other methods follow Frappe's commit-on-success.
+- `frappe.local.oan_auth_login_option` holds the row key for the rest of the request.
 
 ## Development
 
