@@ -1,0 +1,166 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "field:key",
+ "creation": "2026-10-21 00:00:00.000000",
+ "description": "One login option on the login page. `local` is this app's own username and password login; every other row is a provider of an OpenG2P IAM service.",
+ "doctype": "DocType",
+ "editable_grid": 0,
+ "engine": "InnoDB",
+ "field_order": [
+  "key",
+  "enabled",
+  "label",
+  "icon",
+  "sort_order",
+  "iam_section",
+  "base_url",
+  "provider_id",
+  "issuer",
+  "client_id",
+  "cookie_prefix",
+  "userinfo_section",
+  "userinfo_url",
+  "jwks_url",
+  "roles_section",
+  "application",
+  "default_roles"
+ ],
+ "fields": [
+  {
+   "description": "Sent by the frontend to pick this login: lowercase letters, digits and hyphens. `local` is reserved for this app's own login. Cannot change after saving: local users are derived from it.",
+   "fieldname": "key",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Key",
+   "reqd": 1,
+   "set_only_once": 1,
+   "unique": 1
+  },
+  {
+   "default": "1",
+   "description": "A disabled row is hidden from the login page, and its tokens are refused.",
+   "fieldname": "enabled",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Enabled"
+  },
+  {
+   "description": "Button text.",
+   "fieldname": "label",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Label",
+   "reqd": 1
+  },
+  {
+   "description": "Must be a public file: the providers endpoint is public.",
+   "fieldname": "icon",
+   "fieldtype": "Attach Image",
+   "label": "Icon"
+  },
+  {
+   "default": "0",
+   "description": "Order of the buttons, lowest first.",
+   "fieldname": "sort_order",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Sort Order"
+  },
+  {
+   "depends_on": "eval:doc.key !== 'local'",
+   "fieldname": "iam_section",
+   "fieldtype": "Section Break",
+   "label": "IAM"
+  },
+  {
+   "description": "IAM API root as this server reaches it. https, or loopback.",
+   "fieldname": "base_url",
+   "fieldtype": "Data",
+   "label": "Base URL"
+  },
+  {
+   "description": "Row id of the provider in that IAM's login_providers table.",
+   "fieldname": "provider_id",
+   "fieldtype": "Int",
+   "label": "Provider ID"
+  },
+  {
+   "description": "Exact `iss` of tokens from this provider, including scheme and trailing slash. Only tokens whose `iss` matches an enabled row are accepted.",
+   "fieldname": "issuer",
+   "fieldtype": "Data",
+   "label": "Issuer"
+  },
+  {
+   "description": "Optional. When set, a token whose `azp` differs is refused.",
+   "fieldname": "client_id",
+   "fieldtype": "Data",
+   "label": "Client ID"
+  },
+  {
+   "description": "That IAM's auth_cookie_prefix. Empty means IAM's unprefixed cookie names.",
+   "fieldname": "cookie_prefix",
+   "fieldtype": "Data",
+   "label": "Cookie Prefix"
+  },
+  {
+   "fieldname": "userinfo_section",
+   "fieldtype": "Section Break",
+   "label": "Identity provider userinfo",
+   "description": "Optional. For a provider whose token holds only the subject (eSignet): this server fetches the person's details here after IAM accepts the token."
+  },
+  {
+   "fieldname": "userinfo_url",
+   "fieldtype": "Data",
+   "label": "Userinfo URL",
+   "description": "The provider's userinfo endpoint. https, or loopback. Leave empty to skip."
+  },
+  {
+   "fieldname": "jwks_url",
+   "fieldtype": "Data",
+   "label": "Userinfo Keys URL",
+   "description": "The provider's JWKS, to verify a signed (JWT) userinfo answer. Leave empty if the provider signs userinfo with a key it does not publish: the answer is then trusted as received over https from the userinfo URL."
+  },
+  {
+   "depends_on": "eval:doc.key !== 'local'",
+   "fieldname": "roles_section",
+   "fieldtype": "Section Break",
+   "label": "Roles"
+  },
+  {
+   "description": "Keycloak client id whose roles become Frappe roles (resource_access[application]). A mismatch is silent: tokens validate and carry no roles.",
+   "fieldname": "application",
+   "fieldtype": "Data",
+   "label": "Application"
+  },
+  {
+   "description": "Frappe roles every user of this login gets, whatever the token says. Granted to anyone the provider authenticates, so keep them low-privilege.",
+   "fieldname": "default_roles",
+   "fieldtype": "Table MultiSelect",
+   "label": "Default Roles",
+   "options": "OAN IAM Service Role"
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-10-21 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "OAN Auth",
+ "name": "OAN IAM Service",
+ "naming_rule": "By fieldname",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "read": 1,
+   "role": "System Manager",
+   "write": 1
+  }
+ ],
+ "sort_field": "sort_order",
+ "sort_order": "ASC",
+ "states": [],
+ "title_field": "label",
+ "track_changes": 1
+}

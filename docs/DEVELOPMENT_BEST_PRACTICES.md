@@ -33,7 +33,7 @@ which app owns the record.
 | RQ queue                       | `<service>_<purpose>`            | `grievance_routing`, `grievance_sla`, `grievance_scan`                     |
 | Logger / error-log title       | `<app_name>` / `<app_name>: …`   | `frappe.logger("oan_auth_service")`, `"oan_auth_service: IAM unavailable"` |
 | Naming series                  | `<SVC>-<ENTITY>-{#####}`         | `GR-AUDIT-{########}`, `GR-RBAC-{#####}`, `GR-NOTIF-{######}`              |
-| Site config key                | `<service>_<setting>`            | `iam_base_url`, `jwt_access_token_ttl`                                     |
+| Site config key                | `<service>_<setting>`            | `jwt_issuer`, `jwt_access_token_ttl`                                       |
 
 Exception: the service's primary entity may be the bare service name when the name is
 already the prefix (`Grievance`). Every other DocType of that service still carries the
@@ -273,9 +273,11 @@ controller or service, and return the envelope.
   maximum page size (100), and a unique tie-breaker in `order_by`
   (`"modified desc, name desc"`).
 - **Lists fetch named fields only.** No `fields=["*"]` in list endpoints.
-- **Guest endpoints** declare `@route(..., allow_guest=True)`. The router registers the
-  path as JWT-exempt from that one declaration, so the route and the exemption list
-  cannot drift. Use `EXEMPT_PATHS` in `api/middleware.py` only for paths that are not
+- **Every route declares one auth scheme**: `@route(..., auth="jwt")` (the default),
+  `auth="api_key"` (a Frappe API key, e.g. partners behind the gateway; add `roles=[...]`)
+  or `auth="public"` (`allow_guest=True` is the older spelling). The router registers the
+  path with the middleware from that one declaration, so the route and the middleware
+  cannot drift. A JWT path refuses API keys and desk sessions. Use `EXEMPT_PATHS` in `api/middleware.py` only for paths that are not
   `@route`s. Guest endpoints need explicit type hints and a rate limit
   (`check_rate_limit`).
 - **Tenant and owner fields are set by the server**, never taken from the request body

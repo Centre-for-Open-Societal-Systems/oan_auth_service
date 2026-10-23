@@ -746,6 +746,7 @@ def build_openapi() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
 		api_doc_info = getattr(endpoint_fn, "_api_doc", None) or getattr(inner_fn, "_api_doc", None) or {}
 
 		allow_guest = route_info.get("allow_guest", False) or rule.rule in _exempt_paths
+		auth = route_info.get("auth") or ("public" if allow_guest else "jwt")
 		status_code = route_info.get("status", 200)
 
 		summary = (
@@ -845,7 +846,12 @@ def build_openapi() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
 			if parameters:
 				op["parameters"] = parameters
 
-			op["security"] = [] if allow_guest else [{"BearerAuth": []}]
+			# Alternatives: a route taking both lists both.
+			op["security"] = {
+				"public": [],
+				"api_key": [{"PartnerApiKeyAuth": []}],
+				("jwt", "api_key"): [{"BearerAuth": []}, {"PartnerApiKeyAuth": []}],
+			}.get(auth, [{"BearerAuth": []}])
 
 			if method in ("POST", "PUT", "PATCH", "DELETE") and req_schema_name:
 				body_schema = REQ.get(req_schema_name) or DATA_SCHEMAS.get(req_schema_name) or {}
@@ -902,7 +908,23 @@ def build_openapi() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
 					"scheme": "bearer",
 					"bearerFormat": "JWT",
 					"description": "Provide access token as `Bearer <token>` in the Authorization header.",
-				}
+				},
+				**(
+					{
+						"PartnerApiKeyAuth": {
+							"type": "apiKey",
+							"in": "header",
+							"name": "Authorization",
+							"description": "Format: `token <api_key>:<api_secret>` of a Frappe service user. Partners send their own key to the gateway, which checks it and rewrites the header.",
+						}
+					}
+					if any(
+						{"PartnerApiKeyAuth": []} in op.get("security", [])
+						for ops in paths.values()
+						for op in ops.values()
+					)
+					else {}
+				),
 			},
 			"schemas": components_schemas,
 		},

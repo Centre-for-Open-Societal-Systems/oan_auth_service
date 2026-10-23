@@ -168,6 +168,8 @@ AUTH_TIER_OVERRIDES = {
 	("GET", "/v1/auth/keys"): "auth-public-read",
 	("GET", "/v1/auth/health"): "auth-public-read",
 	("GET", "/v1/auth/metadata"): "auth-public-read",
+	("GET", "/v1/auth/iam/providers"): "auth-public-read",
+	("POST", "/v1/auth/iam/login"): "auth-credentials",
 	("GET", "/v1/admin/users"): "auth-admin",
 	("POST", "/v1/admin/users"): "auth-admin",
 	("GET", "/v1/admin/users/{user_id}"): "auth-admin",

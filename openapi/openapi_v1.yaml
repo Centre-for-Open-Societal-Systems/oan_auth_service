@@ -26,6 +26,8 @@ tags:
   description: Health check, public key discovery, and metadata
 - name: Admin
   description: User and role management. Requires System Manager or Administrator.
+- name: Auth
+  description: Operations for Auth
 - name: Notifications
   description: Operations for Notifications
 paths:
@@ -103,9 +105,14 @@ paths:
     post:
       tags:
       - Authentication & Session
-      summary: Exchange single-use refresh token
-      description: Exchange a valid single-use refresh token for a new access token and rotated refresh
-        token.
+      summary: Refresh a session
+      description: 'Send exactly one credential. `refresh_token` (this app''s session): exchanged for
+        a new access token and rotated refresh token. `access_token` (an IAM session, expired token accepted):
+        its issuer picks the IAM, which refreshes from the forwarded IAM cookies (`<cookie_prefix>X-Access-Token`,
+        `X-ID-Token`, `X-Session-Id`); relay every `Set-Cookie` of the response to the browser unchanged,
+        they carry the new tokens. The IAM answer is `refreshed: true` when a new access token was issued,
+        `false` when the current one is still valid. Session over: 401, log the user out. IAM unreachable:
+        503, keep the session and retry.'
       operationId: post_api_v1_auth_refresh
       responses:
         '200':
@@ -137,8 +144,13 @@ paths:
     post:
       tags:
       - Authentication & Session
-      summary: Revoke refresh token
-      description: Revoke an active refresh token session.
+      summary: End a session
+      description: 'Send exactly one credential. `refresh_token` (this app''s session): revoked; access
+        tokens expire on their own. `access_token` (an IAM session, expired token accepted): its issuer
+        picks the IAM; forward that IAM''s cookies (`<cookie_prefix>X-Access-Token`, `X-ID-Token`, `X-Session-Id`)
+        and relay every `Set-Cookie` of the response, they clear IAM''s cookies. `provider_logout: true`
+        means the identity provider session was ended too; otherwise, when `logout_url` is present, send
+        the browser there to end it.'
       operationId: post_api_v1_auth_logout
       responses:
         '200':
@@ -452,6 +464,74 @@ paths:
               schema:
                 $ref: '#/components/schemas/StandardErrorResponse'
       security: []
+  /api/v1/auth/iam/providers:
+    get:
+      tags:
+      - Auth
+      summary: List login options
+      description: 'Enabled login options in display order: one button per entry. Key `local` means this
+        app''s own username and password form, which posts to `/api/v1/auth/login`; any other key starts
+        through `/api/v1/auth/iam/login`. Display fields only. Reads the database, never an IAM, so an
+        IAM outage does not hide its button.'
+      operationId: get_api_v1_auth_iam_providers
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '400':
+          description: Validation or Client Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      security: []
+  /api/v1/auth/iam/login:
+    post:
+      tags:
+      - Authentication & Session
+      summary: Start a login option
+      description: 'Start the login of an enabled IAM login option and return the identity provider URL
+        to send the browser to (`window.location = redirect_url`). `return_url` must be absolute and on
+        one of the option''s return origins. Also returns the option''s `cookie_prefix`: after the IAM
+        callback, the access token is in the `<cookie_prefix>X-Access-Token` cookie. Unknown, disabled
+        or `local` key, or a `return_url` off the allowed origins: 400. IAM answered unusably: 502. IAM
+        unreachable: 503.'
+      operationId: post_api_v1_auth_iam_login
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '400':
+          description: Validation or Client Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IAMLoginSchema'
   /api/v1/admin/users:
     get:
       tags:
@@ -1890,6 +1970,26 @@ components:
       - total_pages
       - has_next
       - has_prev
+    IAMLoginSchema:
+      properties:
+        key:
+          description: Key of an enabled login option, e.g. `staff`.
+          maxLength: 64
+          minLength: 1
+          title: Key
+          type: string
+        return_url:
+          description: Absolute URL IAM sends the browser to after login. Its origin must be one of the
+            login option's return origins.
+          maxLength: 2048
+          minLength: 1
+          title: Return Url
+          type: string
+      required:
+      - key
+      - return_url
+      title: IAMLoginSchema
+      type: object
     PermissionQuerySchema:
       properties:
         role:

@@ -27,7 +27,7 @@ from frappe.utils import cint
 from frappe.utils.password import passlibctx
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from oan_auth_service.api import tokens
+from oan_auth_service.api import iam_tokens, tokens
 from oan_auth_service.api.iam_users import is_delegated_user
 from oan_auth_service.api.router import prefixed
 from oan_auth_service.api.utils import (
@@ -35,6 +35,7 @@ from oan_auth_service.api.utils import (
 	SafeEmail,
 	assemble_phone_number,
 	check_rate_limit,
+	error_response,
 	handle_api_errors,
 	parse_multi_value,
 	split_phone_number,
@@ -247,12 +248,49 @@ class SetInitialPasswordSchema(BaseModel):
 		return validate_password_complexity(v)
 
 
-class RefreshTokenSchema(BaseModel):
-	refresh_token: str = Field(..., min_length=1)
+class _SessionCredentialSchema(BaseModel):
+	"""Exactly one credential naming the session: ours, or an IAM one.
+
+	`refresh_token` is this app's opaque refresh token. `access_token` is an IAM
+	access token, expired or not: its unverified `iss` picks the login option
+	whose IAM owns the session. It travels in the body, not as Bearer: the
+	middleware validates a Bearer token even on these guest routes, and an
+	expired one would be refused before reaching them.
+	"""
+
+	refresh_token: str | None = Field(default=None, min_length=1, description="This app's refresh token.")
+	access_token: str | None = Field(
+		default=None,
+		min_length=1,
+		max_length=8192,
+		description="An IAM access token, expired or not. Its issuer picks the IAM; forward that IAM's cookies.",
+	)
+
+	@model_validator(mode="after")
+	def exactly_one_credential(self):
+		if bool(self.refresh_token) == bool(self.access_token):
+			raise ValueError("Provide either `refresh_token` or `access_token`, not both.")
+		return self
 
 
-class LogoutSchema(BaseModel):
-	refresh_token: str = Field(..., min_length=1)
+class RefreshTokenSchema(_SessionCredentialSchema):
+	pass
+
+
+class LogoutSchema(_SessionCredentialSchema):
+	pass
+
+
+class IAMLoginSchema(BaseModel):
+	key: str = Field(
+		..., min_length=1, max_length=64, description="Key of an enabled login option, e.g. `staff`."
+	)
+	return_url: str = Field(
+		...,
+		min_length=1,
+		max_length=2048,
+		description="Absolute URL IAM sends the browser to after login. Its origin must be one of the login option's return origins.",
+	)
 
 
 class ForgotPasswordSchema(BaseModel):
@@ -422,7 +460,7 @@ route = prefixed("/api/v1/auth")
 
 @route(
 	"/login",
-	allow_guest=True,
+	auth="public",
 	summary="Login and obtain token pair",
 	description="Authenticate with user credentials (email, phone number, or username) and password to receive an access token and single-use refresh token.",
 )
@@ -474,7 +512,7 @@ def login(usr: str, pwd: str, remember_me: bool = False, scope: str | list[str] 
 
 @route(
 	"/register",
-	allow_guest=True,
+	auth="public",
 	summary="Register a new user account",
 	description="Register a new user account with password, full name, and either email or phone_number. When country_code is omitted, phone_number must be in full E.164 format (e.g. +251911223344). When country_code is provided (e.g. +251), phone_number is treated as the national subscriber number.",
 )
@@ -553,18 +591,21 @@ def register_user(
 
 @route(
 	"/refresh",
-	allow_guest=True,
-	summary="Exchange single-use refresh token",
-	description="Exchange a valid single-use refresh token for a new access token and rotated refresh token.",
+	auth="public",
+	summary="Refresh a session",
+	description="Send exactly one credential. `refresh_token` (this app's session): exchanged for a new access token and rotated refresh token. `access_token` (an IAM session, expired token accepted): its issuer picks the IAM, which refreshes from the forwarded IAM cookies (`<cookie_prefix>X-Access-Token`, `X-ID-Token`, `X-Session-Id`); relay every `Set-Cookie` of the response to the browser unchanged, they carry the new tokens. The IAM answer is `refreshed: true` when a new access token was issued, `false` when the current one is still valid. Session over: 401, log the user out. IAM unreachable: 503, keep the session and retry.",
 )
 @validate_request(RefreshTokenSchema)
 @handle_api_errors
-def refresh(refresh_token: str):
-	"""Exchange a refresh token for a new pair, rotating the stored row.
+def refresh(refresh_token: str | None = None, access_token: str | None = None):
+	"""Refresh this app's session or, by the token's issuer, an IAM session.
 
-	The presented token is single-use: the row backing it is deleted whether the
+	Our refresh token is single-use: the row backing it is deleted whether the
 	exchange succeeds or fails, so a replayed token cannot mint a second pair.
 	"""
+	if access_token:
+		check_rate_limit(f"oan_auth:iam_refresh:{frappe.local.request_ip}", limit=60, window=60)
+		return _iam_refresh(_iam_service_for_session(access_token))
 	if not refresh_token:
 		raise frappe.AuthenticationError(_("Invalid refresh token"))
 
@@ -614,14 +655,17 @@ def refresh(refresh_token: str):
 
 @route(
 	"/logout",
-	allow_guest=True,
-	summary="Revoke refresh token",
-	description="Revoke an active refresh token session.",
+	auth="public",
+	summary="End a session",
+	description="Send exactly one credential. `refresh_token` (this app's session): revoked; access tokens expire on their own. `access_token` (an IAM session, expired token accepted): its issuer picks the IAM; forward that IAM's cookies (`<cookie_prefix>X-Access-Token`, `X-ID-Token`, `X-Session-Id`) and relay every `Set-Cookie` of the response, they clear IAM's cookies. `provider_logout: true` means the identity provider session was ended too; otherwise, when `logout_url` is present, send the browser there to end it.",
 )
 @validate_request(LogoutSchema)
 @handle_api_errors
-def logout(refresh_token: str):
-	"""Revoke a refresh token. Access tokens expire on their own."""
+def logout(refresh_token: str | None = None, access_token: str | None = None):
+	"""Revoke our refresh token or, by the token's issuer, end an IAM session."""
+	if access_token:
+		check_rate_limit(f"oan_auth:iam_logout:{frappe.local.request_ip}", limit=30, window=60)
+		return _iam_logout(_iam_service_for_session(access_token))
 	if not refresh_token:
 		return success_response(data={"revoked": False})
 
@@ -678,7 +722,7 @@ def issue_temporary_password(user: str, password: str) -> None:
 
 @route(
 	"/password/initial",
-	allow_guest=True,
+	auth="public",
 	summary="Replace a temporary password",
 	description="Replace an admin-issued temporary password with one only the account holder knows. The temporary password proves identity; no token is needed or issued. Sign in with the new password afterwards.",
 )
@@ -853,13 +897,13 @@ def _deliver_reset_by_email(user_doc, login_email: str) -> None:
 
 @route(
 	"/password/forgot",
-	allow_guest=True,
+	auth="public",
 	summary="Initiate password recovery",
 	description="Initiate password recovery for an account via email reset link or SMS OTP code.",
 )
 @route(
 	"/forgot-password",
-	allow_guest=True,
+	auth="public",
 	summary="Initiate password recovery (deprecated alias)",
 	description="Deprecated alias of POST /api/v1/auth/password/forgot, kept until clients move to the new path.",
 )
@@ -983,13 +1027,13 @@ def _mint_reset_key(user: str) -> str:
 
 @route(
 	"/password/reset",
-	allow_guest=True,
+	auth="public",
 	summary="Complete password reset",
 	description="Complete password reset using either an emailed reset key or a phone SMS OTP code with a new password.",
 )
 @route(
 	"/reset-password",
-	allow_guest=True,
+	auth="public",
 	summary="Complete password reset (deprecated alias)",
 	description="Deprecated alias of POST /api/v1/auth/password/reset, kept until clients move to the new path.",
 )
@@ -1076,6 +1120,21 @@ def collect_profiles(user_doc, roles: list[str]) -> dict:
 	return profiles
 
 
+def _session_login_option() -> dict:
+	"""Which login option the request's token came through, and its IAM cookie prefix.
+
+	Lets a UI pick up a session it did not start: someone signed in through
+	another OpenG2P UI arrives with IAM cookies only. The middleware finds the
+	option by the token's issuer; the UI stores what this returns as if the user
+	had clicked that option's button. Our own tokens are the `local` option.
+	"""
+	key = getattr(frappe.local, "oan_auth_login_option", None)
+	service = settings.iam_service(key) if key else None
+	if service is None:
+		return {"login_option": settings.LOCAL_LOGIN_KEY, "cookie_prefix": None}
+	return {"login_option": service.key, "cookie_prefix": service.cookie_prefix}
+
+
 @route(
 	"/me",
 	methods=("GET",),
@@ -1108,12 +1167,13 @@ def get_me():
 		"user": user_doc.name,
 		"first_name": user_doc.first_name,
 		"last_name": user_doc.last_name,
-		"full_name": user_doc.full_name,
 		"login_email": login_email,
-		"mobile_no": user_doc.mobile_no,
 		"country_code": phone_cc,
 		"phone_number": phone_nat,
+		"birth_date": user_doc.birth_date.isoformat() if user_doc.birth_date else None,
+		"gender": user_doc.gender or None,
 		"roles": roles,
+		**_session_login_option(),
 	}
 
 	profiles = collect_profiles(user_doc, roles)
@@ -1126,7 +1186,7 @@ def get_me():
 @route(
 	"/keys",
 	methods=("GET",),
-	allow_guest=True,
+	auth="public",
 	summary="Public signing keys",
 	description="Retrieve the RS256 public keys (JWKS) that verify access tokens, and the active kid.",
 )
@@ -1149,7 +1209,7 @@ def get_public_keys():
 @route(
 	"/health",
 	methods=("GET",),
-	allow_guest=True,
+	auth="public",
 	summary="Service health status",
 	description="Health check endpoint for the auth service.",
 )
@@ -1168,7 +1228,7 @@ def get_health():
 @route(
 	"/metadata",
 	methods=("GET",),
-	allow_guest=True,
+	auth="public",
 	summary="Aggregated form and reference metadata",
 	description="Aggregate public dropdown and reference metadata across installed apps.",
 )
@@ -1209,3 +1269,172 @@ def get_metadata():
 			)
 
 	return success_response(data=data, message=_("Metadata retrieved successfully"))
+
+
+# ---------------------------------------------------------------------------
+# Login options (OAN IAM Service rows)
+# ---------------------------------------------------------------------------
+# The frontend sends a row's `key`; it never sees an IAM URL or a provider id.
+# See docs/IAM_LOGIN_DISCOVERY_PLAN.md.
+
+
+def _iam_error(exc: Exception):
+	"""Error envelope for an IAM that is down (503) or answered unusably (502).
+
+	Returned rather than raised: `handle_api_errors` writes an Error Log row for
+	every 5xx it catches, and these endpoints are guest-reachable. iam_tokens
+	already logs each failure once per window.
+	"""
+	if isinstance(exc, iam_tokens.IAMUnavailableError):
+		status, code, message = 503, "SERVICE_UNAVAILABLE", _("Identity service unavailable")
+	else:
+		status, code, message = 502, "BAD_GATEWAY", _("Identity service returned an unexpected response")
+	frappe.response["http_status_code"] = status
+	frappe.local.message_log = []
+	return error_response(message, code)
+
+
+def _iam_session_cookies(service) -> dict[str, str]:
+	"""The request's IAM session cookies for `service`: its prefixed access, ID token and session cookies only.
+
+	Never another option's cookies, and never the CSRF cookie: IAM gets only
+	what it needs to find this option's session.
+	"""
+	request_cookies = frappe.request.cookies if frappe.request else {}
+	cookies = {}
+	for base in iam_tokens.SESSION_COOKIES:
+		name = iam_tokens.cookie_name(base, service.cookie_prefix)
+		if value := request_cookies.get(name):
+			cookies[name] = value
+	return cookies
+
+
+def _relay_set_cookies(set_cookies: list[str]) -> None:
+	# Relayed unchanged: they carry IAM's cookie names, path and parent domain.
+	for header in set_cookies:
+		frappe.local.response_headers.add("Set-Cookie", header)
+
+
+def _enabled_iam_service(key: str):
+	"""The enabled IAM login option `key`, or a 400. The same answer for unknown, disabled and `local`."""
+	service = settings.iam_service(key)
+	if service is None:
+		frappe.throw(_("Unknown login option."), frappe.ValidationError)
+	return service
+
+
+@route(
+	"/iam/providers",
+	methods=("GET",),
+	auth="public",
+	summary="List login options",
+	description="Enabled login options in display order: one button per entry. Key `local` means this app's own username and password form, which posts to `/api/v1/auth/login`; any other key starts through `/api/v1/auth/iam/login`. Display fields only. Reads the database, never an IAM, so an IAM outage does not hide its button.",
+)
+@handle_api_errors
+def get_iam_providers():
+	"""Return `key`, `label` and `icon_url` of every enabled `OAN IAM Service` row."""
+	providers = [{"key": s.key, "label": s.label, "icon_url": s.icon or ""} for s in settings.iam_services()]
+	return success_response(data={"providers": providers})
+
+
+@route(
+	"/iam/login",
+	auth="public",
+	summary="Start a login option",
+	description="Start the login of an enabled IAM login option and return the identity provider URL to send the browser to (`window.location = redirect_url`). `return_url` must be an absolute http(s) URL; which callers may use this endpoint is controlled at the gateway. Also returns the option's `cookie_prefix`: after the IAM callback, the access token is in the `<cookie_prefix>X-Access-Token` cookie. Unknown, disabled or `local` key, or a `return_url` that is not an absolute URL: 400. IAM answered unusably: 502. IAM unreachable: 503.",
+)
+@validate_request(IAMLoginSchema)
+@handle_api_errors
+def iam_login(key: str, return_url: str):
+	"""Start login option `key` at its IAM, after checking `return_url`.
+
+	IAM redirects the browser to whatever `redirect_uri` it is given, unchecked.
+	Which consumers may call this is decided at the gateway, so only the shape
+	of `return_url` is checked here.
+	"""
+	check_rate_limit(f"oan_auth:iam_login:{frappe.local.request_ip}", limit=30, window=60)
+	service = _enabled_iam_service(key)
+
+	if iam_tokens.origin_of(return_url) is None:
+		frappe.throw(_("return_url is not allowed for this login option."), frappe.ValidationError)
+
+	try:
+		redirect_url = iam_tokens.start_login(service, return_url)
+	except (iam_tokens.IAMUnavailableError, iam_tokens.IAMBadResponseError) as exc:
+		return _iam_error(exc)
+
+	return success_response(
+		data={"redirect_url": redirect_url, "iam": service.key, "cookie_prefix": service.cookie_prefix}
+	)
+
+
+def _iam_service_for_session(access_token: str):
+	"""The enabled login option whose IAM owns `access_token`'s session, else 400 or 401.
+
+	Routed by the unverified `iss`, the same rule the middleware uses. Safe: a
+	forged `iss` only picks which configured IAM receives the caller's own
+	cookies, and that IAM checks the session. No IAM is called for a refusal.
+	"""
+	issuer = iam_tokens.peek_issuer(access_token)
+	if issuer is not None and issuer == settings.issuer():
+		frappe.throw(
+			_("This app's sessions are refreshed and ended with `refresh_token`."), frappe.ValidationError
+		)
+	try:
+		return iam_tokens.service_for_token(access_token)
+	except tokens.TokenError as exc:
+		raise frappe.AuthenticationError(_("Invalid token")) from exc
+
+
+def _iam_logout(service):
+	"""End the IAM session and, server-to-server, the identity provider session.
+
+	Does what IAM's browser logout redirect would, so the user stays on the page:
+	IAM deletes its refresh token and answers with cookie-clearing `Set-Cookie`
+	headers, relayed here, and a redirect to the provider's
+	`end_session_endpoint`, called here. If that call fails, its URL is returned
+	for the browser to follow instead.
+	"""
+	try:
+		set_cookies, logout_url = iam_tokens.logout(service, _iam_session_cookies(service))
+	except (iam_tokens.IAMUnavailableError, iam_tokens.IAMBadResponseError) as exc:
+		return _iam_error(exc)
+
+	_relay_set_cookies(set_cookies)
+
+	data = {"logged_out": True, "provider_logout": False}
+	if logout_url:
+		if iam_tokens.end_provider_session(logout_url):
+			data["provider_logout"] = True
+		else:
+			data["logout_url"] = logout_url
+	return success_response(data=data)
+
+
+def _iam_refresh(service):
+	"""Have the option's IAM refresh the browser's session, and relay its new cookies.
+
+	This app cannot refresh an IAM token; IAM refreshes from its own session
+	cookie. Proxying the call keeps IAM's URL out of the UI.
+	"""
+	cookies = _iam_session_cookies(service)
+	session_cookie = iam_tokens.cookie_name(iam_tokens.SESSION_COOKIE, service.cookie_prefix)
+	if session_cookie not in cookies:
+		# No IAM session to refresh: answer without calling IAM.
+		raise frappe.AuthenticationError(_("No session to refresh."))
+
+	try:
+		ok, set_cookies = iam_tokens.refresh(service, cookies)
+	except (iam_tokens.IAMUnavailableError, iam_tokens.IAMBadResponseError) as exc:
+		return _iam_error(exc)
+
+	# Relayed on failure too: IAM may clear its cookies when the session is gone.
+	_relay_set_cookies(set_cookies)
+	if not ok:
+		frappe.response["http_status_code"] = 401
+		frappe.local.message_log = []
+		return error_response(_("Session expired. Sign in again."), "AUTHENTICATION_ERROR")
+
+	access_cookie = iam_tokens.cookie_name(iam_tokens.ACCESS_COOKIE, service.cookie_prefix)
+	refreshed = any(h.split("=", 1)[0].strip() == access_cookie for h in set_cookies)
+	return success_response(data={"refreshed": refreshed})

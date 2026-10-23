@@ -90,3 +90,40 @@ def ensure_role(role: str):
 	if not frappe.db.exists("Role", role):
 		frappe.get_doc({"doctype": "Role", "role_name": role}).insert(ignore_permissions=True)
 		frappe.db.commit()  # nosemgrep: frappe-manual-commit
+
+
+def ensure_gender(gender: str):
+	if not frappe.db.exists("Gender", gender):
+		frappe.get_doc({"doctype": "Gender", "gender": gender}).insert(ignore_permissions=True)
+		frappe.db.commit()  # nosemgrep: frappe-manual-commit
+
+
+IAM_SERVICE_DOCTYPE = "OAN IAM Service"
+
+
+def make_iam_service(key: str, default_roles=(), **fields) -> str:
+	"""Create (or replace) an enabled `OAN IAM Service` row, committed, and return its name."""
+	delete_iam_service(key)
+	fields.pop("return_origins", None)
+	doc = frappe.get_doc(
+		{
+			"doctype": IAM_SERVICE_DOCTYPE,
+			"key": key,
+			"label": fields.pop("label", f"Sign in with {key}"),
+			"enabled": fields.pop("enabled", 1),
+			**fields,
+			"default_roles": [{"role": r} for r in default_roles],
+		}
+	)
+	doc.insert(ignore_permissions=True)
+	frappe.db.commit()  # nosemgrep: frappe-manual-commit
+	return doc.name
+
+
+def delete_iam_service(key: str) -> None:
+	from oan_auth_service.config import settings
+
+	if frappe.db.exists(IAM_SERVICE_DOCTYPE, key):
+		frappe.delete_doc(IAM_SERVICE_DOCTYPE, key, force=True, ignore_permissions=True)
+		frappe.db.commit()  # nosemgrep: frappe-manual-commit
+	settings.clear_iam_services_cache()

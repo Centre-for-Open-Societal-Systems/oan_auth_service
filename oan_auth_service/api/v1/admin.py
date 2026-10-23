@@ -179,6 +179,20 @@ def _in_scope(name: str) -> bool:
 	return settings.name_in_scope(name, _service_prefix())
 
 
+# This app's own doctypes are never service doctypes, whatever the prefix: with
+# `service_prefix: "OAN"` they would match, and `OAN IAM Service` decides which
+# tokens are accepted and which roles they grant. Its rules stay System Manager only.
+_OWN_MODULE = "OAN Auth"
+
+
+def _doctype_in_scope(doctype: str, module: str | None = None) -> bool:
+	if not _in_scope(doctype):
+		return False
+	if module is None:
+		module = frappe.db.get_value("DocType", doctype, "module")
+	return module != _OWN_MODULE
+
+
 def _name_filters(prefixes: tuple[str, ...]) -> list[list[str]]:
 	"""`or_filters` matching names equal to a prefix, or starting with it and a space."""
 	return [f for p in prefixes for f in (["name", "=", p], ["name", "like", f"{_escape_like(p)} %"])]
@@ -691,7 +705,7 @@ def _scoped_role(role: str) -> str:
 def _scoped_doctype(doctype: str) -> str:
 	"""Return `doctype` if it is a service doctype that exists, else raise."""
 	doctype = doctype.strip()
-	if not _in_scope(doctype) or not frappe.db.exists("DocType", doctype):
+	if not frappe.db.exists("DocType", doctype) or not _doctype_in_scope(doctype):
 		frappe.throw(
 			_("DocType '{0}' is not managed by this service.").format(doctype), frappe.PermissionError
 		)
@@ -715,10 +729,10 @@ def _service_doctypes() -> list[str]:
 		"DocType",
 		filters={"istable": 0},
 		or_filters=_name_filters(prefix),
-		pluck="name",
+		fields=["name", "module"],
 		order_by="name asc",
 	)
-	return [d for d in doctypes if _in_scope(d)]
+	return [d.name for d in doctypes if _doctype_in_scope(d.name, d.module)]
 
 
 @route(

@@ -352,6 +352,52 @@ services:
         policy: redis
         fault_tolerant: true
         hide_client_headers: false
+  - name: get-v1-auth-iam-providers
+    methods:
+    - GET
+    paths:
+    - ~/v1/auth/iam/providers$
+    strip_path: false
+    regex_priority: 4
+    tags:
+    - oan
+    - auth
+    - v1
+    - d06
+    - public-read
+    - public
+    plugins:
+    - name: rate-limiting
+      config:
+        minute: 120
+        hour: 2000
+        limit_by: ip
+        policy: redis
+        fault_tolerant: true
+        hide_client_headers: false
+  - name: post-v1-auth-iam-login
+    methods:
+    - POST
+    paths:
+    - ~/v1/auth/iam/login$
+    strip_path: false
+    regex_priority: 4
+    tags:
+    - oan
+    - auth
+    - v1
+    - d01
+    - public-auth
+    - public
+    plugins:
+    - name: rate-limiting
+      config:
+        minute: 5
+        hour: 30
+        limit_by: ip
+        policy: redis
+        fault_tolerant: true
+        hide_client_headers: false
   - name: get-v1-admin-users
     methods:
     - GET
@@ -652,6 +698,126 @@ services:
         key_claim_name: iss
         header_names:
         - Authorization
+  - name: get-v1-admin-permissions
+    methods:
+    - GET
+    paths:
+    - ~/v1/admin/permissions$
+    strip_path: false
+    regex_priority: 3
+    tags:
+    - oan
+    - auth
+    - v1
+    - d05
+    - admin
+    - bearer
+    plugins:
+    - name: rate-limiting
+      config:
+        minute: 60
+        hour: 1000
+        limit_by: consumer
+        policy: redis
+        fault_tolerant: true
+        hide_client_headers: false
+    - name: jwt
+      config:
+        claims_to_verify:
+        - exp
+        key_claim_name: iss
+        header_names:
+        - Authorization
+  - name: put-v1-admin-permissions
+    methods:
+    - PUT
+    paths:
+    - ~/v1/admin/permissions$
+    strip_path: false
+    regex_priority: 3
+    tags:
+    - oan
+    - auth
+    - v1
+    - d05
+    - admin
+    - bearer
+    plugins:
+    - name: rate-limiting
+      config:
+        minute: 60
+        hour: 1000
+        limit_by: consumer
+        policy: redis
+        fault_tolerant: true
+        hide_client_headers: false
+    - name: jwt
+      config:
+        claims_to_verify:
+        - exp
+        key_claim_name: iss
+        header_names:
+        - Authorization
+  - name: delete-v1-admin-permissions
+    methods:
+    - DELETE
+    paths:
+    - ~/v1/admin/permissions$
+    strip_path: false
+    regex_priority: 3
+    tags:
+    - oan
+    - auth
+    - v1
+    - d05
+    - admin
+    - bearer
+    plugins:
+    - name: rate-limiting
+      config:
+        minute: 60
+        hour: 1000
+        limit_by: consumer
+        policy: redis
+        fault_tolerant: true
+        hide_client_headers: false
+    - name: jwt
+      config:
+        claims_to_verify:
+        - exp
+        key_claim_name: iss
+        header_names:
+        - Authorization
+  - name: post-v1-admin-permissions-reset
+    methods:
+    - POST
+    paths:
+    - ~/v1/admin/permissions/reset$
+    strip_path: false
+    regex_priority: 4
+    tags:
+    - oan
+    - auth
+    - v1
+    - d05
+    - admin
+    - bearer
+    plugins:
+    - name: rate-limiting
+      config:
+        minute: 60
+        hour: 1000
+        limit_by: consumer
+        policy: redis
+        fault_tolerant: true
+        hide_client_headers: false
+    - name: jwt
+      config:
+        claims_to_verify:
+        - exp
+        key_claim_name: iss
+        header_names:
+        - Authorization
   - name: get-v1-notifications
     methods:
     - GET
@@ -663,7 +829,7 @@ services:
     - oan
     - auth
     - v1
-    - d06
+    - d07
     - authenticated-core
     - bearer
     plugins:
@@ -693,7 +859,7 @@ services:
     - oan
     - auth
     - v1
-    - d06
+    - d07
     - authenticated-core
     - bearer
     plugins:
@@ -723,7 +889,7 @@ services:
     - oan
     - auth
     - v1
-    - d06
+    - d07
     - authenticated-core
     - bearer
     plugins:
@@ -753,7 +919,7 @@ services:
     - oan
     - auth
     - v1
-    - d06
+    - d07
     - authenticated-core
     - bearer
     plugins:
@@ -783,7 +949,7 @@ services:
     - oan
     - auth
     - v1
-    - d06
+    - d07
     - authenticated-core
     - bearer
     plugins:
@@ -813,7 +979,7 @@ services:
     - oan
     - auth
     - v1
-    - d06
+    - d07
     - authenticated-core
     - bearer
     plugins:

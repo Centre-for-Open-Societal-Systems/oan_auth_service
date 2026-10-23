@@ -250,7 +250,8 @@ class TestUserRegistration(unittest.TestCase):
 				me_res = get_me()
 				self.assertEqual(me_res["status"], "success")
 				me_data = me_res["data"]
-				self.assertEqual(me_data["mobile_no"], f"+251{national_no}")
+				self.assertNotIn("mobile_no", me_data)
+				self.assertNotIn("full_name", me_data)
 				self.assertEqual(me_data["country_code"], "+251")
 				self.assertEqual(me_data["phone_number"], national_no)
 				self.assertNotIn("phone_country_code", me_data)
@@ -283,7 +284,7 @@ class TestUserRegistration(unittest.TestCase):
 				me_res = get_me()
 				self.assertEqual(me_res["status"], "success")
 				me_data = me_res["data"]
-				self.assertEqual(me_data["mobile_no"], f"+91{national_no}")
+				self.assertNotIn("mobile_no", me_data)
 				self.assertEqual(me_data["country_code"], "+91")
 				self.assertEqual(me_data["phone_number"], national_no)
 			finally:

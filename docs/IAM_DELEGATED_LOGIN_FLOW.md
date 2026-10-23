@@ -8,17 +8,19 @@ How this was written:
 - IAM's own behaviour (its endpoints, cookies, token refresh, logout redirect) is as these two codebases assume it. IAM source was not read.
 - Design reasoning: `IAM_DELEGATED_LOGIN_PLAN.md`. Config and usage: "Delegated login" in `README.md`.
 
+> **This app's side has changed.** IAM is no longer configured in `site_config.json`. Each login option is an `OAN IAM Service` row (`base_url`, `provider_id`, `issuer`, `application`, `default_roles`, `cookie_prefix`, `return_origins`), and the login is started through this app's `POST /api/v1/auth/iam/login`. The UI side below is still the single-IAM staff flow at `bdafa84`. The target flow for every login option is `IAM_LOGIN_DISCOVERY_FLOW.md`; the design is `IAM_LOGIN_DISCOVERY_PLAN.md`. The sections on this app below are updated to match the code.
+
 ## Components
 
-| Name                 | What it is                                                                                                                                                 |
-| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Browser              | The user's browser                                                                                                                                         |
-| UI browser half      | React pages from `oan_grievance_ui`                                                                                                                        |
-| UI server half       | Next.js route handlers (`/api/auth/*`, `/api/proxy/*`) in the same app. The only thing that calls IAM or this app                                          |
-| IAM Staff Portal API | Runs the OIDC login, sets session cookies, validates and refreshes tokens, holds the refresh token. Config: `IAM_BASE_URL` (UI), `iam_base_url` (this app) |
-| Identity provider    | Keycloak (or eSignet, ...). Behind IAM; neither the UI nor this app talks to it, except the browser being redirected to it                                 |
-| oan_auth_service     | Frappe app. Validates the token through IAM, provisions a local `User`, syncs roles, then Frappe RBAC applies                                              |
-| Frappe cache (Redis) | Holds the IAM principal per token and two log-throttle flags                                                                                               |
+| Name                 | What it is                                                                                                                                                                   |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Browser              | The user's browser                                                                                                                                                           |
+| UI browser half      | React pages from `oan_grievance_ui`                                                                                                                                          |
+| UI server half       | Next.js route handlers (`/api/auth/*`, `/api/proxy/*`) in the same app. The only thing that calls IAM or this app                                                            |
+| IAM Staff Portal API | Runs the OIDC login, sets session cookies, validates and refreshes tokens, holds the refresh token. Config: `IAM_BASE_URL` (UI), `OAN IAM Service` row `base_url` (this app) |
+| Identity provider    | Keycloak (or eSignet, ...). Behind IAM; neither the UI nor this app talks to it, except the browser being redirected to it                                                   |
+| oan_auth_service     | Frappe app. Validates the token through IAM, provisions a local `User`, syncs roles, then Frappe RBAC applies                                                                |
+| Frappe cache (Redis) | Holds the IAM principal per token and two log-throttle flags                                                                                                                 |
 
 The browser never calls IAM's API. It only calls the UI's own routes. The one exception is IAM's OAuth callback, which the identity provider redirects the browser to (unless the optional UI callback route is used, below).
 
@@ -61,14 +63,14 @@ sequenceDiagram
     B->>UI: fetch /api/proxy/api/v1/...
     UI->>UI: read X-Access-Token from IAM cookie, drop browser cookies
     UI->>OAN: request, Authorization: Bearer <token>
-    OAN->>OAN: peek unverified iss, iss != site issuer so delegated
-    OAN->>C: GET oan_auth:iam_principal:{sha256(token)}
+    OAN->>OAN: peek unverified iss, find enabled row with issuer == iss (none: 401)
+    OAN->>C: GET oan_auth:iam_principal:{key}:{sha256(token)}
     C-->>OAN: miss
     OAN->>IAM: GET /auth/get_user_profile (Bearer, 5 s timeout)
     IAM-->>OAN: 200 {sub, name, client_roles}
     OAN->>C: SET principal, TTL = token exp - now
     OAN->>DB: find or create User sha256(sub)[:32]@iam.internal
-    OAN->>DB: set Has Role = client_roles[iam_application] (existing Frappe roles only)
+    OAN->>DB: set Has Role = row default_roles + client_roles[application] (existing Frappe roles only)
     OAN->>OAN: frappe.set_user(user)
     OAN-->>UI: endpoint response
     UI-->>B: response
@@ -118,13 +120,13 @@ sequenceDiagram
 11. The browser calls `/api/proxy/...`. `readActiveSession` picks the session: a local session (`auth_token`) wins if present, otherwise the IAM session if `hasAppAccess`.
 12. The proxy forwards to `AUTH_API_BASE_URL` with `Authorization: Bearer <IAM access token>`. **Browser cookies are deliberately not forwarded** (`proxyHeaders.ts`). So the cookie path in this app's middleware is not used by this UI. State-changing proxy calls pass the UI's own same-origin check (`checkCsrf`: `Sec-Fetch-Site`, `Origin` vs `Host`).
 13. Frappe runs `validate_jwt_request` (an `auth_hook`, last in `validate_auth`). If something earlier already set a non-Guest user, it does nothing. The path is matched to a registered namespace (longest prefix). No match: Frappe's own auth.
-14. Token source in the middleware, in order: Bearer header; else `X-Access-Token` cookie (with `iam_auth_cookie_prefix`); else exempt path continues as guest, any other path `401`.
+14. Token source in the middleware, in order: Bearer header; else the first `<cookie_prefix>X-Access-Token` cookie found, trying each enabled row's `cookie_prefix` in `sort_order`; else exempt path continues as guest, any other path `401`.
 15. `iam_tokens.peek_issuer` reads `iss` **unverified**, only to route:
     - `iss == settings.issuer()` (site name or `jwt_issuer`): own token, verified in-process
-    - anything else: delegated, goes to IAM
-16. `get_principal(token)`:
-    - cache key `oan_auth:iam_principal:{sha256(token)}`; a hit skips IAM
-    - miss: fail if `iam_base_url` is unset or not `https` (loopback and `iam_allow_insecure_http` excepted); else `GET {iam_base_url}/auth/get_user_profile`, Bearer, 5 s timeout, `allow_redirects=False`
+    - anything else: delegated. The enabled row whose `issuer` equals `iss` exactly is chosen; no match is `401` with no IAM call. If the row has `client_id`, the unverified `azp` must equal it, else `401` with no IAM call
+16. `get_principal(token, row)`:
+    - cache key `oan_auth:iam_principal:{key}:{sha256(token)}`; a hit skips IAM. The row lookup runs first, so a disabled row's cached tokens are refused too
+    - miss: fail if the row's `base_url` is not `https` (loopback excepted, no opt-out); else `GET {base_url}/auth/get_user_profile`, Bearer, 5 s timeout, `allow_redirects=False`
 
 | IAM answer                              | Result here                                                          |
 | --------------------------------------- | -------------------------------------------------------------------- |
@@ -132,19 +134,20 @@ sequenceDiagram
 | `200` non-JSON, non-object, or no `sub` | `401`                                                                |
 | Other `4xx`                             | `401`                                                                |
 | `5xx`, timeout, unreachable             | `503 Identity service unavailable`                                   |
-| `iam_base_url` unset or insecure        | `401`                                                                |
+| Row `base_url` insecure                 | `401`                                                                |
 
     Only `sub`, `name` and `client_roles` are read. Rejected tokens are not cached.
 
 17. Provision (`_provision_delegated_user`):
-    - local user name: `<sha256(sub)[:32]>@iam.internal`. Identity is `sub`, not email
-    - roles to grant: `client_roles[iam_application]` that also exist as Frappe `Role`. Names used as-is
-    - none granted (including `iam_application` unset): `401`, user never created. An existing user is stripped first
+    - local user name: `<sha256(f"{key}:{sub}")[:32]>@iam.internal`. Identity is row key plus `sub`, not email
+    - roles to grant: the row's `default_roles` plus `client_roles[application]`, limited to existing Frappe `Role`s. Names used as-is. `application` set but no roles under it: warning in Error Log naming the row (once an hour)
+    - none granted: `401`, user never created. An existing user is stripped first
     - first sight: `User` created with `ignore_permissions`, no password, no welcome email, `enabled=1`; `first_name`/`last_name` from `name` split on the first space (`IAM User` if blank). A first-request race is caught as `DuplicateEntryError`
     - `sync_roles` makes `Has Role` equal the granted set
+    - consumer `oan_auth_on_delegated_login` hooks run once per token (see README)
     - on GET/HEAD/OPTIONS the middleware commits explicitly when something changed (Frappe rolls those back); unsafe methods commit on success
 18. Shared checks: user exists and is `enabled`; `must_change_password` unset; the consumer's optional `revocation_check(user)` passes.
-19. `frappe.set_user(user)`. Frappe DocPerm now authorizes. `frappe.local.oan_auth_claims` holds the principal and `frappe.local.oan_auth_issuer_kind` is `"iam"` (own tokens: `"local"`).
+19. `frappe.set_user(user)`. Frappe DocPerm now authorizes. `frappe.local.oan_auth_claims` holds the cached identity and roles (`sub`, `name`, `client_roles`; the person's details such as phone, birthdate and national id are given only to `sync_profile` and the `oan_auth_on_delegated_login` hooks, once per token) and `frappe.local.oan_auth_issuer_kind` is `"iam"` (own tokens: `"local"`), and `frappe.local.oan_auth_login_option` is the row key.
 
 ### Phase 5 - expiry and refresh
 
@@ -174,7 +177,7 @@ IAM sets four cookies on the shared parent domain. Which side reads which:
 | `X-Session-Id`   | yes      | Yes: needed for refresh and logout           | No                                                      | Pointer to IAM's stored refresh token |
 | `X-CSRF-Token`   | no       | No (UI uses its own same-origin check)       | Yes, on the cookie path                                 | Double-submit CSRF                    |
 
-- All names get a prefix: UI `IAM_COOKIE_PREFIX`, this app `iam_auth_cookie_prefix`, both must equal IAM's `auth_cookie_prefix` (`common_auth_cookie_prefix`). Default empty. The `X-CSRF-Token` **header** is never prefixed.
+- All names get a prefix: UI `IAM_COOKIE_PREFIX`, this app the row's `cookie_prefix`, both must equal IAM's `auth_cookie_prefix` (`common_auth_cookie_prefix`). Default empty. The `X-CSRF-Token` **header** is never prefixed.
 - `IAM_COOKIE_DOMAIN` (UI) must equal IAM's cookie domain. It is used only to expire the cookies locally when IAM refuses to renew.
 - The refresh token never reaches the browser, the UI or this app.
 - The UI's own local-login cookies (`auth_token`, `refresh_token`, `session_remember`, `last_activity`) are `SameSite=Strict`. IAM's cookies are IAM's attributes, relayed unchanged.
@@ -196,17 +199,17 @@ On an **exempt** path (login, refresh, reset), a cookie that fails any check is 
 
 ## Two sessions, two verifiers
 
-|                   | Local session                                          | Staff (IAM) session                                  |
-| ----------------- | ------------------------------------------------------ | ---------------------------------------------------- |
-| Opened by         | Email/password form, `api/v1/auth.py`                  | "Sign in as staff", IAM                              |
-| UI cookies        | `auth_token`, `refresh_token`, `session_remember`      | IAM's `X-*` cookies (never copied)                   |
-| Token `iss`       | `settings.issuer()`                                    | Anything else                                        |
-| Verified by       | This app in-process                                    | IAM via `get_user_profile`                           |
-| Refresh           | This app's refresh token (rotation)                    | IAM, triggered through `get_user_profile`            |
-| Local `User.name` | token `sub`                                            | `sha256(sub)[:32]@iam.internal`                      |
-| Roles from        | Frappe roles at issue, `scope` re-checked each request | `client_roles[iam_application]`, synced each request |
-| Idle timeout      | UI idle clock                                          | IAM / provider                                       |
-| Password          | Allowed                                                | Never                                                |
+|                   | Local session                                          | Staff (IAM) session                                                    |
+| ----------------- | ------------------------------------------------------ | ---------------------------------------------------------------------- |
+| Opened by         | Email/password form, `api/v1/auth.py`                  | "Sign in as staff", IAM                                                |
+| UI cookies        | `auth_token`, `refresh_token`, `session_remember`      | IAM's `X-*` cookies (never copied)                                     |
+| Token `iss`       | `settings.issuer()`                                    | Anything else                                                          |
+| Verified by       | This app in-process                                    | IAM via `get_user_profile`                                             |
+| Refresh           | This app's refresh token (rotation)                    | IAM, triggered through `get_user_profile`                              |
+| Local `User.name` | token `sub`                                            | `sha256(f"{key}:{sub}")[:32]@iam.internal`                             |
+| Roles from        | Frappe roles at issue, `scope` re-checked each request | Row `default_roles` + `client_roles[application]`, synced each request |
+| Idle timeout      | UI idle clock                                          | IAM / provider                                                         |
+| Password          | Allowed                                                | Never                                                                  |
 
 A local session wins in the UI if the browser somehow holds both.
 
@@ -217,9 +220,9 @@ A local session wins in the UI if the browser somehow holds both.
 | Identity provider | Client roles on a client named like the application                                                                             |
 | IAM               | Puts them in the principal as `client_roles[<application>]` and in the Keycloak token as `resource_access[<application>].roles` |
 | UI                | Decodes `resource_access[IAM_APPLICATION].roles` (unverified) for routing: `hasAppAccess`, home route, `canAccessRoute`         |
-| This app          | Uses `client_roles[iam_application]` from IAM's answer; sets Frappe roles; Frappe DocPerm enforces                              |
+| This app          | Uses the row's `default_roles` plus `client_roles[application]` from IAM's answer; sets Frappe roles; Frappe DocPerm enforces   |
 
-- `IAM_APPLICATION` (UI) and `iam_application` (this app) must hold the same value, or the UI shows a page the API then refuses.
+- `IAM_APPLICATION` (UI) and the row's `application` must hold the same value, or the UI shows a page the API then refuses. The discovery flow drops this: the UI takes roles from `GET /api/v1/auth/me`.
 - UI claims are display and routing only. The backend re-verifies every call.
 - Role names are used **as-is**. A role missing in Frappe is ignored. No allowlist: whoever administers the application's client in IAM can grant any existing Frappe role, `System Manager` included. Accepted for now.
 - Role change in IAM applies when the user gets a new token, not on the next request (principal cached until `exp`).
@@ -235,25 +238,29 @@ A local session wins in the UI if the browser somehow holds both.
 
 ## Config that must agree
 
-| Setting        | UI (`oan_grievance_ui`)      | This app (`site_config.json`)               | Must equal                                      |
-| -------------- | ---------------------------- | ------------------------------------------- | ----------------------------------------------- |
-| IAM address    | `IAM_BASE_URL` (server-only) | `iam_base_url` (`https`, loopback excepted) | Same IAM (URL may differ by network path)       |
-| Application    | `IAM_APPLICATION`            | `iam_application`                           | Same value, and the client name in the provider |
-| Cookie prefix  | `IAM_COOKIE_PREFIX`          | `iam_auth_cookie_prefix`                    | IAM `auth_cookie_prefix`                        |
-| Cookie domain  | `IAM_COOKIE_DOMAIN`          | n/a                                         | IAM cookie domain                               |
-| Login provider | `IAM_LOGIN_PROVIDER_ID`      | n/a                                         | Row id in IAM `login_providers`                 |
-| Insecure IAM   | n/a                          | `iam_allow_insecure_http`                   | Trusted private network only                    |
-| Own issuer     | n/a                          | `jwt_issuer` (default site name)            | Anything else routes to IAM                     |
+| Setting        | UI (`oan_grievance_ui`)      | This app (`OAN IAM Service` row)                       | Must equal                                      |
+| -------------- | ---------------------------- | ------------------------------------------------------ | ----------------------------------------------- |
+| IAM address    | `IAM_BASE_URL` (server-only) | `base_url` (`https`, loopback excepted)                | Same IAM (URL may differ by network path)       |
+| Issuer         | n/a                          | `issuer`                                               | Exact `iss` of the provider's tokens            |
+| Application    | `IAM_APPLICATION`            | `application`                                          | Same value, and the client name in the provider |
+| Cookie prefix  | `IAM_COOKIE_PREFIX`          | `cookie_prefix`                                        | IAM `auth_cookie_prefix`                        |
+| Cookie domain  | `IAM_COOKIE_DOMAIN`          | n/a                                                    | IAM cookie domain                               |
+| Login provider | `IAM_LOGIN_PROVIDER_ID`      | `provider_id`                                          | Row id in IAM `login_providers`                 |
+| Landing origin | n/a                          | `return_origins`                                       | The UI's origin                                 |
+| Own issuer     | n/a                          | `jwt_issuer` in `site_config.json` (default site name) | Anything else must match a row's `issuer`       |
 
 IAM-side requirements: the login-provider row's `oauth_callback_url` is IAM's `/auth/callback` (or the UI's `/api/auth/staff/callback` for the optional variant); the UI's landing and post-logout URLs must be on the provider client's redirect allow-list; IAM's cookie domain must cover both the UI and the host the browser uses.
 
 ## Cache keys (Frappe cache)
 
-| Key                                      | Created                                       | TTL                                      |
-| ---------------------------------------- | --------------------------------------------- | ---------------------------------------- |
-| `oan_auth:iam_principal:{sha256(token)}` | First successful validation of a token        | Token `exp` minus now (60 s if no `exp`) |
-| `oan_auth:iam_outage_logged`             | First IAM outage failure                      | 60 s                                     |
-| `oan_auth:iam_insecure_url_logged`       | First rejection of a non-https `iam_base_url` | 3600 s                                   |
+| Key                                              | Created                                                 | TTL                                      |
+| ------------------------------------------------ | ------------------------------------------------------- | ---------------------------------------- |
+| `oan_auth:iam_services`                          | First read of the login options                         | Until a row is saved or deleted          |
+| `oan_auth:iam_principal:{key}:{sha256(token)}`   | First successful validation of a token                  | Token `exp` minus now (60 s if no `exp`) |
+| `oan_auth:login_hook_done:{key}:{sha256(token)}` | Login hooks succeeded for a token                       | Token `exp` minus now                    |
+| `oan_auth:iam_outage_logged`                     | First IAM outage failure                                | 60 s                                     |
+| `oan_auth:iam_insecure_url_logged`               | First rejection of a non-https `base_url`               | 3600 s                                   |
+| `oan_auth:iam_no_application_roles_logged:{key}` | First token with no roles under the row's `application` | 3600 s                                   |
 
 ## Troubleshooting
 
@@ -267,8 +274,8 @@ Redirect reasons on `/login?reason=`:
 
 Other:
 
-- **Every IAM token gets `401` from the API** - check `iam_base_url` (set, `https` or loopback) and `iam_application` (set). Error Log has `iam_base_url is not https` or `iam_application not set`.
-- **Login completes, UI shows app, API returns `401`** - principal has no role for `iam_application`, or none of the role names exist in Frappe. Server log: `Principal ... has no roles for this application`. Check the two application values match and role names match Frappe `Role` names exactly.
+- **Every IAM token gets `401` from the API** - no enabled `OAN IAM Service` row has `issuer` equal to the token's `iss` (exact, trailing slash included), the row's `client_id` differs from the token's `azp`, or its `base_url` is not `https`. Error Log has `IAM base_url is not https`.
+- **Login completes, UI shows app, API returns `401`** - principal has no role under the row's `application` and the row has no `default_roles`, or none of the role names exist in Frappe. Error Log: `IAM token has no roles for application`. Check the application values match and role names match Frappe `Role` names exactly.
 - **`503 Identity service unavailable`** - IAM unreachable, timed out (5 s) or answered 5xx. Logged once a minute. The UI should retry, not sign the user out.
 - **Refresh silently fails and user is signed out** - `X-Session-Id` or `X-Access-Token` cookie missing, or IAM's refresh token expired.
 - **Cookies never reach the UI** - IAM cookie `Domain` does not cover the UI host.
@@ -280,9 +287,9 @@ Other:
 
 - **`aud` not enforced** by IAM, so a valid token for another application is accepted. The role requirement is what keeps such callers out.
 - **Bearer token lives until `exp`.** To cut someone off sooner, disable their local `User`. Provider-side logout does not invalidate an issued token here.
-- **No role allowlist** (see Roles). Follow-up: `iam_role_map` in site config.
+- **No role allowlist** (see Roles) for token roles. `default_roles` refuses privileged built-in roles.
 - **IAM does not validate the post-login `redirect_uri`.** The UI therefore builds an absolute own-origin landing URL and re-checks `returnUrl` on arrival. Do not weaken that.
 - **Two sets of claims.** The UI decodes roles from `resource_access` (Keycloak shape) while this app reads IAM's `client_roles`. Another identity provider that IAM normalises differently could make the UI's routing disagree with the API.
 - **CSRF double-submit** (cookie path) is not signed or session-bound. If IAM sets cookies on a parent domain, a sibling subdomain can set both cookie and header. Do not host untrusted subdomains under that domain.
-- **Unthrottled IAM calls.** Rejected tokens are not cached and validation is a synchronous 5 s call. An unauthenticated caller can send JWT-shaped strings with a foreign `iss`, each causing one IAM call. Mitigation: per-IP `rate-limiting` at the gateway. Follow-up: lower timeout and circuit breaker.
+- **Unthrottled IAM calls.** Rejected tokens are not cached and validation is a synchronous 5 s call. An unauthenticated caller can send JWT-shaped strings carrying a configured `iss`, each causing one IAM call (an unknown `iss` causes none). Mitigation: per-IP `rate-limiting` at the gateway. Follow-up: lower timeout and circuit breaker.
 - **Last-role strip** commits only on safe methods (see Troubleshooting).
