@@ -143,7 +143,7 @@ def iam_services() -> list[frappe._dict]:
 
 	Cached until a row changes (the DocType clears the cache on save and
 	delete), so token validation costs no query per request. Each entry carries
-	its `default_roles` and `return_origins` as plain lists.
+	its `default_roles` as a plain list.
 	"""
 	services = frappe.cache.get_value(IAM_SERVICES_CACHE_KEY)
 	if services is None:
@@ -173,14 +173,6 @@ def _load_iam_services() -> list[dict]:
 		order_by="idx asc",
 	):
 		roles.setdefault(d.parent, []).append(d.role)
-	origins: dict[str, list[str]] = {}
-	for d in frappe.get_all(
-		"OAN IAM Service Return Origin",
-		filters={"parenttype": IAM_SERVICE_DOCTYPE, "parent": ("in", names)},
-		fields=["parent", "origin"],
-		order_by="idx asc",
-	):
-		origins.setdefault(d.parent, []).append(d.origin)
 
 	return [
 		{
@@ -190,7 +182,6 @@ def _load_iam_services() -> list[dict]:
 			"userinfo_url": r.userinfo_url or "",
 			"jwks_url": r.jwks_url or "",
 			"default_roles": roles.get(r.key, []),
-			"return_origins": origins.get(r.key, []),
 		}
 		for r in rows
 	]

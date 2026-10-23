@@ -460,8 +460,10 @@ def _provision_delegated_user(claims: dict, service, token: str) -> str:
 		hooks_done_key = _login_hooks_due(service, token)
 		if hooks_done_key:
 			# Once per token, before the consumer hooks, so they see the person's details.
-			changed = iam_users.sync_profile(user, claims) or changed
-			changed = _run_login_hooks(user, claims, service) or changed
+			# `claims` is the cached identity and roles; the details come from the full principal.
+			principal = _full_principal(service, token)
+			changed = iam_users.sync_profile(user, principal) or changed
+			changed = _run_login_hooks(user, principal, service) or changed
 
 	safe = _is_safe_method()
 	if changed and safe:
@@ -484,6 +486,29 @@ def _provision_delegated_user(claims: dict, service, token: str) -> str:
 			frappe.db.after_commit.add(mark_done)
 
 	return user
+
+
+def _full_principal(service, token: str) -> dict:
+	"""The principal with the person's details, asked of IAM and the provider.
+
+	The cache holds identity and roles only, so the hooks' input is fetched here,
+	once per token (the hooks' done-key). Reuses the in-request principal if
+	`get_principal` just fetched it on this request.
+	"""
+	try:
+		local_cache = getattr(frappe.local, "_iam_full_principal", None)
+		if local_cache is not None and token in local_cache:
+			return local_cache[token]
+	except Exception:
+		pass
+
+	try:
+		return iam_tokens.fetch_principal(token, service)
+	except iam_tokens.IAMUnavailableError:
+		frappe.local.response["message"] = _("Identity service unavailable")
+		raise frappe.ServiceUnavailableError
+	except tokens.TokenError as exc:
+		_reject(f"Invalid or expired token: {exc}")
 
 
 def _login_hooks_due(service, token: str) -> str | None:

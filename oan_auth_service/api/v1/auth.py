@@ -604,6 +604,7 @@ def refresh(refresh_token: str | None = None, access_token: str | None = None):
 	exchange succeeds or fails, so a replayed token cannot mint a second pair.
 	"""
 	if access_token:
+		check_rate_limit(f"oan_auth:iam_refresh:{frappe.local.request_ip}", limit=60, window=60)
 		return _iam_refresh(_iam_service_for_session(access_token))
 	if not refresh_token:
 		raise frappe.AuthenticationError(_("Invalid refresh token"))
@@ -663,6 +664,7 @@ def refresh(refresh_token: str | None = None, access_token: str | None = None):
 def logout(refresh_token: str | None = None, access_token: str | None = None):
 	"""Revoke our refresh token or, by the token's issuer, end an IAM session."""
 	if access_token:
+		check_rate_limit(f"oan_auth:iam_logout:{frappe.local.request_ip}", limit=30, window=60)
 		return _iam_logout(_iam_service_for_session(access_token))
 	if not refresh_token:
 		return success_response(data={"revoked": False})
@@ -1339,22 +1341,21 @@ def get_iam_providers():
 	"/iam/login",
 	auth="public",
 	summary="Start a login option",
-	description="Start the login of an enabled IAM login option and return the identity provider URL to send the browser to (`window.location = redirect_url`). `return_url` must be absolute and on one of the option's return origins. Also returns the option's `cookie_prefix`: after the IAM callback, the access token is in the `<cookie_prefix>X-Access-Token` cookie. Unknown, disabled or `local` key, or a `return_url` off the allowed origins: 400. IAM answered unusably: 502. IAM unreachable: 503.",
+	description="Start the login of an enabled IAM login option and return the identity provider URL to send the browser to (`window.location = redirect_url`). `return_url` must be an absolute http(s) URL; which callers may use this endpoint is controlled at the gateway. Also returns the option's `cookie_prefix`: after the IAM callback, the access token is in the `<cookie_prefix>X-Access-Token` cookie. Unknown, disabled or `local` key, or a `return_url` that is not an absolute URL: 400. IAM answered unusably: 502. IAM unreachable: 503.",
 )
 @validate_request(IAMLoginSchema)
 @handle_api_errors
 def iam_login(key: str, return_url: str):
 	"""Start login option `key` at its IAM, after checking `return_url`.
 
-	IAM redirects the browser to whatever `redirect_uri` it is given, unchecked,
-	so the origin check here is the only open-redirect guard. A row with no
-	return origins refuses every login. The allow-list never comes from the
-	request (`Host`, `Origin`).
+	IAM redirects the browser to whatever `redirect_uri` it is given, unchecked.
+	Which consumers may call this is decided at the gateway, so only the shape
+	of `return_url` is checked here.
 	"""
+	check_rate_limit(f"oan_auth:iam_login:{frappe.local.request_ip}", limit=30, window=60)
 	service = _enabled_iam_service(key)
 
-	origin = iam_tokens.origin_of(return_url)
-	if origin is None or origin not in service.return_origins:
+	if iam_tokens.origin_of(return_url) is None:
 		frappe.throw(_("return_url is not allowed for this login option."), frappe.ValidationError)
 
 	try:
@@ -1407,11 +1408,6 @@ def _iam_logout(service):
 			data["provider_logout"] = True
 		else:
 			data["logout_url"] = logout_url
-	# TEMP DEBUG: remove once the logout loop is understood.
-	frappe.log_error(
-		title="DEBUG iam logout result",
-		message=f"option {service.key!r}: logout_url={'set' if logout_url else 'none'}; result={data}",
-	)
 	return success_response(data=data)
 
 

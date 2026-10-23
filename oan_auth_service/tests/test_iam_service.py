@@ -26,7 +26,6 @@ def valid(**overrides) -> dict:
 		"provider_id": 1,
 		"issuer": "https://idp.test/realms/staff",
 		"application": "oan-grievance",
-		"return_origins": ["https://ui.test"],
 	}
 	fields.update(overrides)
 	return fields
@@ -80,7 +79,6 @@ class TestIAMServiceDocType(unittest.TestCase):
 			("application", "a"),
 			("cookie_prefix", "p-"),
 			("default_roles", [ROLE]),
-			("return_origins", ["https://ui.test"]),
 		):
 			self.assertRefused(LOCAL, **{field: value})
 		make_iam_service(LOCAL, label="Sign in")
@@ -90,24 +88,6 @@ class TestIAMServiceDocType(unittest.TestCase):
 		self.assertRefused(**valid(base_url="https://iam.test/?x=1"))
 		self.assertRefused(**valid(base_url="https://user:pw@iam.test"))
 		make_iam_service(KEY, **valid(base_url="http://localhost:8020"))
-
-	def test_return_origin_must_be_an_origin(self):
-		for origin in (
-			"https://ui.test/",
-			"https://ui.test/path",
-			"https://ui.test?x=1",
-			"http://ui.test",
-			"ui.test",
-			"https://UI.test",
-			"https://ui.test:443",
-		):
-			self.assertRefused(**valid(return_origins=[origin]))
-		make_iam_service(KEY, **valid(return_origins=["https://ui.test:8443", "http://localhost:3000"]))
-
-	def test_no_return_origins_saves_with_warning(self):
-		frappe.local.message_log = []
-		make_iam_service(KEY, **valid(return_origins=[]))
-		self.assertTrue(frappe.local.message_log)
 
 	def test_issuer_unique_among_enabled_rows(self):
 		make_iam_service(KEY, **valid())
@@ -154,7 +134,6 @@ class TestIAMServiceDocType(unittest.TestCase):
 		make_iam_service(KEY, **valid(default_roles=[ROLE]))
 		service = settings.iam_service(KEY)
 		self.assertEqual(service.default_roles, [ROLE])
-		self.assertEqual(service.return_origins, ["https://ui.test"])
 		self.assertEqual(settings.iam_service_for_issuer("https://idp.test/realms/staff").key, KEY)
 
 	def test_only_system_manager_can_write(self):
@@ -167,3 +146,12 @@ class TestIAMServiceDocType(unittest.TestCase):
 		self.assertFalse(frappe.has_permission(IAM_SERVICE_DOCTYPE, "read"))
 		self.assertFalse(frappe.has_permission(IAM_SERVICE_DOCTYPE, "write"))
 		self.assertTrue(frappe.get_meta(IAM_SERVICE_DOCTYPE).track_changes)
+
+
+class TestGrantedRolesRefusal(unittest.TestCase):
+	def test_token_roles_never_grant_privileged_roles(self):
+		from oan_auth_service.api import iam_users
+
+		service = frappe._dict(application="app", default_roles=["Desk User"])
+		principal = {"client_roles": {"app": ["System Manager", "Guest", "Administrator"]}}
+		self.assertEqual(iam_users.granted_roles(principal, service), set())

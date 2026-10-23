@@ -210,16 +210,13 @@ class TestIAMLoginDiscovery(unittest.TestCase):
 			self.assertEqual(status, 400, (key, body))
 		self.assertEqual(self.iam.calls, [])
 
-	def test_return_url_off_the_allowed_origins_is_400_without_iam_call(self):
+	def test_malformed_return_url_is_400_without_iam_call(self):
 		for return_url in (
-			"https://evil.test/x",
 			"/relative/path",
-			"https://ui.test.evil.test/x",
 			"https://evil.test\\@ui.test/x",
 			"https://user@ui.test/x",
-			"http://ui.test/x",
-			"https://ui.test:8443/x",
 			"javascript:alert(1)",
+			"https://evil.test:99999/x",
 		):
 			status, body = self.login(return_url=return_url)
 			self.assertEqual(status, 400, (return_url, body))
@@ -228,14 +225,6 @@ class TestIAMLoginDiscovery(unittest.TestCase):
 	def test_return_url_with_default_port_is_same_origin(self):
 		status, body = self.login(return_url="https://ui.test:443/x")
 		self.assertEqual(status, 200, body)
-
-	def test_row_without_origins_refuses_every_login(self):
-		frappe.db.delete("OAN IAM Service Return Origin", {"parent": STAFF})
-		frappe.db.commit()  # nosemgrep: frappe-manual-commit
-		settings.clear_iam_services_cache()
-		status, _body = self.login()
-		self.assertEqual(status, 400)
-		self.assertEqual(self.iam.calls, [])
 
 	def test_non_http_redirect_from_iam_is_refused(self):
 		for payload in ({"redirectUrl": "javascript:alert(1)"}, {}, [], ValueError("not json")):

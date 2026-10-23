@@ -147,7 +147,7 @@ sequenceDiagram
     - consumer `oan_auth_on_delegated_login` hooks run once per token (see README)
     - on GET/HEAD/OPTIONS the middleware commits explicitly when something changed (Frappe rolls those back); unsafe methods commit on success
 18. Shared checks: user exists and is `enabled`; `must_change_password` unset; the consumer's optional `revocation_check(user)` passes.
-19. `frappe.set_user(user)`. Frappe DocPerm now authorizes. `frappe.local.oan_auth_claims` holds the principal and `frappe.local.oan_auth_issuer_kind` is `"iam"` (own tokens: `"local"`), and `frappe.local.oan_auth_login_option` is the row key.
+19. `frappe.set_user(user)`. Frappe DocPerm now authorizes. `frappe.local.oan_auth_claims` holds the cached identity and roles (`sub`, `name`, `client_roles`; the person's details such as phone, birthdate and national id are given only to `sync_profile` and the `oan_auth_on_delegated_login` hooks, once per token) and `frappe.local.oan_auth_issuer_kind` is `"iam"` (own tokens: `"local"`), and `frappe.local.oan_auth_login_option` is the row key.
 
 ### Phase 5 - expiry and refresh
 

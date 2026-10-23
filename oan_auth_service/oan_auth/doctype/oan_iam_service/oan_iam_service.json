@@ -24,9 +24,7 @@
   "jwks_url",
   "roles_section",
   "application",
-  "default_roles",
-  "redirect_section",
-  "return_origins"
+  "default_roles"
  ],
  "fields": [
   {
@@ -141,19 +139,6 @@
    "fieldtype": "Table MultiSelect",
    "label": "Default Roles",
    "options": "OAN IAM Service Role"
-  },
-  {
-   "depends_on": "eval:doc.key !== 'local'",
-   "fieldname": "redirect_section",
-   "fieldtype": "Section Break",
-   "label": "Return Origins"
-  },
-  {
-   "description": "Frontend origins allowed as return_url when starting this login. Empty refuses every login on this row.",
-   "fieldname": "return_origins",
-   "fieldtype": "Table",
-   "label": "Return Origins",
-   "options": "OAN IAM Service Return Origin"
   }
  ],
  "index_web_pages_for_search": 0,

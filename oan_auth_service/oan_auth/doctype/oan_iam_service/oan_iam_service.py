@@ -6,15 +6,12 @@ from frappe import _
 from frappe.model.document import Document
 
 from oan_auth_service.api import iam_tokens
+from oan_auth_service.api.iam_users import REFUSED_ROLES
 from oan_auth_service.config import settings
 
 KEY_PATTERN = re.compile(r"^[a-z0-9-]+$")
 # iam_core builds cookie names as `<prefix><name>`; keep the prefix to cookie-safe characters.
 COOKIE_PREFIX_PATTERN = re.compile(r"^[A-Za-z0-9_.-]*$")
-
-# `default_roles` go to anyone the provider authenticates (for eSignet, every
-# resident with a national ID), so no privileged or built-in role may be one.
-REFUSED_DEFAULT_ROLES = frozenset({"System Manager", "Administrator", "Guest", "All", "Desk User"})
 
 # Fields that configure an IAM login. The `local` row is this app's own login
 # and must leave all of them empty.
@@ -26,8 +23,8 @@ class OANIAMService(Document):
 
 	These rows are trust configuration: bearer tokens are sent to `base_url`,
 	`issuer` decides which tokens are accepted, `application` and
-	`default_roles` decide which roles are granted, and `return_origins` decides
-	where a browser may be sent after login. DocPerm is System Manager only, and
+	`default_roles` decide which roles are granted. Who may start a login (and
+	where it returns to) is controlled at the gateway. DocPerm is System Manager only, and
 	the admin API never exposes this doctype (see api/v1/admin.py).
 	"""
 
@@ -42,11 +39,10 @@ class OANIAMService(Document):
 
 		self._validate_iam()
 		self._validate_roles()
-		self._validate_return_origins()
 		self._validate_issuer_unique()
 
 	def _validate_local(self):
-		if any(self.get(f) for f in IAM_FIELDS) or self.default_roles or self.return_origins:
+		if any(self.get(f) for f in IAM_FIELDS) or self.default_roles:
 			frappe.throw(
 				_("The {0} row is this app's own login and takes no IAM settings.").format(
 					settings.LOCAL_LOGIN_KEY
@@ -104,28 +100,12 @@ class OANIAMService(Document):
 					"Set Application or at least one Default Role, otherwise no user of this login gets a role."
 				)
 			)
-		refused = sorted(r for r in roles if r in REFUSED_DEFAULT_ROLES)
+		refused = sorted(r for r in roles if r in REFUSED_ROLES)
 		if refused:
 			frappe.throw(
 				_(
 					"These roles cannot be default roles, they would go to anyone the provider authenticates: {0}"
 				).format(", ".join(refused))
-			)
-
-	def _validate_return_origins(self):
-		for row in self.return_origins:
-			row.origin = (row.origin or "").strip()
-			if iam_tokens.origin_of(row.origin) != row.origin or not iam_tokens.is_secure_url(row.origin):
-				frappe.throw(
-					_(
-						"Return origin {0} must be scheme, host and optional port only, lowercase, with no path or trailing slash, and https unless localhost."
-					).format(frappe.bold(row.origin))
-				)
-		if self.enabled and not self.return_origins:
-			frappe.msgprint(
-				_("No return origins: every login on this row will be refused until one is added."),
-				indicator="orange",
-				alert=True,
 			)
 
 	def _validate_issuer_unique(self):

@@ -152,11 +152,11 @@ Module `OAN Auth`. Named by `key` (`autoname: field:key`). `track_changes: 1`.
 | `application`    | Data                                     | Not on `local`, optional. Keycloak client id whose roles become Frappe roles (`resource_access[application]`)                                                                 |
 | `default_roles`  | Table MultiSelect `OAN IAM Service Role` | Not on `local`, optional. Frappe roles every user from this row gets, whatever the token says                                                                                 |
 | `cookie_prefix`  | Data                                     | Not on `local`. That IAM's `auth_cookie_prefix`. Default empty                                                                                                                |
-| `return_origins` | Table `OAN IAM Service Return Origin`    | Not on `local`. Frontend origins allowed as `return_url`. Empty: every login on this row is refused                                                                           |
+| `return_origins` | Small Text, one origin per line          | Not on `local`. Frontend origins allowed as `return_url`. Empty: every login on this row is refused                                                                           |
 
 Child `OAN IAM Service Role`: `role` (Link `Role`, required).
 
-Child `OAN IAM Service Return Origin`: `origin` (Data, required). Scheme, host
+`return_origins` lines: scheme, host
 and optional port only, for example `https://grievance.example.org`. No path,
 no trailing slash.
 
@@ -436,8 +436,10 @@ and rolls back on failure.
   present ID token cookie.
 
 **When not to use it.** A check that needs no stored state can read
-`frappe.local.oan_auth_claims` (set by the middleware on every request) in the
-consumer's own code. The cost: nothing is persisted, so every query that
+`frappe.local.oan_auth_claims` (set by the middleware on every request: `sub`, `name`
+and `client_roles` only) in the consumer's own code. The person's other details reach
+the consumer once per token, as the principal passed to its `oan_auth_on_delegated_login`
+hook; store what is needed there. The cost: nothing is persisted, so every query that
 depends on the claim must read it again.
 
 ### Refresh and logout

@@ -191,13 +191,42 @@ def token_digest(token: str) -> str:
 	return hashlib.sha256(token.encode()).hexdigest()
 
 
+# What is cached and exposed as `frappe.local.oan_auth_claims`: who the caller is and
+# what IAM grants them. The person's details (phone, birthdate, national id, ...) are
+# not kept: they reach `sync_profile` and the login hooks once per token, from
+# `fetch_principal`, and the consuming app stores what it needs.
+PRINCIPAL_CACHED_KEYS = ("sub", "name", "client_roles")
+
+
+def slim_principal(principal: dict) -> dict:
+	return {k: principal[k] for k in PRINCIPAL_CACHED_KEYS if k in principal}
+
+
 def get_principal(token: str, service) -> dict:
-	"""Return the principal `service`'s IAM gives for `token`, or raise TokenError if it rejects it."""
+	"""The identity and roles `service`'s IAM gives for `token`, or raise TokenError if it rejects it.
+
+	Cached until the token expires, without the person's details; see
+	`fetch_principal` for those.
+	"""
 	key = principal_cache_key(service, token)
 	principal = frappe.cache.get_value(key)
 	if principal:
 		return principal
 
+	full = fetch_principal(token, service)
+	try:
+		if not hasattr(frappe.local, "_iam_full_principal"):
+			frappe.local._iam_full_principal = {}
+		frappe.local._iam_full_principal[token] = full
+	except Exception:
+		pass
+	principal = slim_principal(full)
+	frappe.cache.set_value(key, principal, expires_in_sec=seconds_until_expiry(token))
+	return principal
+
+
+def fetch_principal(token: str, service) -> dict:
+	"""Ask IAM, and the provider's userinfo, for the full principal of `token`. Never cached."""
 	# Refused locally, saving an IAM call per expired token: browsers keep
 	# sending expired cookies. Unverified is enough to refuse; a forged future
 	# `exp` gains nothing, IAM checks it next.
@@ -238,9 +267,7 @@ def get_principal(token: str, service) -> dict:
 		raise TokenError("IAM principal has no sub")
 
 	_warn_if_no_application_roles(service, principal)
-	principal = _with_userinfo(service, token, principal)
-	frappe.cache.set_value(key, principal, expires_in_sec=seconds_until_expiry(token))
-	return principal
+	return _with_userinfo(service, token, principal)
 
 
 # What the identity provider's userinfo may add to the principal. It may never
@@ -355,8 +382,7 @@ def _warn_if_no_application_roles(service, principal: dict) -> None:
 def start_login(service, return_url: str) -> str:
 	"""Start `service`'s login at its IAM and return the identity provider URL to send the browser to.
 
-	IAM does not check `return_url`; the caller must have checked it against the
-	row's `return_origins`.
+	IAM does not check `return_url`; the gateway decides who may call this.
 	"""
 	try:
 		_require_https(service.base_url)
@@ -416,13 +442,6 @@ def logout(service, cookies: dict[str, str]) -> tuple[list[str], str | None]:
 		raise _iam_unavailable(f"IAM answered {response.status_code}")
 
 	set_cookies = _set_cookie_headers(response)
-	# TEMP DEBUG: remove once the logout loop is understood.
-	frappe.log_error(
-		title="DEBUG iam logout",
-		message=f"option {service.key!r} GET/POST {url} -> {response.status_code}; "
-		f"Location={response.headers.get('Location')!r}; set-cookies={len(set_cookies)}; "
-		f"cookies sent={sorted(cookies)}",
-	)
 	if response.status_code in _REDIRECT_STATUSES:
 		location = response.headers.get("Location")
 		if location and urlparse(location).scheme in ("http", "https"):

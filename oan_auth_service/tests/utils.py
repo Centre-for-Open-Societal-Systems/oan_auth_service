@@ -101,9 +101,10 @@ def ensure_gender(gender: str):
 IAM_SERVICE_DOCTYPE = "OAN IAM Service"
 
 
-def make_iam_service(key: str, default_roles=(), return_origins=(), **fields) -> str:
+def make_iam_service(key: str, default_roles=(), **fields) -> str:
 	"""Create (or replace) an enabled `OAN IAM Service` row, committed, and return its name."""
 	delete_iam_service(key)
+	fields.pop("return_origins", None)
 	doc = frappe.get_doc(
 		{
 			"doctype": IAM_SERVICE_DOCTYPE,
@@ -112,7 +113,6 @@ def make_iam_service(key: str, default_roles=(), return_origins=(), **fields) ->
 			"enabled": fields.pop("enabled", 1),
 			**fields,
 			"default_roles": [{"role": r} for r in default_roles],
-			"return_origins": [{"origin": o} for o in return_origins],
 		}
 	)
 	doc.insert(ignore_permissions=True)

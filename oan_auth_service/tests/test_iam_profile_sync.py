@@ -45,9 +45,26 @@ class TestSyncProfile(unittest.TestCase):
 		return frappe.db.get_value(
 			"User",
 			self.user,
-			["first_name", "last_name", "full_name", "mobile_no", "birth_date", "gender"],
+			["first_name", "last_name", "full_name", "mobile_no", "birth_date", "gender", "oan_login_email"],
 			as_dict=True,
 		)
+
+	def test_login_email_syncs_and_conflicts_are_skipped(self):
+		email = f"iam_{frappe.generate_hash(length=8)}@example.com"
+		self.assertTrue(iam_users.sync_profile(self.user, _principal(email=email)))
+		self.assertEqual(self.row().oan_login_email, email)
+
+		# Another account holding this email is skipped rather than failing
+		other_principal = _principal(sub=frappe.generate_hash(length=16))
+		other_user = iam_users.resolve_user(other_principal, SERVICE)
+		try:
+			iam_users.sync_profile(other_user, other_principal)
+			self.assertFalse(iam_users.sync_profile(other_user, {**other_principal, "email": email}))
+			other_row = frappe.db.get_value("User", other_user, ["oan_login_email"], as_dict=True)
+			self.assertIsNone(other_row.oan_login_email)
+		finally:
+			frappe.delete_doc("User", other_user, force=True, ignore_permissions=True)
+			frappe.db.commit()  # nosemgrep: frappe-manual-commit
 
 	def test_claims_fill_names_mobile_birth_date_and_gender(self):
 		self.assertTrue(iam_users.sync_profile(self.user, self.principal))

@@ -43,8 +43,8 @@ class TestIamUserinfo(unittest.TestCase):
 	def make_row(self, **fields):
 		make_iam_service(KEY, base_url=IAM_URL, provider_id=1, issuer=ISS, default_roles=[ROLE], **fields)
 
-	def principal(self, userinfo, token=None, iam_name="Token Name"):
-		"""`get_principal` with IAM answering `{sub, name}` and the provider answering `userinfo`."""
+	def principal(self, userinfo, token=None, iam_name="Token Name", cached=False):
+		"""`fetch_principal` (or `get_principal`, cached without the details) with IAM answering `{sub, name}` and the provider answering `userinfo`."""
 		token = token or _token()
 		iam = _response(json_body={"sub": "psut-1", "name": iam_name, "client_roles": {}})
 		service = settings.iam_service(KEY)
@@ -59,7 +59,8 @@ class TestIamUserinfo(unittest.TestCase):
 			raise AssertionError(url)
 
 		with patch("oan_auth_service.api.iam_tokens.requests.get", side_effect=get) as mock_get:
-			return iam_tokens.get_principal(token, service), mock_get
+			fn = iam_tokens.get_principal if cached else iam_tokens.fetch_principal
+			return fn(token, service), mock_get
 
 	def test_json_userinfo_adds_claims_but_never_replaces_the_token_subject(self):
 		userinfo = _response(
@@ -91,11 +92,14 @@ class TestIamUserinfo(unittest.TestCase):
 	def test_userinfo_is_asked_once_per_token(self):
 		userinfo = _response(json_body={"sub": "psut-1", "phone_number": "+251911234503"})
 		token = _token()
-		self.principal(userinfo, token)
+		self.principal(userinfo, token, cached=True)
 
-		_, mock_get = self.principal(userinfo, token)
+		principal, mock_get = self.principal(userinfo, token, cached=True)
 
 		self.assertEqual(mock_get.call_count, 0)
+		# The cache keeps identity and roles, not the person's details.
+		self.assertNotIn("phone_number", principal)
+		self.assertEqual(principal["sub"], "psut-1")
 
 	def test_userinfo_for_another_subject_is_not_merged(self):
 		userinfo = _response(json_body={"sub": "someone-else", "phone_number": "+251900000000"})

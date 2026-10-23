@@ -40,6 +40,12 @@ DELEGATED_USER_DOMAIN = "iam.internal"
 LOGIN_HOOK = "oan_auth_on_delegated_login"
 
 
+# Never granted by a login option, whether as a default role or by IAM's token roles:
+# `default_roles` go to anyone the provider authenticates, and IAM's role names are
+# used as-is, so a privileged role of that name would make its holder an admin here.
+REFUSED_ROLES = frozenset({"System Manager", "Administrator", "Guest", "All", "Desk User"})
+
+
 class LoginDenied(Exception):
 	"""Raised by an `oan_auth_on_delegated_login` hook to refuse the login with a 403."""
 
@@ -130,7 +136,7 @@ def sync_profile(user: str, principal: dict) -> bool:
 	current = frappe.db.get_value(
 		"User",
 		user,
-		["first_name", "last_name", "full_name", "mobile_no", "birth_date", "gender"],
+		["first_name", "last_name", "full_name", "mobile_no", "birth_date", "gender", "oan_login_email"],
 		as_dict=True,
 	)
 	if not current:
@@ -153,9 +159,28 @@ def sync_profile(user: str, principal: dict) -> bool:
 		wanted["gender"] = gender
 
 	changes = {k: v for k, v in wanted.items() if (current.get(k) or None) != (v or None)}
+	email_changed = _sync_login_email(user, principal.get("email"), current.get("oan_login_email"))
 	if not changes:
-		return False
+		return email_changed
 	frappe.db.set_value("User", user, changes, update_modified=False)
+	return True
+
+
+def _sync_login_email(user: str, claim, current: str | None) -> bool:
+	"""Record the provider's `email` claim as the account's login email.
+
+	The column is unique, so a claim another account already holds is skipped
+	rather than failing the sign-in. These accounts have no password, so the
+	address is only an identifier, never a way in.
+	"""
+	email = str(claim or "").strip().lower()
+	if not email or "@" not in email or email == (current or None):
+		return False
+	if frappe.db.exists("User", {"oan_login_email": email, "name": ("!=", user)}):
+		return False
+	from oan_auth_service.api.v1.auth import set_login_email
+
+	set_login_email(user, email)
 	return True
 
 
@@ -163,13 +188,13 @@ def granted_roles(principal: dict, service) -> set[str]:
 	"""Frappe roles login option `service` grants `principal`.
 
 	The row's `default_roles` plus the principal's roles under the row's
-	`application`, limited to roles that exist in Frappe. Callers must treat
-	empty as "no access".
+	`application`, limited to roles that exist in Frappe and are not in
+	`REFUSED_ROLES`. Callers must treat empty as "no access".
 	"""
 	wanted = set(service.default_roles or [])
 	if service.application:
 		wanted |= set(((principal.get("client_roles") or {}).get(service.application)) or [])
-	return {r for r in wanted if frappe.db.exists("Role", r)}
+	return {r for r in wanted - REFUSED_ROLES if frappe.db.exists("Role", r)}
 
 
 def sync_roles(user: str, principal: dict, service) -> bool:
