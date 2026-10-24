@@ -566,10 +566,19 @@ def to_crd_route(
 	return rule
 
 
-def to_crd_upstream(service: dict[str, Any], service_name: str, labels: dict[str, str]) -> dict[str, Any]:
-	"""Named after the Kubernetes Service it configures."""
+def to_crd_upstream(
+	service: dict[str, Any],
+	service_name: str,
+	labels: dict[str, str],
+	external: tuple[str, str] | None = None,
+) -> dict[str, Any]:
+	"""Named after the Kubernetes Service it configures. `external` is the
+	`(host, port)` placeholders of a node outside the cluster, see helm_external."""
 	up = service["upstream"]
-	spec: dict[str, Any] = {"scheme": up["scheme"], "passHost": up["pass_host"]}
+	spec: dict[str, Any] = {}
+	if external:
+		spec["externalNodes"] = [{"type": "Domain", "name": external[0], "port": external[1]}]
+	spec |= {"scheme": up["scheme"], "passHost": up["pass_host"]}
 	if "upstream_host" in up:
 		spec["upstreamHost"] = up["upstream_host"]
 	spec["retries"] = up["retries"]
@@ -635,13 +644,42 @@ def helm_render(text: str, values: dict[str, str], required: set[str], ints: set
 	return "\n".join(out)
 
 
+def helm_external(text: str, backends: list[tuple[str, str, str]], values: dict[str, str]) -> str:
+	"""Make each external-capable backend switch on its external host value.
+
+	Set: the ApisixUpstream lists the host as its only node, and routes reference that
+	upstream by name, so APISIX reaches an app in another cluster. Unset: the
+	externalNodes block is dropped and routes keep `backends`, so the controller resolves
+	the in-cluster Service.
+	"""
+	for name, port, host in backends:
+		cond = values[host.strip("${}")]
+		n, p, h = (re.escape(s) for s in (name, port, host))
+		text, routes = re.subn(
+			rf"^( *)backends:\n\1- serviceName: {n}\n\1  servicePort: {p}$",
+			rf"{{{{- if {cond} }}}}\n\1upstreams:\n\1- name: {name}\n{{{{- else }}}}\n"
+			rf"\1backends:\n\1- serviceName: {name}\n\1  servicePort: {port}\n{{{{- end }}}}",
+			text,
+			flags=re.M,
+		)
+		text, nodes = re.subn(
+			rf"^( *)externalNodes:\n\1- type: Domain\n\1  name: {h}\n\1  port: {p}\n",
+			rf"{{{{- if {cond} }}}}\n\g<0>{{{{- end }}}}\n",
+			text,
+			flags=re.M,
+		)
+		if not routes and not nodes:
+			raise SystemExit(f"No route or upstream found for external backend {name}.")
+	return text
+
+
 def write_helm_templates(
 	doc: dict[str, Any],
 	out_dir: Path,
 	header_lines: list[str],
 	*,
 	app: str,
-	backends: dict[str, tuple[str, str]],
+	backends: dict[str, tuple[str, ...]],
 	values: dict[str, str],
 	required: set[str],
 	ints: set[str],
@@ -651,14 +689,18 @@ def write_helm_templates(
 	One ApisixRoute per ADC service, one ApisixUpstream per backend Service carrying the
 	service's upstream settings (rewritten Host, timeouts, retries), and one
 	ApisixConsumer per consumer. `backends` maps each ADC service name to the
-	`(service name, port)` placeholders of its Kubernetes Service. `values` maps the
-	app's own placeholders to `.Values` paths, on top of HELM_COMMON_VALUES.
+	`(service name, port)` placeholders of its Kubernetes Service, plus optionally an
+	external host placeholder for a gateway in another cluster (see helm_external).
+	`values` maps the app's own placeholders to `.Values` paths, on top of
+	HELM_COMMON_VALUES.
 	"""
 	labels = {"app": app}
-	routes, upstreams = [], []
+	routes, upstreams, external = [], [], []
 	for service in doc["services"]:
-		svc_name, svc_port = backends[service["name"]]
+		svc_name, svc_port, *ext_host = backends[service["name"]]
 		backend = {"serviceName": svc_name, "servicePort": svc_port}
+		if ext_host:
+			external.append((svc_name, svc_port, ext_host[0]))
 		routes.append(
 			{
 				"apiVersion": "apisix.apache.org/v2",
@@ -670,7 +712,9 @@ def write_helm_templates(
 				},
 			}
 		)
-		upstreams.append(to_crd_upstream(service, svc_name, labels))
+		upstreams.append(
+			to_crd_upstream(service, svc_name, labels, (ext_host[0], svc_port) if ext_host else None)
+		)
 	consumers = [to_crd_consumer(c, labels) for c in doc.get("consumers", [])]
 
 	values = {**HELM_COMMON_VALUES, **values}
@@ -683,4 +727,6 @@ def write_helm_templates(
 		body = "---\n".join(
 			yaml.safe_dump(r, sort_keys=False, default_flow_style=False, width=100) for r in resources
 		)
+		if filename != "apisix-consumer.yaml":
+			body = helm_external(body, external, values)
 		(out_dir / filename).write_text(header + helm_render(body, values, required, ints))
