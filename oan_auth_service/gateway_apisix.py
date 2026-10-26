@@ -647,14 +647,16 @@ def helm_render(text: str, values: dict[str, str], required: set[str], ints: set
 def helm_external(text: str, backends: list[tuple[str, str, str]], values: dict[str, str]) -> str:
 	"""Make each external-capable backend switch on its external host value.
 
-	Set: the ApisixUpstream lists the host as its only node, and routes reference that
-	upstream by name, so APISIX reaches an app in another cluster. Unset: the
+	Set (a non-empty list of hosts): the ApisixUpstream lists every host as a node, with
+	the app's optional `healthCheck` block copied from its values, and routes reference
+	that upstream by name, so APISIX balances across an app in another cluster. Unset: the
 	externalNodes block is dropped and routes keep `backends`, so the controller resolves
 	the in-cluster Service.
 	"""
 	for name, port, host in backends:
 		cond = values[host.strip("${}")]
 		n, p, h = (re.escape(s) for s in (name, port, host))
+		port_expr = "$" + values[port.strip("${}")]
 		text, routes = re.subn(
 			rf"^( *)backends:\n\1- serviceName: {n}\n\1  servicePort: {p}$",
 			rf"{{{{- if {cond} }}}}\n\1upstreams:\n\1- name: {name}\n{{{{- else }}}}\n"
@@ -662,9 +664,20 @@ def helm_external(text: str, backends: list[tuple[str, str, str]], values: dict[
 			text,
 			flags=re.M,
 		)
+
+		def node_list(m: re.Match) -> str:
+			i = m[1]
+			scope = cond.rsplit(".", 1)[0]
+			return (
+				f"{{{{- if {cond} }}}}\n{i}externalNodes:\n{{{{- range {cond} }}}}\n"
+				f"{i}- type: Domain\n{i}  name: {{{{ . | quote }}}}\n{i}  port: {{{{ {port_expr} }}}}\n{{{{- end }}}}\n"
+				f"{{{{- with {scope}.healthCheck }}}}\n{i}healthCheck:\n"
+				f"{{{{- toYaml . | nindent {len(i) + 2} }}}}\n{{{{- end }}}}\n{{{{- end }}}}\n"
+			)
+
 		text, nodes = re.subn(
 			rf"^( *)externalNodes:\n\1- type: Domain\n\1  name: {h}\n\1  port: {p}\n",
-			rf"{{{{- if {cond} }}}}\n\g<0>{{{{- end }}}}\n",
+			node_list,
 			text,
 			flags=re.M,
 		)
