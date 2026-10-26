@@ -70,3 +70,27 @@ class TestLimitCount(unittest.TestCase):
 	def test_fails_closed_only_when_tier_says_so(self):
 		self.assertTrue(gw.limit_count(self.TIER, False)["allow_degradation"])
 		self.assertFalse(gw.limit_count({**self.TIER, "fail_open": False}, False)["allow_degradation"])
+
+
+class TestHelmExternal(unittest.TestCase):
+	def test_helm_external_renders_multinode_and_healthcheck(self):
+		template = (
+			"  backends:\n"
+			"  - serviceName: demo-svc\n"
+			"    servicePort: 8080\n"
+			"  externalNodes:\n"
+			"  - type: Domain\n"
+			"    name: demo.example.com\n"
+			"    port: 8080\n"
+		)
+		backends = [("demo-svc", "8080", "demo.example.com")]
+		values = {
+			"demo.example.com": ".Values.demo.externalHosts",
+			"8080": "Values.demo.port",
+		}
+		rendered = gw.helm_external(template, backends, values)
+		self.assertIn("{{- if .Values.demo.externalHosts }}", rendered)
+		self.assertIn("{{- range .Values.demo.externalHosts }}", rendered)
+		self.assertIn("port: {{ $Values.demo.port }}", rendered)
+		self.assertIn("{{- with .Values.demo.healthCheck }}", rendered)
+		self.assertIn("{{- toYaml . | nindent 4 }}", rendered)
