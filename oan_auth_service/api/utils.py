@@ -376,6 +376,24 @@ def require_role(roles: list[str]):
 	return decorator
 
 
+def require_permission(doctype: str, ptype: str):
+	"""Reject the call unless the caller holds `ptype` on `doctype` through DocPerm.
+
+	This is the doctype-level check only. Row-level access still comes from the
+	app's permission hooks when the handler loads the document.
+	"""
+
+	def decorator(fn):
+		@wraps(fn)
+		def wrapper(*args, **kwargs):
+			frappe.has_permission(doctype, ptype, throw=True)
+			return fn(*args, **kwargs)
+
+		return wrapper
+
+	return decorator
+
+
 # ---------------------------------------------------------------------------
 # Multi-value Parsing & Datetime Helpers
 # ---------------------------------------------------------------------------
