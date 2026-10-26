@@ -175,10 +175,12 @@ def service_for_token(token: str) -> frappe._dict:
 	IAM verifies the same token next, and the request fails if it does not.
 	"""
 	claims = peek_claims(token)
-	service = settings.iam_service_for_issuer(claims.get("iss"))
+	iss = claims.get("iss")
+	azp = claims.get("azp")
+	service = settings.iam_service_for_issuer(iss, azp=azp)
 	if service is None:
 		raise TokenError("Token issuer is not an enabled login option")
-	if service.client_id and claims.get("azp") != service.client_id:
+	if service.client_id and azp != service.client_id:
 		raise TokenError(f"Token azp does not match the client_id of login option {service.key!r}")
 	return service
 

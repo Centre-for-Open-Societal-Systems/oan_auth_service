@@ -89,11 +89,12 @@ class TestIAMServiceDocType(unittest.TestCase):
 		self.assertRefused(**valid(base_url="https://user:pw@iam.test"))
 		make_iam_service(KEY, **valid(base_url="http://localhost:8020"))
 
-	def test_issuer_unique_among_enabled_rows(self):
-		make_iam_service(KEY, **valid())
-		self.assertRefused(OTHER, **valid())
-		# A disabled row may repeat it.
-		make_iam_service(OTHER, enabled=0, **valid())
+	def test_issuer_can_be_shared_among_enabled_rows(self):
+		shared_iss = "https://idp.test/realms/shared"
+		make_iam_service(KEY, **valid(issuer=shared_iss, client_id="client-a"))
+		make_iam_service(OTHER, **valid(issuer=shared_iss, client_id="client-b"))
+		self.assertEqual(settings.iam_service_for_issuer(shared_iss, azp="client-a").key, KEY)
+		self.assertEqual(settings.iam_service_for_issuer(shared_iss, azp="client-b").key, OTHER)
 
 	def test_key_cannot_change(self):
 		make_iam_service(KEY, **valid())
@@ -135,6 +136,16 @@ class TestIAMServiceDocType(unittest.TestCase):
 		service = settings.iam_service(KEY)
 		self.assertEqual(service.default_roles, [ROLE])
 		self.assertEqual(settings.iam_service_for_issuer("https://idp.test/realms/staff").key, KEY)
+
+	def test_seed_default_iam_services(self):
+		from oan_auth_service.setup.install import DEFAULT_IAM_SERVICES, seed_default_iam_services
+
+		for spec in DEFAULT_IAM_SERVICES:
+			self.addCleanup(delete_iam_service, spec["key"])
+
+		seed_default_iam_services()
+		for spec in DEFAULT_IAM_SERVICES:
+			self.assertTrue(frappe.db.exists(IAM_SERVICE_DOCTYPE, spec["key"]))
 
 	def test_only_system_manager_can_write(self):
 		make_iam_service(KEY, **valid())

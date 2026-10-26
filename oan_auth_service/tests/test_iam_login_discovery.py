@@ -252,6 +252,48 @@ class TestIAMLoginDiscovery(unittest.TestCase):
 		status, _body = self.call("/api/v1/auth/iam/login", "POST", {"key": STAFF})
 		self.assertEqual(status, 400)
 
+	def test_login_defaults_when_only_one_iam_service_enabled(self):
+		# Temporarily disable any other enabled IAM service so only STAFF remains
+		other_services = frappe.get_all(
+			"OAN IAM Service",
+			filters={"enabled": 1, "name": ("!=", STAFF)},
+			pluck="name",
+		)
+		for name in other_services:
+			frappe.db.set_value("OAN IAM Service", name, "enabled", 0)
+		frappe.db.commit()  # nosemgrep: frappe-manual-commit
+		settings.clear_iam_services_cache()
+
+		try:
+			# GET /api/v1/auth/iam/providers reports default_provider
+			status, body = self.call("/api/v1/auth/iam/providers")
+			self.assertEqual(status, 200, body)
+			self.assertEqual(body["data"]["default_provider"], STAFF)
+
+			# POST /api/v1/auth/iam/login without key defaults to STAFF
+			return_url = f"{UI}/api/auth/iam/complete?key=t-staff"
+			status, body = self.call("/api/v1/auth/iam/login", "POST", {"return_url": return_url})
+			self.assertEqual(status, 200, body)
+			self.assertEqual(body["data"]["iam"], STAFF)
+
+			# POST with key="default" also defaults to STAFF
+			status, body = self.call(
+				"/api/v1/auth/iam/login", "POST", {"key": "default", "return_url": return_url}
+			)
+			self.assertEqual(status, 200, body)
+			self.assertEqual(body["data"]["iam"], STAFF)
+		finally:
+			for name in other_services:
+				frappe.db.set_value("OAN IAM Service", name, "enabled", 1)
+			frappe.db.commit()  # nosemgrep: frappe-manual-commit
+			settings.clear_iam_services_cache()
+
+	def test_login_omitting_key_fails_when_multiple_services_enabled(self):
+		return_url = f"{UI}/api/auth/iam/complete"
+		status, body = self.call("/api/v1/auth/iam/login", "POST", {"return_url": return_url})
+		self.assertEqual(status, 400, body)
+		self.assertIn("Multiple login options exist", body["message"])
+
 	# -- logout ---------------------------------------------------------------
 
 	def logout(self, iss=AGENT_ISS, cookies=None, body=None, **claims):
