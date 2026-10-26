@@ -32,7 +32,9 @@
 					"fallback('target_role', 'Grievance Submitter');",
 					"fallback('target_phone_number', '+2519' + Math.floor(10000000 + Math.random() * 89999999));",
 					"fallback('user_fayda_id', String(Math.floor(1e15 + Math.random() * 9e15)));",
-					"fallback('target_fayda_id', String(Math.floor(1e15 + Math.random() * 9e15)));"
+					"fallback('target_fayda_id', String(Math.floor(1e15 + Math.random() * 9e15)));",
+					"fallback('iam_login_key', 'default');",
+					"fallback('iam_return_url', 'http://localhost:3000/');"
 				]
 			}
 		}
@@ -413,9 +415,15 @@
 						}
 					},
 					"response": []
-				},
+				}
+			]
+		},
+		{
+			"name": "SSO",
+			"description": "Sign in through an OAN IAM Service. Run List login options, then Start SSO login and click the link in its Visualize tab to sign in at the identity provider. The remaining requests use the resulting IAM session.",
+			"item": [
 				{
-					"name": "Start a login option",
+					"name": "List login options",
 					"event": [
 						{
 							"listen": "test",
@@ -428,7 +436,58 @@
 									"pm.test('Response is a success envelope', function () {",
 									"    pm.response.to.be.json;",
 									"    pm.expect(pm.response.json().status).to.eql('success');",
-									"});"
+									"});",
+									"var data = {}; try { data = pm.response.json().data || {}; } catch (e) {}",
+									"if (data.default_provider) { pm.environment.set('iam_login_key', data.default_provider); }"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/v1/auth/iam/providers",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"auth",
+								"iam",
+								"providers"
+							]
+						},
+						"description": "Enabled login options in display order: one button per entry. Key `local` means this app's own username and password form, which posts to `/api/v1/auth/login`; any other key starts through `/api/v1/auth/iam/login`. Display fields only. Reads the database, never an IAM, so an IAM outage does not hide its button.",
+						"auth": {
+							"type": "noauth"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Start SSO login",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"pm.test('Response is a success envelope', function () {",
+									"    pm.response.to.be.json;",
+									"    pm.expect(pm.response.json().status).to.eql('success');",
+									"});",
+									"var data = {}; try { data = pm.response.json().data || {}; } catch (e) {}",
+									"if (data.redirect_url) {",
+									"    pm.environment.set('iam_redirect_url', data.redirect_url);",
+									"    pm.environment.set('iam_cookie_prefix', data.cookie_prefix || '');",
+									"    console.log('Sign in at: ' + data.redirect_url);",
+									"    pm.visualizer.set('<a href=\"{{url}}\" target=\"_blank\" style=\"font:16px sans-serif\">Open identity provider sign-in</a><p style=\"font:13px sans-serif\">After sign-in, run the next request.</p>', { url: data.redirect_url });",
+									"}"
 								]
 							}
 						}
@@ -461,6 +520,218 @@
 						"body": {
 							"mode": "raw",
 							"raw": "{\n    \"key\": \"{{iam_login_key}}\",\n    \"return_url\": \"{{iam_return_url}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Who am I (SSO token)",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"var prefix = pm.environment.get('iam_cookie_prefix') || '';",
+									"var iam_access_token = pm.cookies.get(prefix + 'X-Access-Token'); if (iam_access_token) { pm.environment.set('iam_access_token', iam_access_token); }",
+									"var iam_id_token = pm.cookies.get(prefix + 'X-ID-Token'); if (iam_id_token) { pm.environment.set('iam_id_token', iam_id_token); }",
+									"var iam_session_id = pm.cookies.get(prefix + 'X-Session-Id'); if (iam_session_id) { pm.environment.set('iam_session_id', iam_session_id); }",
+									"if (!pm.environment.get('iam_access_token')) {",
+									"    console.log('iam_access_token is empty: sign in at iam_redirect_url, then copy the X-Access-Token, X-ID-Token and X-Session-Id cookies (with prefix ' + prefix + ') into iam_access_token, iam_id_token and iam_session_id.');",
+									"}"
+								]
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"pm.test('Response is a success envelope', function () {",
+									"    pm.response.to.be.json;",
+									"    pm.expect(pm.response.json().status).to.eql('success');",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [
+							{
+								"key": "Cookie",
+								"value": "{{iam_cookie_prefix}}X-Access-Token={{iam_access_token}}; {{iam_cookie_prefix}}X-ID-Token={{iam_id_token}}; {{iam_cookie_prefix}}X-Session-Id={{iam_session_id}}"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/v1/auth/me",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"auth",
+								"me"
+							]
+						},
+						"description": "Introspect the signed-in user. Sends the IAM cookies (X-Access-Token, X-ID-Token, X-Session-Id) in a Cookie header, not a Bearer token: the IAM access token has no `kid`, so a gateway that verifies Bearer tokens refuses it. Needs `iam_access_token`, `iam_id_token` and `iam_session_id`: read from the cookie jar when Postman holds the IAM cookies, else paste them.",
+						"auth": {
+							"type": "noauth"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Refresh SSO session",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"var prefix = pm.environment.get('iam_cookie_prefix') || '';",
+									"var iam_access_token = pm.cookies.get(prefix + 'X-Access-Token'); if (iam_access_token) { pm.environment.set('iam_access_token', iam_access_token); }",
+									"var iam_id_token = pm.cookies.get(prefix + 'X-ID-Token'); if (iam_id_token) { pm.environment.set('iam_id_token', iam_id_token); }",
+									"var iam_session_id = pm.cookies.get(prefix + 'X-Session-Id'); if (iam_session_id) { pm.environment.set('iam_session_id', iam_session_id); }",
+									"if (!pm.environment.get('iam_access_token')) {",
+									"    console.log('iam_access_token is empty: sign in at iam_redirect_url, then copy the X-Access-Token, X-ID-Token and X-Session-Id cookies (with prefix ' + prefix + ') into iam_access_token, iam_id_token and iam_session_id.');",
+									"}"
+								]
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200 (or 401 when the IAM session is over)', function () {",
+									"    pm.expect(pm.response.code).to.be.oneOf([200, 401]);",
+									"});",
+									"var prefix = pm.environment.get('iam_cookie_prefix') || '';",
+									"var iam_access_token = pm.cookies.get(prefix + 'X-Access-Token'); if (iam_access_token) { pm.environment.set('iam_access_token', iam_access_token); }",
+									"var iam_id_token = pm.cookies.get(prefix + 'X-ID-Token'); if (iam_id_token) { pm.environment.set('iam_id_token', iam_id_token); }",
+									"var iam_session_id = pm.cookies.get(prefix + 'X-Session-Id'); if (iam_session_id) { pm.environment.set('iam_session_id', iam_session_id); }"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Cookie",
+								"value": "{{iam_cookie_prefix}}X-Access-Token={{iam_access_token}}; {{iam_cookie_prefix}}X-ID-Token={{iam_id_token}}; {{iam_cookie_prefix}}X-Session-Id={{iam_session_id}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/v1/auth/refresh",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"auth",
+								"refresh"
+							]
+						},
+						"description": "Send `access_token` only (expired is accepted). IAM refreshes from its own cookies, so they must be in the cookie jar for base_url. 401: session over. 503: IAM down, retry. Needs `iam_access_token`, `iam_id_token` and `iam_session_id`: read from the cookie jar when Postman holds the IAM cookies, else paste them.",
+						"auth": {
+							"type": "noauth"
+						},
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"access_token\": \"{{iam_access_token}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Log out of SSO",
+					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"var prefix = pm.environment.get('iam_cookie_prefix') || '';",
+									"var iam_access_token = pm.cookies.get(prefix + 'X-Access-Token'); if (iam_access_token) { pm.environment.set('iam_access_token', iam_access_token); }",
+									"var iam_id_token = pm.cookies.get(prefix + 'X-ID-Token'); if (iam_id_token) { pm.environment.set('iam_id_token', iam_id_token); }",
+									"var iam_session_id = pm.cookies.get(prefix + 'X-Session-Id'); if (iam_session_id) { pm.environment.set('iam_session_id', iam_session_id); }",
+									"if (!pm.environment.get('iam_access_token')) {",
+									"    console.log('iam_access_token is empty: sign in at iam_redirect_url, then copy the X-Access-Token, X-ID-Token and X-Session-Id cookies (with prefix ' + prefix + ') into iam_access_token, iam_id_token and iam_session_id.');",
+									"}"
+								]
+							}
+						},
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"pm.test('Response is a success envelope', function () {",
+									"    pm.response.to.be.json;",
+									"    pm.expect(pm.response.json().status).to.eql('success');",
+									"});",
+									"pm.environment.unset('iam_access_token');",
+									"pm.environment.unset('iam_id_token');",
+									"pm.environment.unset('iam_session_id');"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Cookie",
+								"value": "{{iam_cookie_prefix}}X-Access-Token={{iam_access_token}}; {{iam_cookie_prefix}}X-ID-Token={{iam_id_token}}; {{iam_cookie_prefix}}X-Session-Id={{iam_session_id}}"
+							},
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"url": {
+							"raw": "{{base_url}}/api/v1/auth/logout",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"auth",
+								"logout"
+							]
+						},
+						"description": "Send `access_token` only. Ends the IAM session; `provider_logout: false` with a `logout_url` means open that URL in a browser to end the provider session too. Needs `iam_access_token`, `iam_id_token` and `iam_session_id`: read from the cookie jar when Postman holds the IAM cookies, else paste them.",
+						"auth": {
+							"type": "noauth"
+						},
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"access_token\": \"{{iam_access_token}}\"\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -1703,54 +1974,6 @@
 									"language": "json"
 								}
 							}
-						}
-					},
-					"response": []
-				}
-			]
-		},
-		{
-			"name": "Auth",
-			"description": "Operations for Auth",
-			"item": [
-				{
-					"name": "List login options",
-					"event": [
-						{
-							"listen": "test",
-							"script": {
-								"type": "text/javascript",
-								"exec": [
-									"pm.test('Status code is 200', function () {",
-									"    pm.response.to.have.status(200);",
-									"});",
-									"pm.test('Response is a success envelope', function () {",
-									"    pm.response.to.be.json;",
-									"    pm.expect(pm.response.json().status).to.eql('success');",
-									"});"
-								]
-							}
-						}
-					],
-					"request": {
-						"method": "GET",
-						"header": [],
-						"url": {
-							"raw": "{{base_url}}/api/v1/auth/iam/providers",
-							"host": [
-								"{{base_url}}"
-							],
-							"path": [
-								"api",
-								"v1",
-								"auth",
-								"iam",
-								"providers"
-							]
-						},
-						"description": "Enabled login options in display order: one button per entry. Key `local` means this app's own username and password form, which posts to `/api/v1/auth/login`; any other key starts through `/api/v1/auth/iam/login`. Display fields only. Reads the database, never an IAM, so an IAM outage does not hide its button.",
-						"auth": {
-							"type": "noauth"
 						}
 					},
 					"response": []

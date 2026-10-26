@@ -198,6 +198,14 @@ VARIABLES = {
 	"reset_key": ("secret", "From the password reset email link"),
 	"iam_login_key": ("default", "Key of an enabled OAN IAM Service row, e.g. staff"),
 	"iam_return_url": ("default", "Absolute URL on one of that row's return origins"),
+	"iam_redirect_url": ("default", "Set by SSO > Start SSO login. Open it in a browser to sign in"),
+	"iam_cookie_prefix": ("default", "Set by SSO > Start SSO login"),
+	"iam_access_token": (
+		"secret",
+		"Value of the <cookie_prefix>X-Access-Token cookie. Read from the cookie jar, or paste it after the IAM callback",
+	),
+	"iam_id_token": ("secret", "Value of the <cookie_prefix>X-ID-Token cookie"),
+	"iam_session_id": ("secret", "Value of the <cookie_prefix>X-Session-Id cookie"),
 	"admin_username": ("default", "A System Manager, used by Admin > Sign in as admin"),
 	"admin_password": ("secret", "Password of admin_username"),
 	"admin_access_token": ("secret", "Set by Admin > Sign in as admin"),
@@ -295,10 +303,149 @@ def build_item(method: str, path: str, op: dict) -> dict:
 	}
 
 
+# --- SSO folder -------------------------------------------------------------
+# The two IAM routes the spec documents move here from Authentication & Session,
+# and three requests that act on the resulting session are added. A script cannot
+# open a browser, so Start SSO login renders `redirect_url` as a link in the
+# Visualize tab; clicking it is the redirect.
+SSO_KEYS = {("GET", "/api/v1/auth/iam/providers"), ("POST", "/api/v1/auth/iam/login")}
+
+SSO_SAVE_PROVIDER = [
+	"var data = {}; try { data = pm.response.json().data || {}; } catch (e) {}",
+	"if (data.default_provider) { pm.environment.set('iam_login_key', data.default_provider); }",
+]
+
+SSO_REDIRECT = [
+	"var data = {}; try { data = pm.response.json().data || {}; } catch (e) {}",
+	"if (data.redirect_url) {",
+	"    pm.environment.set('iam_redirect_url', data.redirect_url);",
+	"    pm.environment.set('iam_cookie_prefix', data.cookie_prefix || '');",
+	"    console.log('Sign in at: ' + data.redirect_url);",
+	'    pm.visualizer.set(\'<a href="{{url}}" target="_blank" style="font:16px sans-serif">Open identity provider sign-in</a><p style="font:13px sans-serif">After sign-in, run the next request.</p>\', { url: data.redirect_url });',
+	"}",
+]
+
+# The IAM access token has no `kid`, so a gateway that verifies Bearer tokens
+# rejects it. The SSO requests send the IAM cookies instead, in a Cookie header.
+# Postman keeps cookies per domain, so the jar holds them only when the IAM callback
+# set them on base_url's domain. Otherwise paste the three values into the
+# environment by hand.
+SSO_COOKIES = {
+	"iam_access_token": "X-Access-Token",
+	"iam_id_token": "X-ID-Token",
+	"iam_session_id": "X-Session-Id",
+}
+
+SSO_RELOAD_TOKEN = [
+	"var prefix = pm.environment.get('iam_cookie_prefix') || '';",
+	*[
+		f"var {var} = pm.cookies.get(prefix + '{name}'); if ({var}) {{ pm.environment.set('{var}', {var}); }}"
+		for var, name in SSO_COOKIES.items()
+	],
+]
+
+SSO_LOAD_TOKEN = [
+	*SSO_RELOAD_TOKEN,
+	"if (!pm.environment.get('iam_access_token')) {",
+	"    console.log('iam_access_token is empty: sign in at iam_redirect_url, then copy the X-Access-Token, X-ID-Token and X-Session-Id cookies (with prefix ' + prefix + ') into iam_access_token, iam_id_token and iam_session_id.');",
+	"}",
+]
+
+SSO_CLEAR = [f"pm.environment.unset('{var}');" for var in SSO_COOKIES]
+
+SSO_COOKIE_HEADER = "; ".join(
+	"{{iam_cookie_prefix}}" + name + "={{" + var + "}}" for var, name in SSO_COOKIES.items()
+)
+
+
+def sso_item(
+	name: str,
+	method: str,
+	path: str,
+	description: str,
+	body: dict | None,
+	pre: list[str],
+	test: list[str],
+	with_cookies: bool = True,
+) -> dict:
+	request = {
+		"method": method,
+		"header": [],
+		"url": build_url(path, []),
+		"description": description,
+	}
+	request["auth"] = {"type": "noauth"}
+	if with_cookies:
+		request["header"].append({"key": "Cookie", "value": SSO_COOKIE_HEADER})
+	if body is not None:
+		request["header"].append({"key": "Content-Type", "value": "application/json"})
+		request["body"] = {
+			"mode": "raw",
+			"raw": json.dumps(body, indent=4),
+			"options": {"raw": {"language": "json"}},
+		}
+	return {
+		"name": name,
+		"event": [script("prerequest", pre), script("test", test)],
+		"request": request,
+		"response": [],
+	}
+
+
+def build_sso_folder(entries: list[tuple[int, dict]]) -> dict:
+	items = [item for _, item in sorted(entries, key=lambda x: x[0])]
+	by_name = {i["name"]: i for i in items}
+	providers = by_name["List login options"]
+	start = by_name["Start a login option"]
+	providers["event"][0]["script"]["exec"] += SSO_SAVE_PROVIDER
+	start["event"][0]["script"]["exec"] += SSO_REDIRECT
+	start["name"] = "Start SSO login"
+
+	cookie_note = " Needs `iam_access_token`, `iam_id_token` and `iam_session_id`: read from the cookie jar when Postman holds the IAM cookies, else paste them."
+	extras = [
+		sso_item(
+			"Who am I (SSO token)",
+			"GET",
+			"/api/v1/auth/me",
+			"Introspect the signed-in user. Sends the IAM cookies (X-Access-Token, X-ID-Token, X-Session-Id) in a Cookie header, not a Bearer token: the IAM access token has no `kid`, so a gateway that verifies Bearer tokens refuses it."
+			+ cookie_note,
+			None,
+			SSO_LOAD_TOKEN,
+			status_test("200"),
+		),
+		sso_item(
+			"Refresh SSO session",
+			"POST",
+			"/api/v1/auth/refresh",
+			"Send `access_token` only (expired is accepted). IAM refreshes from its own cookies, so they must be in the cookie jar for base_url. 401: session over. 503: IAM down, retry."
+			+ cookie_note,
+			{"access_token": "{{iam_access_token}}"},
+			SSO_LOAD_TOKEN,
+			status_test("200", ("401", "when the IAM session is over")) + SSO_RELOAD_TOKEN,
+		),
+		sso_item(
+			"Log out of SSO",
+			"POST",
+			"/api/v1/auth/logout",
+			"Send `access_token` only. Ends the IAM session; `provider_logout: false` with a `logout_url` means open that URL in a browser to end the provider session too."
+			+ cookie_note,
+			{"access_token": "{{iam_access_token}}"},
+			SSO_LOAD_TOKEN,
+			status_test("200") + SSO_CLEAR,
+		),
+	]
+	return {
+		"name": "SSO",
+		"description": "Sign in through an OAN IAM Service. Run List login options, then Start SSO login and click the link in its Visualize tab to sign in at the identity provider. The remaining requests use the resulting IAM session.",
+		"item": [providers, start, *extras],
+	}
+
+
 def build_collection(spec: dict) -> dict:
 	order = {key: i for i, key in enumerate(REQUEST_ORDER)}
 	folders: dict[str, list[tuple[int, dict]]] = {}
 	unordered = []
+	sso_entries: list[tuple[int, dict]] = []
 
 	for path, methods in spec["paths"].items():
 		if path in LEGACY_PATHS:
@@ -307,6 +454,9 @@ def build_collection(spec: dict) -> dict:
 			key = (method.upper(), path)
 			if key not in order:
 				unordered.append(key)
+				continue
+			if key in SSO_KEYS:
+				sso_entries.append((order[key], build_item(key[0], path, op)))
 				continue
 			tag = op["tags"][0]
 			folders.setdefault(tag, []).append((order[key], build_item(key[0], path, op)))
@@ -342,8 +492,17 @@ def build_collection(spec: dict) -> dict:
 			"bearer": [{"key": "token", "value": "{{access_token}}", "type": "string"}],
 		},
 		"event": [script("prerequest", DEFAULTS_SCRIPT)],
-		"item": [build_folder(tag, tag_descriptions, folders[tag]) for tag in tags],
+		"item": with_sso_folder(
+			[build_folder(tag, tag_descriptions, folders[tag]) for tag in tags], sso_entries
+		),
 	}
+
+
+def with_sso_folder(items: list[dict], sso_entries: list[tuple[int, dict]]) -> list[dict]:
+	"""Place the SSO folder straight after Authentication & Session."""
+	sso = build_sso_folder(sso_entries)
+	at = next((i + 1 for i, f in enumerate(items) if f["name"] == "Authentication & Session"), len(items))
+	return [*items[:at], sso, *items[at:]]
 
 
 def build_folder(tag: str, descriptions: dict, entries: list[tuple[int, dict]]) -> dict:
@@ -408,6 +567,8 @@ DEFAULTS_SCRIPT = [
 	"fallback('target_phone_number', '+2519' + Math.floor(10000000 + Math.random() * 89999999));",
 	"fallback('user_fayda_id', String(Math.floor(1e15 + Math.random() * 9e15)));",
 	"fallback('target_fayda_id', String(Math.floor(1e15 + Math.random() * 9e15)));",
+	"fallback('iam_login_key', 'default');",
+	"fallback('iam_return_url', 'http://localhost:3000/');",
 ]
 
 # A fresh value per run for anything that must be unique, so a second run does not
