@@ -66,6 +66,41 @@
 			"description": "Absolute URL on one of that row's return origins"
 		},
 		{
+			"key": "iam_redirect_url",
+			"value": "",
+			"type": "default",
+			"enabled": true,
+			"description": "Set by SSO > Start SSO login. Open it in a browser to sign in"
+		},
+		{
+			"key": "iam_cookie_prefix",
+			"value": "",
+			"type": "default",
+			"enabled": true,
+			"description": "Set by SSO > Start SSO login"
+		},
+		{
+			"key": "iam_access_token",
+			"value": "",
+			"type": "secret",
+			"enabled": true,
+			"description": "Value of the <cookie_prefix>X-Access-Token cookie. Read from the cookie jar, or paste it after the IAM callback"
+		},
+		{
+			"key": "iam_id_token",
+			"value": "",
+			"type": "secret",
+			"enabled": true,
+			"description": "Value of the <cookie_prefix>X-ID-Token cookie"
+		},
+		{
+			"key": "iam_session_id",
+			"value": "",
+			"type": "secret",
+			"enabled": true,
+			"description": "Value of the <cookie_prefix>X-Session-Id cookie"
+		},
+		{
 			"key": "admin_username",
 			"value": "",
 			"type": "default",

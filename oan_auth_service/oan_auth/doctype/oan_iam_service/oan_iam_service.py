@@ -39,7 +39,6 @@ class OANIAMService(Document):
 
 		self._validate_iam()
 		self._validate_roles()
-		self._validate_issuer_unique()
 
 	def _validate_local(self):
 		if any(self.get(f) for f in IAM_FIELDS) or self.default_roles:
@@ -107,17 +106,6 @@ class OANIAMService(Document):
 					"These roles cannot be default roles, they would go to anyone the provider authenticates: {0}"
 				).format(", ".join(refused))
 			)
-
-	def _validate_issuer_unique(self):
-		if not self.enabled:
-			return
-		clash = frappe.db.get_value(
-			"OAN IAM Service",
-			{"issuer": self.issuer, "enabled": 1, "name": ("!=", self.name or "")},
-			"name",
-		)
-		if clash:
-			frappe.throw(_("Issuer is already used by the enabled row {0}.").format(frappe.bold(clash)))
 
 	def on_update(self):
 		_clear_cache()

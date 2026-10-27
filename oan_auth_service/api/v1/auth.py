@@ -282,8 +282,10 @@ class LogoutSchema(_SessionCredentialSchema):
 
 
 class IAMLoginSchema(BaseModel):
-	key: str = Field(
-		..., min_length=1, max_length=64, description="Key of an enabled login option, e.g. `staff`."
+	key: str | None = Field(
+		default=None,
+		max_length=64,
+		description="Key of an enabled login option, e.g. `staff`. Optional if only one IAM service is enabled.",
 	)
 	return_url: str = Field(
 		...,
@@ -1315,8 +1317,19 @@ def _relay_set_cookies(set_cookies: list[str]) -> None:
 		frappe.local.response_headers.add("Set-Cookie", header)
 
 
-def _enabled_iam_service(key: str):
-	"""The enabled IAM login option `key`, or a 400. The same answer for unknown, disabled and `local`."""
+def _enabled_iam_service(key: str | None = None):
+	"""The enabled IAM login option `key`, or a 400. The same answer for unknown, disabled and `local`.
+
+	If `key` is None, empty, or 'default', defaults to the single enabled IAM option if only one exists.
+	"""
+	if not key or key == "default":
+		iam_options = [s for s in settings.iam_services() if s.key != settings.LOCAL_LOGIN_KEY]
+		if len(iam_options) == 1:
+			return iam_options[0]
+		if not iam_options:
+			frappe.throw(_("No identity provider login option is enabled."), frappe.ValidationError)
+		frappe.throw(_("Multiple login options exist; 'key' is required."), frappe.ValidationError)
+
 	service = settings.iam_service(key)
 	if service is None:
 		frappe.throw(_("Unknown login option."), frappe.ValidationError)
@@ -1328,24 +1341,27 @@ def _enabled_iam_service(key: str):
 	methods=("GET",),
 	auth="public",
 	summary="List login options",
-	description="Enabled login options in display order: one button per entry. Key `local` means this app's own username and password form, which posts to `/api/v1/auth/login`; any other key starts through `/api/v1/auth/iam/login`. Display fields only. Reads the database, never an IAM, so an IAM outage does not hide its button.",
+	description="Enabled login options in display order: one button per entry. Key `local` means this app's own username and password form, which posts to `/api/v1/auth/login`; any other key starts through `/api/v1/auth/iam/login`. Returns `default_provider` if only one IAM login option is enabled. Display fields only. Reads the database, never an IAM, so an IAM outage does not hide its button.",
 )
 @handle_api_errors
 def get_iam_providers():
-	"""Return `key`, `label` and `icon_url` of every enabled `OAN IAM Service` row."""
-	providers = [{"key": s.key, "label": s.label, "icon_url": s.icon or ""} for s in settings.iam_services()]
-	return success_response(data={"providers": providers})
+	"""Return `key`, `label` and `icon_url` of every enabled `OAN IAM Service` row, plus `default_provider` if only one is enabled."""
+	services = settings.iam_services()
+	providers = [{"key": s.key, "label": s.label, "icon_url": s.icon or ""} for s in services]
+	iam_services = [s for s in services if s.key != settings.LOCAL_LOGIN_KEY]
+	default_provider = iam_services[0].key if len(iam_services) == 1 else None
+	return success_response(data={"providers": providers, "default_provider": default_provider})
 
 
 @route(
 	"/iam/login",
 	auth="public",
 	summary="Start a login option",
-	description="Start the login of an enabled IAM login option and return the identity provider URL to send the browser to (`window.location = redirect_url`). `return_url` must be an absolute http(s) URL; which callers may use this endpoint is controlled at the gateway. Also returns the option's `cookie_prefix`: after the IAM callback, the access token is in the `<cookie_prefix>X-Access-Token` cookie. Unknown, disabled or `local` key, or a `return_url` that is not an absolute URL: 400. IAM answered unusably: 502. IAM unreachable: 503.",
+	description="Start the login of an enabled IAM login option and return the identity provider URL to send the browser to (`window.location = redirect_url`). `key` is optional if only one IAM login option is enabled. `return_url` must be an absolute http(s) URL; which callers may use this endpoint is controlled at the gateway. Also returns the option's `cookie_prefix`: after the IAM callback, the access token is in the `<cookie_prefix>X-Access-Token` cookie. Unknown, disabled or `local` key, or a `return_url` that is not an absolute URL: 400. IAM answered unusably: 502. IAM unreachable: 503.",
 )
 @validate_request(IAMLoginSchema)
 @handle_api_errors
-def iam_login(key: str, return_url: str):
+def iam_login(return_url: str, key: str | None = None):
 	"""Start login option `key` at its IAM, after checking `return_url`.
 
 	IAM redirects the browser to whatever `redirect_uri` it is given, unchecked.

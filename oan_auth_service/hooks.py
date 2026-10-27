@@ -41,7 +41,10 @@ on_logout = "oan_auth_service.api.v1.auth.on_logout"
 
 after_install = "oan_auth_service.setup.install.after_install"
 
-after_migrate = ["oan_auth_service.api.permission_rules.warn_permission_drift"]
+after_migrate = [
+	"oan_auth_service.api.permission_rules.warn_permission_drift",
+	"oan_auth_service.setup.install.seed_default_iam_services",
+]
 
 
 # Fixtures

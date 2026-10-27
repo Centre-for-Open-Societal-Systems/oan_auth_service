@@ -191,9 +191,18 @@ def clear_iam_services_cache() -> None:
 	frappe.cache.delete_value(IAM_SERVICES_CACHE_KEY)
 
 
-def iam_service(key: str) -> frappe._dict | None:
-	"""The enabled IAM login option named `key`, or None. Never the `local` row."""
-	if not key or key == LOCAL_LOGIN_KEY:
+def iam_service(key: str | None = None) -> frappe._dict | None:
+	"""The enabled IAM login option named `key`, or None. Never the `local` row.
+
+	If `key` is None, empty, or 'default', and exactly one IAM option is enabled,
+	that option is returned as the default.
+	"""
+	if not key or key == "default":
+		iam_options = [s for s in iam_services() if s.key != LOCAL_LOGIN_KEY]
+		if len(iam_options) == 1:
+			return iam_options[0]
+		return None
+	if key == LOCAL_LOGIN_KEY:
 		return None
 	service = next((s for s in iam_services() if s.key == key), None)
 	if service is not None:
@@ -205,8 +214,21 @@ def iam_service(key: str) -> frappe._dict | None:
 	return None
 
 
-def iam_service_for_issuer(iss: str) -> frappe._dict | None:
-	"""The enabled IAM login option whose `issuer` is exactly `iss`, or None."""
+def iam_service_for_issuer(iss: str, azp: str | None = None) -> frappe._dict | None:
+	"""The enabled IAM login option whose `issuer` is exactly `iss`, or None.
+
+	When multiple options share the same issuer, `azp` (client_id) disambiguates.
+	"""
 	if not iss:
 		return None
-	return next((s for s in iam_services() if s.key != LOCAL_LOGIN_KEY and s.issuer == iss), None)
+	candidates = [s for s in iam_services() if s.key != LOCAL_LOGIN_KEY and s.issuer == iss]
+	if not candidates:
+		return None
+	if azp:
+		for s in candidates:
+			if s.client_id == azp:
+				return s
+	for s in candidates:
+		if not s.client_id:
+			return s
+	return candidates[0]
