@@ -197,7 +197,7 @@ def token_digest(token: str) -> str:
 # what IAM grants them. The person's details (phone, birthdate, national id, ...) are
 # not kept: they reach `sync_profile` and the login hooks once per token, from
 # `fetch_principal`, and the consuming app stores what it needs.
-PRINCIPAL_CACHED_KEYS = ("sub", "name", "client_roles")
+PRINCIPAL_CACHED_KEYS = ("sub", "name", "client_roles", "email")
 
 
 def slim_principal(principal: dict) -> dict:
