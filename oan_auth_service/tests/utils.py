@@ -127,3 +127,10 @@ def delete_iam_service(key: str) -> None:
 		frappe.delete_doc(IAM_SERVICE_DOCTYPE, key, force=True, ignore_permissions=True)
 		frappe.db.commit()  # nosemgrep: frappe-manual-commit
 	settings.clear_iam_services_cache()
+
+
+def clear_rate_limits():
+	"""Forget every rate-limit counter. They live in Redis and outlive a test run, so a test
+	that calls a limited endpoint clears them before and after, or a rerun inside the window
+	would be refused."""
+	frappe.cache.delete_keys("oan_auth:")

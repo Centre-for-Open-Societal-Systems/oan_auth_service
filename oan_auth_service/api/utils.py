@@ -15,6 +15,7 @@ from frappe import _
 from pydantic import BaseModel, BeforeValidator, Field, TypeAdapter
 from pydantic import ValidationError as PydanticValidationError
 
+from oan_auth_service.api.field_errors import validation_details
 from oan_auth_service.api.jwt_keys import JWTKeyConfigurationError
 
 
@@ -102,7 +103,7 @@ def validate_email_string(v: str | None) -> str | None:
 		from frappe.utils import validate_email_address
 
 		if not validate_email_address(v):
-			raise ValueError("Invalid email address format")
+			raise ValueError("Email address is not in a valid format.")
 	return v
 
 
@@ -194,23 +195,31 @@ SafeEmail = Annotated[str | None, BeforeValidator(validate_email_string)]
 
 
 def check_rate_limit(key: str, limit: int, window: int):
-	"""Apply rate limits using Redis counter.
+	"""Allow `limit` calls per `window` seconds for `key`, then answer 429.
+
+	The counter is a plain Redis integer under Frappe's site-prefixed key. It is read and
+	written through the same key (an earlier version read through `get_value` and wrote
+	through a raw pipeline under the bare key, so the count it read was always 0 and nothing
+	was ever limited). INCR is atomic, so concurrent callers cannot both slip under the
+	limit, and a counter that somehow has no expiry gets one rather than blocking forever.
 
 	:param key: unique identifier per caller and endpoint
 	:param limit: max calls allowed in window
 	:param window: seconds
 	"""
 	cache = frappe.cache
-	count = cache.get_value(key) or 0
-
-	if int(count) >= limit:
-		frappe.response.status_code = 429
-		frappe.throw(_("Rate limit exceeded. Try again later."), frappe.ValidationError)
+	redis_key = cache.make_key(key)
 
 	pipeline = cache.pipeline()
-	pipeline.incr(key)
-	pipeline.expire(key, window)
-	pipeline.execute()
+	pipeline.incr(redis_key)
+	pipeline.ttl(redis_key)
+	count, ttl = pipeline.execute()
+
+	if ttl == -1:
+		cache.expire(redis_key, window)
+
+	if count > limit:
+		raise frappe.TooManyRequestsError(_("Rate limit exceeded. Try again later."))
 
 
 # ---------------------------------------------------------------------------
@@ -256,10 +265,7 @@ def validate_request(schema: type[BaseModel], exclude_unset: bool = False):
 			try:
 				validated = schema(**params)
 			except PydanticValidationError as e:
-				errors = {}
-				for err in e.errors():
-					loc = ".".join(str(loc_item) for loc_item in err["loc"])
-					errors[loc] = err["msg"]
+				errors = validation_details(e)
 
 				frappe.response["http_status_code"] = 400
 				frappe.local.message_log = []
@@ -786,10 +792,7 @@ def handle_api_errors(func):
 			# would otherwise resolve to 400 anyway.)
 			# 400 here must stay in step with `validate_request` — see its docstring
 			# for why this service uses 400 rather than 422.
-			errors = {}
-			for err in e.errors():
-				loc = ".".join(str(loc_item) for loc_item in err["loc"])
-				errors[loc] = err["msg"]
+			errors = validation_details(e)
 			_rollback()
 			frappe.local.message_log = []
 			frappe.response["http_status_code"] = 400

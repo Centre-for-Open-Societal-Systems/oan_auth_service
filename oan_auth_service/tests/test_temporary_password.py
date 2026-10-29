@@ -13,7 +13,7 @@ from oan_auth_service.api.router import ensure_routes_registered
 from oan_auth_service.api.v1.auth import _issue_token_pair, issue_temporary_password
 from oan_auth_service.setup.install import MUST_CHANGE_PASSWORD_FIELD
 from oan_auth_service.tests.test_router import make_test_request
-from oan_auth_service.tests.utils import cleanup_user, configured_keys, make_user
+from oan_auth_service.tests.utils import cleanup_user, clear_rate_limits, configured_keys, make_user
 
 TEMPORARY = "Temp1234"
 OWN = "MyOwnPassword1!"
@@ -34,8 +34,8 @@ class TestTemporaryPassword(unittest.TestCase):
 		ensure_routes_registered()
 		self.users = []
 		# The endpoints are rate limited per caller address; start each test with a clean budget.
-		for key in ("oan_auth:set_initial_pwd:127.0.0.1",):
-			frappe.cache.delete_value(key)
+		clear_rate_limits()
+		self.addCleanup(clear_rate_limits)
 
 	def tearDown(self):
 		for user in self.users:

@@ -16,7 +16,7 @@ from oan_auth_service.api.router import (
 )
 from oan_auth_service.api.utils import handle_api_errors
 from oan_auth_service.config import settings
-from oan_auth_service.tests.utils import configured_keys, ensure_role, override_conf
+from oan_auth_service.tests.utils import clear_rate_limits, configured_keys, ensure_role, override_conf
 
 
 def make_test_request(
@@ -96,6 +96,8 @@ class TestHTTPSValidationAndEnforcement(unittest.TestCase):
 class TestRESTAuthEndpoints(unittest.TestCase):
 	def setUp(self):
 		ensure_routes_registered()
+		clear_rate_limits()
+		self.addCleanup(clear_rate_limits)
 		self.created_users = []
 		self.created_contacts = []
 		ensure_role("Customer")
