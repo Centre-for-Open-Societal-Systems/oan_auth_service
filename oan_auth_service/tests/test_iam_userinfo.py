@@ -62,6 +62,33 @@ class TestIamUserinfo(unittest.TestCase):
 			fn = iam_tokens.get_principal if cached else iam_tokens.fetch_principal
 			return fn(token, service), mock_get
 
+	def logged_in_user(self, answer, principal=None):
+		"""`with_logged_in_user` with IAM's `/auth/get_logged_in_user` answering `answer`."""
+		principal = principal or {"sub": "psut-1", "name": "Token Name", "client_roles": {}}
+		with patch("oan_auth_service.api.iam_tokens.requests.get", return_value=answer):
+			return iam_tokens.with_logged_in_user(settings.iam_service(KEY), _token(), principal)
+
+	def test_logged_in_user_adds_the_email_iam_profile_drops(self):
+		answer = _response(
+			json_body={"sub": "psut-1", "email": "a@x.org", "given_name": "A", "name": "Other"}
+		)
+		principal = self.logged_in_user(answer)
+		self.assertEqual(principal["email"], "a@x.org")
+		self.assertEqual(principal["name"], "Token Name")
+
+	def test_logged_in_user_of_another_subject_is_ignored(self):
+		principal = self.logged_in_user(_response(json_body={"sub": "someone-else", "email": "a@x.org"}))
+		self.assertNotIn("email", principal)
+
+	def test_missing_logged_in_user_route_leaves_the_principal(self):
+		principal = self.logged_in_user(_response(status=404, json_body={}))
+		self.assertEqual(principal["sub"], "psut-1")
+		self.assertNotIn("email", principal)
+
+	def test_fetch_principal_does_not_ask_for_the_logged_in_user(self):
+		_, mock_get = self.principal(_response(json_body={"sub": "psut-1"}))
+		self.assertNotIn("/auth/get_logged_in_user", [c.args[0] for c in mock_get.call_args_list])
+
 	def test_json_userinfo_adds_claims_but_never_replaces_the_token_subject(self):
 		userinfo = _response(
 			json_body={

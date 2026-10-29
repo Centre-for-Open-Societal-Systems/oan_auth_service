@@ -110,6 +110,9 @@ class FakeIAM:
 		return token
 
 	def get(self, url, headers=None, **_kwargs):
+		if url.endswith("/auth/get_logged_in_user"):
+			# The optional email/name lookup: this fake IAM does not have the route.
+			return _Response(404, {})
 		self.urls.append(url)
 		if self.down:
 			raise requests.ConnectionError("IAM down")

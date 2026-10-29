@@ -157,7 +157,7 @@ DEFAULT_IAM_SERVICES = [
 		"client_id": "iam-staff-portal",
 		"application": "oan-client-id",
 		"return_origins": "http://localhost:3000\nhttp://localhost:3002",
-		"default_roles": ["Grievance Assisted Submitter"],
+		"default_roles": [],
 	},
 	{
 		"key": "beneficiary",

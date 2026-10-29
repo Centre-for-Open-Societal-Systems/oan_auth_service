@@ -73,7 +73,7 @@ class OANIAMService(Document):
 		if not iam_tokens.is_secure_url(self.base_url):
 			frappe.throw(
 				_(
-					"Base URL must use https (plain http is allowed only for localhost): bearer tokens are sent there."
+					"Base URL must use https (plain http is allowed only for loopback hosts: localhost, 127.0.0.1, *.localhost, *.localtest.me): bearer tokens are sent there."
 				)
 			)
 		for field, label in (("userinfo_url", "Userinfo URL"), ("jwks_url", "Userinfo Keys URL")):
@@ -81,7 +81,9 @@ class OANIAMService(Document):
 			self.set(field, value)
 			if value and not iam_tokens.is_secure_url(value):
 				frappe.throw(
-					_("{0} must use https (plain http is allowed only for localhost).").format(label)
+					_(
+						"{0} must use https (plain http is allowed only for loopback hosts: localhost, 127.0.0.1, *.localhost, *.localtest.me)."
+					).format(label)
 				)
 		if not COOKIE_PREFIX_PATTERN.match(self.cookie_prefix):
 			frappe.throw(_("Cookie Prefix may contain only letters, digits, '_', '.' and '-'."))

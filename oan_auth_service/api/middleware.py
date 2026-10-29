@@ -449,7 +449,12 @@ def _provision_delegated_user(claims: dict, service, token: str) -> str:
 				frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
 			_reject(f"Principal {sub} of login option {service.key} has no roles for this application")
 		created = not frappe.db.exists("User", user)
-		iam_users.resolve_user(claims, service)
+		# A first login may adopt an existing local account by email, and the
+		# cached principal has none: IAM's profile drops it. Asked only here.
+		resolve_from = (
+			{**claims, "email": _full_principal(service, token).get("email")} if created else claims
+		)
+		iam_users.resolve_user(resolve_from, service)
 	except tokens.TokenError as exc:
 		_reject(f"Invalid or expired token: {exc}")
 
@@ -492,23 +497,42 @@ def _full_principal(service, token: str) -> dict:
 	"""The principal with the person's details, asked of IAM and the provider.
 
 	The cache holds identity and roles only, so the hooks' input is fetched here,
-	once per token (the hooks' done-key). Reuses the in-request principal if
-	`get_principal` just fetched it on this request.
+	once per token (the hooks' done-key), with IAM's logged-in-user claims (email,
+	names) added. Reuses the in-request principal if `get_principal` just fetched
+	it on this request, and this function's own answer if it already ran.
 	"""
+	try:
+		with_details = getattr(frappe.local, "_iam_details_principal", None)
+		if with_details is not None and token in with_details:
+			return with_details[token]
+	except Exception:
+		pass
+
+	principal = None
 	try:
 		local_cache = getattr(frappe.local, "_iam_full_principal", None)
 		if local_cache is not None and token in local_cache:
-			return local_cache[token]
+			principal = local_cache[token]
 	except Exception:
 		pass
 
 	try:
-		return iam_tokens.fetch_principal(token, service)
+		if principal is None:
+			principal = iam_tokens.fetch_principal(token, service)
+		principal = iam_tokens.with_logged_in_user(service, token, principal)
 	except iam_tokens.IAMUnavailableError:
 		frappe.local.response["message"] = _("Identity service unavailable")
 		raise frappe.ServiceUnavailableError
 	except tokens.TokenError as exc:
 		_reject(f"Invalid or expired token: {exc}")
+
+	try:
+		if not hasattr(frappe.local, "_iam_details_principal"):
+			frappe.local._iam_details_principal = {}
+		frappe.local._iam_details_principal[token] = principal
+	except Exception:
+		pass
+	return principal
 
 
 def _login_hooks_due(service, token: str) -> str | None:

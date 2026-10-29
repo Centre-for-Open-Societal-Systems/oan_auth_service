@@ -101,6 +101,8 @@ class FakeIAM:
 			raise requests.ConnectionError("IAM down")
 		if url.endswith("/auth/get_user_profile"):
 			return self.profile_response
+		if url.endswith("/auth/get_logged_in_user"):
+			return _Response(404, {})
 		return self.logout_response
 
 

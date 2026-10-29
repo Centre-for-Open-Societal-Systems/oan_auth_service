@@ -1,0 +1,36 @@
+{
+  "name": "OAN Auth Keycloak Login (local)",
+  "values": [
+    {
+      "key": "base_url",
+      "value": "http://mysite.localhost:8000/api",
+      "type": "default",
+      "enabled": true
+    },
+    {
+      "key": "return_url",
+      "value": "http://localhost:3000/api/auth/iam/complete",
+      "type": "default",
+      "enabled": true
+    },
+    {
+      "key": "keycloak_login_key",
+      "value": "agent",
+      "type": "default",
+      "enabled": true
+    },
+    {
+      "key": "iam_user",
+      "value": "da_agent@gmail.com",
+      "type": "default",
+      "enabled": true
+    },
+    {
+      "key": "iam_password",
+      "value": "admin@123",
+      "type": "secret",
+      "enabled": true
+    }
+  ],
+  "_postman_variable_scope": "environment"
+}

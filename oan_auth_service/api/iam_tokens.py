@@ -40,6 +40,8 @@ HTTP_TIMEOUT = 5
 # One Error Log row per window during an IAM outage, not one per failing request.
 OUTAGE_LOG_WINDOW_SEC = 60
 LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "::1")
+# Names that resolve to loopback: `*.localhost` by RFC 6761, `*.localtest.me` by public DNS.
+LOOPBACK_SUFFIXES = (".localhost", ".localtest.me")
 _DEFAULT_PORTS = {"http": 80, "https": 443}
 _REDIRECT_STATUSES = (301, 302, 303, 307, 308)
 
@@ -86,12 +88,15 @@ def _iam_bad_response(service, detail: str) -> IAMBadResponseError:
 
 
 def is_secure_url(url: str) -> bool:
-	"""Whether `url` is https, or http to a loopback host."""
+	"""Whether `url` is https, or http to a loopback host (incl. `*.localhost`, `*.localtest.me`)."""
 	try:
 		parsed = urlparse(url)
 	except ValueError:
 		return False
-	return parsed.scheme == "https" or (parsed.scheme == "http" and parsed.hostname in LOOPBACK_HOSTS)
+	if parsed.scheme == "https":
+		return True
+	host = parsed.hostname or ""
+	return parsed.scheme == "http" and (host in LOOPBACK_HOSTS or host.endswith(LOOPBACK_SUFFIXES))
 
 
 def origin_of(url: str) -> str | None:
@@ -278,6 +283,32 @@ _USERINFO_RESERVED = frozenset(
 	{"sub", "iss", "aud", "exp", "iat", "nbf", "client_roles", "scheme", "credentials"}
 )
 _USERINFO_ALGORITHMS = ["RS256", "RS384", "RS512", "ES256", "ES384", "PS256"]
+
+
+def with_logged_in_user(service, token: str, principal: dict) -> dict:
+	"""Add the claims of IAM's `/auth/get_logged_in_user` (email, given and family name) to `principal`.
+
+	IAM's `/auth/get_user_profile` drops them, so without this the account never
+	learns its login email. Asked only when the login hooks run (once per
+	token), not by `fetch_principal`, which also serves every cache miss. Best effort: an IAM without the route, or any
+	failure, leaves the principal as it was. The same rules as `_with_userinfo`
+	apply: the subject must match and reserved claims are never replaced.
+	"""
+	try:
+		response = requests.get(
+			f"{service.base_url}/auth/get_logged_in_user",
+			headers={"Authorization": f"Bearer {token}"},
+			timeout=HTTP_TIMEOUT,
+			allow_redirects=False,
+		)
+		claims = response.json() if response.status_code == 200 else None
+	except (requests.RequestException, ValueError):
+		return principal
+	if not isinstance(claims, dict) or claims.get("sub") not in (None, principal.get("sub")):
+		return principal
+	given = {k: v for k, v in principal.items() if v not in (None, "")}
+	extra = {k: v for k, v in claims.items() if k not in _USERINFO_RESERVED and v not in (None, "", {})}
+	return {**extra, **given}
 
 
 def _with_userinfo(service, token: str, principal: dict) -> dict:
