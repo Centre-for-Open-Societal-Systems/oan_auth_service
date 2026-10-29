@@ -15,7 +15,7 @@ from frappe import _
 from pydantic import BaseModel, BeforeValidator, Field, TypeAdapter
 from pydantic import ValidationError as PydanticValidationError
 
-from oan_auth_service.api.field_errors import validation_details
+from oan_auth_service.api.field_errors import validation_codes, validation_details
 from oan_auth_service.api.jwt_keys import JWTKeyConfigurationError
 
 
@@ -269,7 +269,12 @@ def validate_request(schema: type[BaseModel], exclude_unset: bool = False):
 
 				frappe.response["http_status_code"] = 400
 				frappe.local.message_log = []
-				return error_response(message=_("Validation failed"), code="VALIDATION_ERROR", details=errors)
+				return error_response(
+					message=_("Validation failed"),
+					code="VALIDATION_ERROR",
+					details=errors,
+					field_codes=validation_codes(e),
+				)
 
 			validated_dict = validated.model_dump(exclude_unset=exclude_unset)
 			return func(**validated_dict)
@@ -633,8 +638,13 @@ def error_response(
 	code: str = "GENERIC_ERROR",
 	details: dict | None = None,
 	meta: dict | None = None,
+	field_codes: dict | None = None,
 ) -> dict:
-	"""Format standardized JSON error envelope with request_id and metadata."""
+	"""Format standardized JSON error envelope with request_id and metadata.
+
+	`field_codes` is for validation failures: the same fields as `details`, each as
+	`{"code": ..., **limits}`, so a client can show its own translation of the rule.
+	It is left out of every other error."""
 	clean_message = extract_message_from_str(message) if isinstance(message, str) else str(message)
 	res = {
 		"status": "error",
@@ -643,6 +653,8 @@ def error_response(
 		"details": details or {},
 		"meta": meta or {},
 	}
+	if field_codes:
+		res["field_codes"] = field_codes
 	req_id = getattr(frappe.local, "request_id", None)
 	if req_id:
 		res["request_id"] = req_id
@@ -802,6 +814,7 @@ def handle_api_errors(func):
 				code="VALIDATION_ERROR",
 				details=errors,
 				meta=resolved_meta,
+				field_codes=validation_codes(e),
 			)
 
 		except ResponseValidationError as e:

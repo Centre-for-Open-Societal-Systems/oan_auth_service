@@ -6,11 +6,17 @@ Each test pins the wording a client sees as `details[<field>]` in the 400 respon
 """
 
 import unittest
+from unittest import mock
 
 import frappe
 from pydantic import ValidationError
 
-from oan_auth_service.api.field_errors import field_label, friendly_message
+from oan_auth_service.api.field_errors import (
+	field_label,
+	friendly_code,
+	friendly_message,
+	validation_codes,
+)
 from oan_auth_service.api.v1 import admin, auth
 from oan_auth_service.tests.utils import configured_keys, ensure_role, override_conf
 
@@ -231,6 +237,88 @@ class TestRewriter(unittest.TestCase):
 		self.assertEqual(friendly_message(error), "Kept as is")
 
 
+class TestCodes(unittest.TestCase):
+	"""Stable codes and limits, for clients that show their own translation."""
+
+	def test_code_is_the_error_type_with_its_limits(self):
+		def line(kind, **ctx):
+			return {"type": kind, "loc": ("code",), "msg": "original", "ctx": ctx}
+
+		self.assertEqual(
+			friendly_code(line("string_too_long", max_length=140)),
+			{"code": "string_too_long", "max_length": 140},
+		)
+		self.assertEqual(
+			friendly_code(line("string_too_short", min_length=8)),
+			{"code": "string_too_short", "min_length": 8},
+		)
+		self.assertEqual(
+			friendly_code(line("greater_than_equal", ge=1)), {"code": "greater_than_equal", "ge": 1}
+		)
+		self.assertEqual(friendly_code(line("missing")), {"code": "missing"})
+
+	def test_an_empty_string_is_missing_to_the_client_too(self):
+		error = {"type": "string_too_short", "loc": ("usr",), "msg": "x", "ctx": {"min_length": 1}}
+		self.assertEqual(friendly_code(error), {"code": "missing", "min_length": 1})
+		self.assertEqual(friendly_message(error), "Email or username is required.")
+
+	def test_internals_are_not_exposed(self):
+		pattern = {"type": "string_pattern_mismatch", "loc": ("x",), "msg": "m", "ctx": {"pattern": "^a$"}}
+		value = {"type": "value_error", "loc": ("x",), "msg": "m", "ctx": {"error": ValueError("boom")}}
+		self.assertEqual(friendly_code(pattern), {"code": "string_pattern_mismatch"})
+		self.assertEqual(friendly_code(value), {"code": "value_error"})
+
+	def test_a_message_with_its_own_label_still_has_a_code(self):
+		error = {
+			"type": "string_too_long",
+			"loc": ("reason",),
+			"msg": "Justification must not exceed 1000 characters.",
+			"ctx": {"label": "Justification", "max_length": 1000},
+		}
+		self.assertEqual(friendly_code(error), {"code": "string_too_long", "max_length": 1000})
+
+	def test_codes_are_json_ready_and_cover_every_failing_field(self):
+		with self.assertRaises(ValidationError) as caught:
+			auth.RegisterUserSchema(email="e", password="short", full_name="n" * 141, role="Customer")
+		codes = validation_codes(caught.exception)
+		self.assertEqual(codes["password"], {"code": "string_too_short", "min_length": 8})
+		self.assertEqual(codes["full_name"], {"code": "string_too_long", "max_length": 140})
+		frappe.parse_json(frappe.as_json(codes))
+
+
+class TestTranslation(unittest.TestCase):
+	"""Templates and labels go through `_()` whole, so a translator can supply each."""
+
+	def test_template_and_label_are_translated_as_whole_phrases(self):
+		seen = []
+
+		def fake(text):
+			seen.append(text)
+			return text
+
+		error = {"type": "string_too_long", "loc": ("full_name",), "msg": "m", "ctx": {"max_length": 140}}
+		with mock.patch("oan_auth_service.api.field_errors._", side_effect=fake):
+			friendly_message(error)
+		self.assertIn("Full name", seen)
+		self.assertIn("{label} must not exceed {max_length} characters.", seen)
+
+	def test_a_translated_template_is_filled_in(self):
+		translations = {
+			"Full name": "Nombre completo",
+			"{label} must not exceed {max_length} characters.": "{label}: máximo {max_length} caracteres.",
+		}
+		error = {"type": "string_too_long", "loc": ("full_name",), "msg": "m", "ctx": {"max_length": 140}}
+		with mock.patch("oan_auth_service.api.field_errors._", side_effect=lambda t: translations.get(t, t)):
+			self.assertEqual(friendly_message(error), "Nombre completo: máximo 140 caracteres.")
+
+	def test_a_translation_that_loses_a_placeholder_falls_back_to_pydantic_text(self):
+		error = {"type": "string_too_long", "loc": ("x",), "msg": "pydantic text", "ctx": {"max_length": 5}}
+		with mock.patch(
+			"oan_auth_service.api.field_errors._", side_effect=lambda t: "{nope}" if "{label}" in t else t
+		):
+			self.assertEqual(friendly_message(error), "pydantic text")
+
+
 class TestRegisterEndpoint(unittest.TestCase):
 	"""The 400 a client receives, and that a refused registration creates no account."""
 
@@ -251,6 +339,14 @@ class TestRegisterEndpoint(unittest.TestCase):
 				"email": "Email address is not in a valid format.",
 				"password": "Password must contain at least 8 characters.",
 				"full_name": "Full name must not exceed 140 characters.",
+			},
+		)
+		self.assertEqual(
+			res["field_codes"],
+			{
+				"email": {"code": "value_error"},
+				"password": {"code": "string_too_short", "min_length": 8},
+				"full_name": {"code": "string_too_long", "max_length": 140},
 			},
 		)
 		self.assertEqual(frappe.response["http_status_code"], 400)
