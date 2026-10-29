@@ -26,6 +26,7 @@ before the cache, so disabling a row cuts off its tokens on the next request.
 """
 
 import hashlib
+import ipaddress
 import time
 from urllib.parse import urlparse
 
@@ -39,9 +40,6 @@ from oan_auth_service.config import settings
 HTTP_TIMEOUT = 5
 # One Error Log row per window during an IAM outage, not one per failing request.
 OUTAGE_LOG_WINDOW_SEC = 60
-LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "::1")
-# Names that resolve to loopback: `*.localhost` by RFC 6761, `*.localtest.me` by public DNS.
-LOOPBACK_SUFFIXES = (".localhost", ".localtest.me")
 _DEFAULT_PORTS = {"http": 80, "https": 443}
 _REDIRECT_STATUSES = (301, 302, 303, 307, 308)
 
@@ -59,7 +57,14 @@ class IAMBadResponseError(Exception):
 
 	A 4xx or a malformed body means the row and the IAM disagree (wrong
 	`base_url` or `provider_id`), not that IAM is down: a 502, not a 503.
+
+	`upstream_status` and `upstream_body` hold IAM's answer.
 	"""
+
+	def __init__(self, detail: str = "", upstream_status: int | None = None, upstream_body=None):
+		super().__init__(detail)
+		self.upstream_status = upstream_status
+		self.upstream_body = upstream_body
 
 
 def _log_once(cache_key: str, window: int, title: str, message: str) -> None:
@@ -70,6 +75,19 @@ def _log_once(cache_key: str, window: int, title: str, message: str) -> None:
 	frappe.log_error(title=title, message=message)
 
 
+UPSTREAM_BODY_LIMIT = 2048
+
+
+def _upstream(response) -> tuple[int | None, object]:
+	"""IAM's status and body, as sent: parsed JSON when it parses, else its text cut to a safe length."""
+	if response is None:
+		return None, None
+	try:
+		return response.status_code, response.json()
+	except ValueError:
+		return response.status_code, (response.text or "")[:UPSTREAM_BODY_LIMIT]
+
+
 def _iam_unavailable(detail: str) -> IAMUnavailableError:
 	_log_once(
 		"oan_auth:iam_outage_logged", OUTAGE_LOG_WINDOW_SEC, "oan_auth_service: IAM unavailable", detail
@@ -77,26 +95,38 @@ def _iam_unavailable(detail: str) -> IAMUnavailableError:
 	return IAMUnavailableError(detail)
 
 
-def _iam_bad_response(service, detail: str) -> IAMBadResponseError:
+def _iam_bad_response(service, detail: str, response=None) -> IAMBadResponseError:
 	_log_once(
 		f"oan_auth:iam_bad_response_logged:{service.key}",
 		OUTAGE_LOG_WINDOW_SEC,
 		"oan_auth_service: IAM bad response",
 		f"Login option {service.key!r}: {detail}",
 	)
-	return IAMBadResponseError(detail)
+	return IAMBadResponseError(detail, *_upstream(response))
+
+
+def _is_loopback_host(host: str) -> bool:
+	"""`localhost`, `*.localhost` (RFC 6761) or a loopback IP literal. No DNS.
+
+	Same rule browsers use for "potentially trustworthy" origins (W3C Secure Contexts).
+	"""
+	if host == "localhost" or host.endswith(".localhost"):
+		return True
+	try:
+		return ipaddress.ip_address(host).is_loopback
+	except ValueError:
+		return False
 
 
 def is_secure_url(url: str) -> bool:
-	"""Whether `url` is https, or http to a loopback host (incl. `*.localhost`, `*.localtest.me`)."""
+	"""Whether `url` is https, or http to a loopback host (see `_is_loopback_host`)."""
 	try:
 		parsed = urlparse(url)
 	except ValueError:
 		return False
 	if parsed.scheme == "https":
 		return True
-	host = parsed.hostname or ""
-	return parsed.scheme == "http" and (host in LOOPBACK_HOSTS or host.endswith(LOOPBACK_SUFFIXES))
+	return parsed.scheme == "http" and _is_loopback_host(parsed.hostname or "")
 
 
 def origin_of(url: str) -> str | None:
@@ -435,7 +465,9 @@ def start_login(service, return_url: str) -> str:
 	if response.status_code >= 500:
 		raise _iam_unavailable(f"IAM answered {response.status_code}")
 	if response.status_code != 200:
-		raise _iam_bad_response(service, f"start_authentication_transaction answered {response.status_code}")
+		raise _iam_bad_response(
+			service, f"start_authentication_transaction answered {response.status_code}", response
+		)
 
 	try:
 		body = response.json()
@@ -482,7 +514,7 @@ def logout(service, cookies: dict[str, str]) -> tuple[list[str], str | None]:
 		return set_cookies, None
 	if response.status_code == 401 or 200 <= response.status_code < 300:
 		return set_cookies, None
-	raise _iam_bad_response(service, f"logout answered {response.status_code}")
+	raise _iam_bad_response(service, f"logout answered {response.status_code}", response)
 
 
 def refresh(service, cookies: dict[str, str]) -> tuple[bool, list[str]]:
@@ -518,7 +550,9 @@ def refresh(service, cookies: dict[str, str]) -> tuple[bool, list[str]]:
 		return True, set_cookies
 	if response.status_code in (401, 403):
 		return False, set_cookies
-	raise _iam_bad_response(service, f"get_user_profile answered {response.status_code} to a refresh")
+	raise _iam_bad_response(
+		service, f"get_user_profile answered {response.status_code} to a refresh", response
+	)
 
 
 def end_provider_session(logout_url: str) -> bool:

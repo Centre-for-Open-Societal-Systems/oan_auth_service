@@ -1283,17 +1283,24 @@ def get_metadata():
 def _iam_error(exc: Exception):
 	"""Error envelope for an IAM that is down (503) or answered unusably (502).
 
+	For an unusable answer (`IAMBadResponseError`), IAM's body goes to the caller
+	as sent in `details["upstream"]`. An IAM that is down or unreachable gets a fixed message.
+
 	Returned rather than raised: `handle_api_errors` writes an Error Log row for
 	every 5xx it catches, and these endpoints are guest-reachable. iam_tokens
 	already logs each failure once per window.
 	"""
+	details = None
 	if isinstance(exc, iam_tokens.IAMUnavailableError):
 		status, code, message = 503, "SERVICE_UNAVAILABLE", _("Identity service unavailable")
 	else:
 		status, code, message = 502, "BAD_GATEWAY", _("Identity service returned an unexpected response")
+		upstream_body = getattr(exc, "upstream_body", None)
+		if upstream_body:
+			details = {"upstream": upstream_body}
 	frappe.response["http_status_code"] = status
 	frappe.local.message_log = []
-	return error_response(message, code)
+	return error_response(message, code, details=details)
 
 
 def _iam_session_cookies(service) -> dict[str, str]:
