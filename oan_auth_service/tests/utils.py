@@ -79,7 +79,27 @@ def make_user(email: str, password: str, roles: list[str] | None = None) -> str:
 	return user.name
 
 
+def _drop_pending_owner_sweeps(email: str):
+	"""Cancel queued `rewrite_owner_fields` jobs that name `email`.
+
+	Renaming a User queues that job. Newer Frappe refuses to delete a user a
+	queued job still names, and no worker runs in tests, so the job would
+	otherwise block the cleanup. Older Frappe has no such job: nothing to drop.
+	"""
+	try:
+		from frappe.utils.background_jobs import get_queue
+
+		for job in get_queue("long").jobs:
+			if job.kwargs.get("method") != "frappe.core.doctype.user.user.rewrite_owner_fields":
+				continue
+			if email in (job.kwargs.get("kwargs") or {}).values():
+				job.delete()
+	except Exception:
+		pass
+
+
 def cleanup_user(email: str):
+	_drop_pending_owner_sweeps(email)
 	if frappe.db.exists("User", email):
 		frappe.db.delete("OAN User Refresh Token", {"user": email})
 		frappe.delete_doc("User", email, force=True, ignore_permissions=True)
