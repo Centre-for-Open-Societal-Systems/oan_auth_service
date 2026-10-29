@@ -104,11 +104,15 @@ class FakeIAM:
 				"sub": sub,
 				"name": name,
 				"client_roles": client_roles if client_roles is not None else {APP: [OFFICER]},
+				**claims,
 			},
 		)
 		return token
 
 	def get(self, url, headers=None, **_kwargs):
+		if url.endswith("/auth/get_logged_in_user"):
+			# The optional email/name lookup: this fake IAM does not have the route.
+			return _Response(404, {})
 		self.urls.append(url)
 		if self.down:
 			raise requests.ConnectionError("IAM down")
@@ -665,3 +669,50 @@ class TestIAMDelegatedLogin(unittest.TestCase):
 	def test_all_login_hooks_run(self):
 		self._authenticate(self.iam.issue(self._sub()), hooks=[self.HOOK, self.SECOND_HOOK])
 		self.assertEqual([c[0] for c in HOOK_CALLS], ["first", "second"])
+
+	def test_first_login_reconciles_existing_local_user(self):
+		email = f"local_officer_{frappe.generate_hash(length=6)}@example.com"
+		local_user = frappe.get_doc(
+			{
+				"doctype": "User",
+				"email": email,
+				"first_name": "Local Officer",
+				"send_welcome_email": 0,
+				"enabled": 1,
+			}
+		).insert(ignore_permissions=True)
+		self.users.append(local_user.name)
+
+		sub = self._sub()
+		token = self.iam.issue(sub, email=email)
+		user = self._authenticate(token)
+
+		expected_user = iam_users.user_name_for_sub(sub, STAFF)
+		self.assertEqual(user, expected_user)
+		self.assertFalse(frappe.db.exists("User", email))
+		self.assertTrue(frappe.db.exists("User", expected_user))
+		self.assertEqual(frappe.db.get_value("User", expected_user, "oan_login_email"), email)
+
+	def test_privileged_accounts_are_never_reconciled(self):
+		email = f"admin_{frappe.generate_hash(length=6)}@example.com"
+		admin_user = frappe.get_doc(
+			{
+				"doctype": "User",
+				"email": email,
+				"first_name": "Admin User",
+				"send_welcome_email": 0,
+				"enabled": 1,
+			}
+		).insert(ignore_permissions=True)
+		admin_user.add_roles("System Manager")
+		self.users.append(admin_user.name)
+
+		sub = self._sub()
+		token = self.iam.issue(sub, email=email)
+		user = self._authenticate(token)
+
+		expected_user = iam_users.user_name_for_sub(sub, STAFF)
+		self.assertEqual(user, expected_user)
+		# The original admin user must still exist untouched
+		self.assertTrue(frappe.db.exists("User", email))
+		self.assertTrue(frappe.db.exists("User", expected_user))

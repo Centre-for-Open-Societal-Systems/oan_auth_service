@@ -64,15 +64,70 @@ def is_delegated_user(user: str | None) -> bool:
 	return bool(user) and user.endswith(f"@{DELEGATED_USER_DOMAIN}")
 
 
+def _reconcile_local_user(email: str | None, new_user_name: str) -> bool:
+	"""If an existing local password user matches `email`, rename it to `new_user_name` so desks and cases migrate."""
+	if not email or not isinstance(email, str) or "@" not in email:
+		return False
+
+	clean_email = email.strip().lower()
+
+	# Match by User.name (e.g. officer_market@gmail.com) or User.oan_login_email
+	local_user = frappe.db.get_value("User", {"name": clean_email}, "name") or frappe.db.get_value(
+		"User", {"oan_login_email": clean_email}, "name"
+	)
+	if not local_user:
+		return False
+
+	# Safety: Never rename an account that is already delegated
+	if is_delegated_user(local_user):
+		return False
+
+	# Security: Never rename Administrator, Guest, or accounts with privileged roles
+	if local_user in ("Administrator", "Guest"):
+		return False
+	roles = set(
+		frappe.get_all("Has Role", filters={"parent": local_user, "parenttype": "User"}, pluck="role")
+	)
+	if roles & REFUSED_ROLES:
+		return False
+
+	# Rename the User document to the synthetic IAM user name.
+	# Frappe's rename_doc automatically cascades to all Link: User fields across the database
+	# (e.g. Grievance RBAC Assignment Officer.user, Grievance.assigned_to, etc.)
+	from frappe.model.rename_doc import rename_doc
+
+	current_user = frappe.session.user
+	frappe.set_user("Administrator")  # nosemgrep: frappe-semgrep-rules.rules.security.frappe-setuser
+	try:
+		rename_doc("User", local_user, new_user_name, force=True, show_alert=False)
+	finally:
+		frappe.set_user(current_user)  # nosemgrep: frappe-semgrep-rules.rules.security.frappe-setuser
+
+	# Ensure oan_login_email is set to email on the renamed user doc
+	from oan_auth_service.api.v1.auth import set_login_email
+
+	set_login_email(new_user_name, clean_email)
+
+	# Clear temporary password flag if it was set
+	from oan_auth_service.setup.install import MUST_CHANGE_PASSWORD_FIELD
+
+	if frappe.db.has_column("User", MUST_CHANGE_PASSWORD_FIELD):
+		frappe.db.set_value("User", new_user_name, MUST_CHANGE_PASSWORD_FIELD, 0, update_modified=False)
+
+	return True
+
+
 def resolve_user(principal: dict, service) -> str:
-	"""Return the local `User` for an IAM `principal` of login option `service`, creating it on first login."""
+	"""Return the local `User` for an IAM `principal` of login option `service`, creating or reconciling it on first login."""
 	sub = principal.get("sub")
 	if not sub or not isinstance(sub, str):
 		raise TokenError("Principal has no sub")
 
 	user = user_name_for_sub(sub, service.key)
 	if not frappe.db.exists("User", user):
-		_create_user(user, principal)
+		reconciled = _reconcile_local_user(principal.get("email"), user)
+		if not reconciled:
+			_create_user(user, principal)
 	return user
 
 

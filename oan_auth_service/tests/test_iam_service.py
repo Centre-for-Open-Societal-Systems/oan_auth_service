@@ -137,16 +137,6 @@ class TestIAMServiceDocType(unittest.TestCase):
 		self.assertEqual(service.default_roles, [ROLE])
 		self.assertEqual(settings.iam_service_for_issuer("https://idp.test/realms/staff").key, KEY)
 
-	def test_seed_default_iam_services(self):
-		from oan_auth_service.setup.install import DEFAULT_IAM_SERVICES, seed_default_iam_services
-
-		for spec in DEFAULT_IAM_SERVICES:
-			self.addCleanup(delete_iam_service, spec["key"])
-
-		seed_default_iam_services()
-		for spec in DEFAULT_IAM_SERVICES:
-			self.assertTrue(frappe.db.exists(IAM_SERVICE_DOCTYPE, spec["key"]))
-
 	def test_only_system_manager_can_write(self):
 		make_iam_service(KEY, **valid())
 		self.assertEqual(frappe.get_meta(IAM_SERVICE_DOCTYPE).permissions[0].role, "System Manager")

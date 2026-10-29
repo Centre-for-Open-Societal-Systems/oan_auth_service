@@ -43,7 +43,6 @@ after_install = "oan_auth_service.setup.install.after_install"
 
 after_migrate = [
 	"oan_auth_service.api.permission_rules.warn_permission_drift",
-	"oan_auth_service.setup.install.seed_default_iam_services",
 ]
 
 
