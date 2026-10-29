@@ -235,10 +235,12 @@ class TestIAMLoginDiscovery(unittest.TestCase):
 			self.assertEqual(status, 502, body)
 			self.assertEqual(body["code"], "BAD_GATEWAY")
 
-	def test_iam_4xx_is_502(self):
-		self.iam.login_response = _Response(404, {})
-		status, _body = self.login()
+	def test_iam_4xx_is_502_with_iam_body_in_details(self):
+		self.iam.login_response = _Response(404, {"detail": "no such provider"})
+		status, body = self.login()
 		self.assertEqual(status, 502)
+		self.assertEqual(body["code"], "BAD_GATEWAY")
+		self.assertEqual(body["details"], {"upstream": {"detail": "no such provider"}})
 
 	def test_iam_5xx_or_unreachable_is_503(self):
 		self.iam.login_response = _Response(500, {})

@@ -25,7 +25,6 @@ def after_install():
 	create_login_email_field()
 	create_must_change_password_field()
 	enable_custom_docperm_tracking()
-	seed_default_iam_services()
 
 
 def enable_custom_docperm_tracking():
@@ -137,70 +136,3 @@ def create_must_change_password_field():
 	)
 
 	frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
-
-
-DEFAULT_IAM_SERVICES = [
-	{
-		"key": "local",
-		"label": "Sign in",
-		"sort_order": 0,
-		"enabled": 1,
-	},
-	{
-		"key": "agent",
-		"label": "Agent",
-		"sort_order": 20,
-		"enabled": 1,
-		"base_url": "http://localhost:8020",
-		"provider_id": 1,
-		"issuer": "http://localhost:8080/realms/agent",
-		"client_id": "iam-staff-portal",
-		"application": "oan-client-id",
-		"return_origins": "http://localhost:3000\nhttp://localhost:3002",
-		"default_roles": [],
-	},
-	{
-		"key": "beneficiary",
-		"label": "National ID (eSignet)",
-		"sort_order": 30,
-		"enabled": 1,
-		"base_url": "http://localhost:3030/api/portal",
-		"provider_id": 1,
-		"issuer": "http://localhost:8088/v1/esignet",
-		"client_id": "",
-		"userinfo_url": "http://localhost:8088/v1/esignet/oidc/userinfo",
-		"return_origins": "http://localhost:3000\nhttp://localhost:3002",
-		"default_roles": ["Grievance Submitter"],
-	},
-]
-
-
-def seed_default_iam_services() -> None:
-	"""Seed the default OAN IAM Service rows (local, agent, beneficiary).
-
-	Idempotent: skips any row that already exists.
-	Creates missing Role documents referenced by default_roles so that link validation succeeds.
-	"""
-	from oan_auth_service.config.settings import clear_iam_services_cache
-
-	for spec in DEFAULT_IAM_SERVICES:
-		key = spec["key"]
-		if frappe.db.exists("OAN IAM Service", key):
-			continue
-
-		doc_data = {k: v for k, v in spec.items() if k != "default_roles"}
-		doc_data["doctype"] = "OAN IAM Service"
-
-		valid_roles = []
-		for role_name in spec.get("default_roles", []):
-			if not frappe.db.exists("Role", role_name):
-				frappe.get_doc({"doctype": "Role", "role_name": role_name}).insert(ignore_permissions=True)
-			valid_roles.append({"role": role_name})
-
-		doc_data["default_roles"] = valid_roles
-
-		doc = frappe.get_doc(doc_data)
-		doc.insert(ignore_permissions=True)
-
-	frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
-	clear_iam_services_cache()
