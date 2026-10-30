@@ -148,6 +148,7 @@ _IAM_SERVICE_FIELDS = (
 	"cookie_prefix",
 	"userinfo_url",
 	"jwks_url",
+	"request_timeout",
 )
 
 

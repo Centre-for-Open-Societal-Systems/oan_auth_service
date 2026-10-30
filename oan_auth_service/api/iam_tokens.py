@@ -37,7 +37,6 @@ import requests
 from oan_auth_service.api.tokens import TokenError
 from oan_auth_service.config import settings
 
-HTTP_TIMEOUT = 5
 # One Error Log row per window during an IAM outage, not one per failing request.
 OUTAGE_LOG_WINDOW_SEC = 60
 _DEFAULT_PORTS = {"http": 80, "https": 443}
@@ -277,7 +276,7 @@ def fetch_principal(token: str, service) -> dict:
 		response = requests.get(
 			f"{service.base_url}/auth/get_user_profile",
 			headers={"Authorization": f"Bearer {token}"},
-			timeout=HTTP_TIMEOUT,
+			timeout=service.request_timeout,
 			allow_redirects=False,
 		)
 	except requests.RequestException as exc:
@@ -328,7 +327,7 @@ def with_logged_in_user(service, token: str, principal: dict) -> dict:
 		response = requests.get(
 			f"{service.base_url}/auth/get_logged_in_user",
 			headers={"Authorization": f"Bearer {token}"},
-			timeout=HTTP_TIMEOUT,
+			timeout=service.request_timeout,
 			allow_redirects=False,
 		)
 		claims = response.json() if response.status_code == 200 else None
@@ -394,7 +393,10 @@ def _fetch_userinfo(service, token: str) -> dict:
 		raise TokenError("userinfo URL must use https")
 
 	response = requests.get(
-		url, headers={"Authorization": f"Bearer {token}"}, timeout=HTTP_TIMEOUT, allow_redirects=False
+		url,
+		headers={"Authorization": f"Bearer {token}"},
+		timeout=service.request_timeout,
+		allow_redirects=False,
 	)
 	if response.status_code != 200:
 		raise TokenError(f"userinfo answered {response.status_code}")
@@ -404,9 +406,9 @@ def _fetch_userinfo(service, token: str) -> dict:
 	elif service.jwks_url:
 		if not is_secure_url(service.jwks_url):
 			raise TokenError("keys URL must use https")
-		signing_key = jwt.PyJWKClient(service.jwks_url, timeout=HTTP_TIMEOUT).get_signing_key_from_jwt(
-			response.text
-		)
+		signing_key = jwt.PyJWKClient(
+			service.jwks_url, timeout=service.request_timeout
+		).get_signing_key_from_jwt(response.text)
 		claims = jwt.decode(
 			response.text,
 			signing_key.key,
@@ -456,7 +458,7 @@ def start_login(service, return_url: str) -> str:
 		response = requests.post(
 			f"{service.base_url}/auth/start_authentication_transaction",
 			params={"id": service.provider_id, "redirect_uri": return_url},
-			timeout=HTTP_TIMEOUT,
+			timeout=service.request_timeout,
 			allow_redirects=False,
 		)
 	except requests.RequestException as exc:
@@ -497,9 +499,11 @@ def logout(service, cookies: dict[str, str]) -> tuple[list[str], str | None]:
 	# to the GET means the other kind, so the same call is retried as POST.
 	url = f"{service.base_url}/auth/logout"
 	try:
-		response = requests.get(url, cookies=cookies, timeout=HTTP_TIMEOUT, allow_redirects=False)
+		response = requests.get(url, cookies=cookies, timeout=service.request_timeout, allow_redirects=False)
 		if response.status_code == 405:
-			response = requests.post(url, cookies=cookies, timeout=HTTP_TIMEOUT, allow_redirects=False)
+			response = requests.post(
+				url, cookies=cookies, timeout=service.request_timeout, allow_redirects=False
+			)
 	except requests.RequestException as exc:
 		raise _iam_unavailable(f"Could not reach IAM: {exc}")
 
@@ -537,7 +541,7 @@ def refresh(service, cookies: dict[str, str]) -> tuple[bool, list[str]]:
 		response = requests.get(
 			f"{service.base_url}/auth/get_user_profile",
 			cookies=cookies,
-			timeout=HTTP_TIMEOUT,
+			timeout=service.request_timeout,
 			allow_redirects=False,
 		)
 	except requests.RequestException as exc:
@@ -555,7 +559,7 @@ def refresh(service, cookies: dict[str, str]) -> tuple[bool, list[str]]:
 	)
 
 
-def end_provider_session(logout_url: str) -> bool:
+def end_provider_session(logout_url: str, service) -> bool:
 	"""Call the identity provider's logout URL server-to-server. Whether it answered without error.
 
 	The URL is IAM's redirect to the provider's `end_session_endpoint` with
@@ -565,7 +569,7 @@ def end_provider_session(logout_url: str) -> bool:
 	if not is_secure_url(logout_url):
 		return False
 	try:
-		response = requests.get(logout_url, timeout=HTTP_TIMEOUT, allow_redirects=False)
+		response = requests.get(logout_url, timeout=service.request_timeout, allow_redirects=False)
 	except requests.RequestException:
 		return False
 	return response.status_code < 400

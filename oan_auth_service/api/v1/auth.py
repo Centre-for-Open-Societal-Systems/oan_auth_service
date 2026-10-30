@@ -1446,7 +1446,7 @@ def _iam_logout(service):
 
 	data = {"logged_out": True, "provider_logout": False}
 	if logout_url:
-		if iam_tokens.end_provider_session(logout_url):
+		if iam_tokens.end_provider_session(logout_url, service):
 			data["provider_logout"] = True
 		else:
 			data["logout_url"] = logout_url
