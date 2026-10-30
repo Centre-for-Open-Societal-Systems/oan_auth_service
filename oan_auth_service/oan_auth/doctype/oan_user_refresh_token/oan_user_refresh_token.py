@@ -1,5 +1,7 @@
 import frappe
 from frappe.model.document import Document
+from frappe.query_builder import Interval
+from frappe.query_builder.functions import Now
 
 
 class OANUserRefreshToken(Document):
@@ -11,18 +13,15 @@ class OANUserRefreshToken(Document):
 	set of code paths that can touch live session state small enough to audit.
 	"""
 
+	@staticmethod
+	def clear_old_logs(days=0):
+		"""Delete rows `days` past their expiry. Run daily by Frappe's Log Settings job.
 
-def prune_expired():
-	"""Delete rows past their expiry. Registered as a daily scheduler event.
+		Housekeeping only, never a security control: `refresh()` re-checks
+		`expires_at` on every exchange, so an unpruned row cannot be redeemed.
 
-	Housekeeping only, never a security control: `refresh()` re-checks
-	`expires_at` on every exchange, so an unpruned row cannot be redeemed. If
-	this job stops running the table grows and nothing else breaks.
-
-	Deleted with `frappe.db.delete` rather than the ORM. These rows have no
-	child tables, no links pointing at them and no document hooks; loading each
-	one to call the full delete path would turn a single statement into a query
-	per expired token for no gain.
-	"""
-	# Explicit commit for scheduled bulk cleanup job
-	frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
+		Deleted with `frappe.db.delete` rather than the ORM. These rows have no
+		child tables, no links pointing at them and no document hooks.
+		"""
+		table = frappe.qb.DocType("OAN User Refresh Token")
+		frappe.db.delete(table, filters=(table.expires_at < (Now() - Interval(days=days))))

@@ -18,7 +18,8 @@
    "in_standard_filter": 1,
    "label": "User",
    "options": "User",
-   "reqd": 1
+   "reqd": 1,
+   "search_index": 1
   },
   {
    "description": "SHA-256 of the issued token. The token itself is never stored, so a database disclosure cannot be replayed against the API.",
@@ -33,7 +34,8 @@
    "fieldname": "expires_at",
    "fieldtype": "Datetime",
    "label": "Expires At",
-   "reqd": 1
+   "reqd": 1,
+   "search_index": 1
   },
   {
    "default": "0",
@@ -50,20 +52,7 @@
  "module": "OAN Auth",
  "name": "OAN User Refresh Token",
  "owner": "Administrator",
- "permissions": [
-  {
-   "create": 1,
-   "delete": 1,
-   "email": 1,
-   "export": 1,
-   "print": 1,
-   "read": 1,
-   "report": 1,
-   "role": "System Manager",
-   "share": 1,
-   "write": 1
-  }
- ],
+ "permissions": [],
  "sort_field": "creation",
  "sort_order": "DESC",
  "states": [],

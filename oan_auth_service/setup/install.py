@@ -25,6 +25,7 @@ def after_install():
 	create_login_email_field()
 	create_must_change_password_field()
 	enable_custom_docperm_tracking()
+	index_user_full_name()
 
 
 def enable_custom_docperm_tracking():
@@ -44,6 +45,15 @@ def enable_custom_docperm_tracking():
 	else:
 		make_property_setter("Custom DocPerm", None, "track_changes", 1, "Check", for_doctype=True)
 	frappe.clear_cache(doctype="Custom DocPerm")
+
+
+def index_user_full_name():
+	"""Index `User.full_name`, so the admin user list can prefix-search it without a table scan."""
+	from frappe.custom.doctype.property_setter.property_setter import make_property_setter
+
+	make_property_setter("User", "full_name", "search_index", 1, "Check")
+	frappe.clear_cache(doctype="User")
+	frappe.db.updatedb("User")
 
 
 def create_login_email_field():

@@ -86,7 +86,11 @@ class AdminCreateUserSchema(BaseModel):
 
 
 class AdminListUsersSchema(PageParams):
-	search: str | None = Field(default=None, description="Matches name, user id, login email or mobile")
+	# Deep OFFSETs read and discard every skipped row; narrow with a filter instead.
+	page: int = Field(default=1, ge=1, le=1000, description="Page number, 1-indexed")
+	search: str | None = Field(
+		default=None, description="Starts-with match on full name, user id, login email or mobile"
+	)
 	email: SafeEmail | None = Field(default=None, description="Exact login email")
 	phone_number: str | None = Field(default=None, description="Exact mobile number, E.164")
 	role: str | None = None
@@ -168,6 +172,10 @@ def _service_prefix() -> tuple[str, ...]:
 			frappe.ValidationError,
 		)
 	return prefixes
+
+
+# Largest `total_count` the user list reports; matches beyond it are still paged.
+USER_LIST_COUNT_CAP = 10_000
 
 
 def _escape_like(value: str) -> str:
@@ -370,7 +378,8 @@ def list_users(
 	if phone_number:
 		query = query.where(user.mobile_no == validate_mobile(phone_number))
 	if search and search.strip():
-		pattern = f"%{_escape_like(search.strip())}%"
+		# Prefix match only: a leading wildcard cannot use an index and scans the table.
+		pattern = f"{_escape_like(search.strip())}%"
 		query = query.where(
 			user.full_name.like(pattern)
 			| user.name.like(pattern)
@@ -378,7 +387,10 @@ def list_users(
 			| user.mobile_no.like(pattern)
 		)
 
-	total = query.select(Count("*")).run()[0][0]
+	# Counted over a capped subquery so a broad filter stops at the cap rather
+	# than scanning every match.
+	capped = query.select(user.name).limit(USER_LIST_COUNT_CAP).as_("capped")
+	total = frappe.qb.from_(capped).select(Count("*")).run()[0][0]
 	rows = (
 		query.select(
 			user.name,
