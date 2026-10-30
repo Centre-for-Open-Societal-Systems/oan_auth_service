@@ -4,7 +4,7 @@ import secrets
 import string
 
 import frappe
-from frappe import _
+from frappe import N_, _
 from frappe.core.page.permission_manager import permission_manager
 from frappe.permissions import ALL_USER_ROLE, GUEST_ROLE, SYSTEM_USER_ROLE
 from frappe.permissions import rights as RIGHTS
@@ -60,7 +60,7 @@ def _check_temporary_password(v: str | None) -> str | None:
 
 
 class UserRefSchema(BaseModel):
-	user_id: str = Field(..., min_length=1, description="User id")
+	user_id: str = Field(..., min_length=1, title=N_("User ID"), description="User id")
 
 
 class RoleRefSchema(UserRefSchema):

@@ -22,7 +22,7 @@ import re
 import secrets
 
 import frappe
-from frappe import _
+from frappe import N_, _
 from frappe.utils import cint
 from frappe.utils.password import passlibctx
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -208,8 +208,8 @@ def _issue_token_pair(user: str, remember_me: bool, scope: list[str] | None = No
 
 
 class LoginSchema(BaseModel):
-	usr: str = Field(..., min_length=1)
-	pwd: str = Field(..., min_length=1)
+	usr: str = Field(..., min_length=1, title=N_("Email or username"))
+	pwd: str = Field(..., min_length=1, title=N_("Password"))
 	remember_me: bool = False
 	scope: str | list[str] | None = None
 
@@ -238,7 +238,7 @@ class RegisterUserSchema(BaseModel):
 
 
 class SetInitialPasswordSchema(BaseModel):
-	usr: str = Field(..., min_length=1)
+	usr: str = Field(..., min_length=1, title=N_("Email or username"))
 	current_password: str = Field(..., min_length=1)
 	new_password: str = Field(..., min_length=8, max_length=128)
 
@@ -291,12 +291,13 @@ class IAMLoginSchema(BaseModel):
 		...,
 		min_length=1,
 		max_length=2048,
+		title=N_("Return URL"),
 		description="Absolute URL IAM sends the browser to after login. Its origin must be one of the login option's return origins.",
 	)
 
 
 class ForgotPasswordSchema(BaseModel):
-	usr: str = Field(..., min_length=1)
+	usr: str = Field(..., min_length=1, title=N_("Email or username"))
 
 
 class ResetPasswordSchema(BaseModel):
@@ -309,8 +310,8 @@ class ResetPasswordSchema(BaseModel):
 	"""
 
 	key: str | None = None
-	usr: str | None = None
-	otp: str | None = None
+	usr: str | None = Field(None, title=N_("Email or username"))
+	otp: str | None = Field(None, title=N_("OTP"))
 	new_password: str = Field(..., min_length=8, max_length=128)
 
 	@field_validator("new_password")

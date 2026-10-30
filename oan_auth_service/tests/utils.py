@@ -1,10 +1,13 @@
 """Shared helpers for the test suite."""
 
 import contextlib
+from typing import get_args
 
 import frappe
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
+from pydantic import ValidationError
+from pydantic_core.core_schema import ErrorType
 
 
 def generate_rsa_pem(bits: int = 2048) -> str:
@@ -147,3 +150,49 @@ def delete_iam_service(key: str) -> None:
 		frappe.delete_doc(IAM_SERVICE_DOCTYPE, key, force=True, ignore_permissions=True)
 		frappe.db.commit()  # nosemgrep: frappe-manual-commit
 	settings.clear_iam_services_cache()
+
+
+def clear_rate_limits():
+	"""Forget every rate-limit counter. They live in Redis and outlive a test run, so a test
+	that calls a limited endpoint clears them before and after, or a rerun inside the window
+	would be refused."""
+	frappe.cache.delete_keys("oan_auth:")
+
+
+def request_schemas(*modules) -> list[type]:
+	"""The request schemas of every `validate_request` endpoint in `modules`, once each."""
+	found = {}
+	for module in modules:
+		for value in vars(module).values():
+			schema = getattr(value, "__pydantic_schema__", None)
+			if schema is not None:
+				found[schema] = None
+	return list(found)
+
+
+# One value of each shape, to make every field of a schema fail in the ways its type can.
+_PROBES = (None, True, 7, 1.5, "", "x" * 10_000, "not-a-date", [], ["a"], {}, {"a": 1})
+
+
+def raw_message_leaks(schemas, has_wording) -> list[str]:
+	"""Errors the schemas can raise whose text would reach a client as pydantic's own.
+
+	Each field of each schema is given one value of every shape in turn. An error is a leak
+	when it is one of pydantic's built-in types and `has_wording(type)` is false; a
+	validator's own message (a custom error type) is not. Only each schema's top-level
+	fields are probed, not the fields of the models nested inside them.
+	"""
+	builtin = set(get_args(ErrorType))
+	leaks = set()
+	for schema in schemas:
+		payloads = [{}] + [{name: value} for name in schema.model_fields for value in _PROBES]
+		for payload in payloads:
+			try:
+				schema(**payload)
+			except ValidationError as error:
+				for line in error.errors():
+					if line["type"] in builtin and not has_wording(line["type"]):
+						leaks.add(f"{schema.__name__}.{'.'.join(map(str, line['loc']))}: {line['type']}")
+			except Exception:
+				pass  # a schema validator that cannot take this probe is not a message leak
+	return sorted(leaks)
