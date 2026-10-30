@@ -157,6 +157,8 @@ def clear_rate_limits():
 	that calls a limited endpoint clears them before and after, or a rerun inside the window
 	would be refused."""
 	frappe.cache.delete_keys("oan_auth:")
+	# Frappe's own `@rate_limit` decorator keeps its counters under `rl:`.
+	frappe.cache.delete_keys("rl:")
 
 
 def request_schemas(*modules) -> list[type]:

@@ -1,15 +1,31 @@
 """Tests for the realtime routes built by gateway_apisix.socket_service."""
 
+import os
 import unittest
 from typing import ClassVar
+from unittest import mock
 
 from oan_auth_service import gateway_apisix as gw
+
+GATEWAY_ENV = {
+	"X": "node",
+	"Y": "9000",
+	"APISIX_REDIS_HOST": "redis.example",
+	"APISIX_REDIS_PORT": "6379",
+}
+
+
+def setUpModule():
+	# The generator has no development defaults, so the tests supply every value it reads.
+	patcher = mock.patch.dict(os.environ, GATEWAY_ENV)
+	patcher.start()
+	unittest.addModuleCleanup(patcher.stop)
 
 
 def build():
 	return gw.socket_service(
 		app="demo",
-		upstream=gw.upstream(host_env="X", host_default="node", port_env="Y", port_default=9000),
+		upstream=gw.upstream(host_env="X", port_env="Y"),
 		session_cookies=[
 			{"name": "local", "cookie": "auth_token", "require": ["last_activity"]},
 			{"name": "iam", "cookie": "X-Access-Token"},
