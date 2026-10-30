@@ -9,16 +9,24 @@ import unittest
 from unittest import mock
 
 import frappe
-from pydantic import ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from oan_auth_service.api.field_errors import (
 	field_label,
 	friendly_code,
 	friendly_message,
+	has_wording,
 	validation_codes,
+	validation_details,
 )
-from oan_auth_service.api.v1 import admin, auth
-from oan_auth_service.tests.utils import configured_keys, ensure_role, override_conf
+from oan_auth_service.api.v1 import admin, auth, notifications
+from oan_auth_service.tests.utils import (
+	configured_keys,
+	ensure_role,
+	override_conf,
+	raw_message_leaks,
+	request_schemas,
+)
 
 
 def _errors(model, **payload):
@@ -26,7 +34,7 @@ def _errors(model, **payload):
 	try:
 		model(**payload)
 	except ValidationError as error:
-		return {".".join(str(part) for part in e["loc"]): friendly_message(e) for e in error.errors()}
+		return {".".join(str(part) for part in e["loc"]): friendly_message(e, model) for e in error.errors()}
 	return {}
 
 
@@ -192,11 +200,60 @@ class TestAdminMessages(unittest.TestCase):
 class TestRewriter(unittest.TestCase):
 	"""The wording rules, independent of any one schema."""
 
-	def test_labels(self):
+	def test_a_field_without_a_title_is_spelled_out(self):
 		self.assertEqual(field_label(("phone_number",)), "Phone number")
-		self.assertEqual(field_label(("user_id",)), "User ID")
-		self.assertEqual(field_label(("pwd",)), "Password")
+		self.assertEqual(field_label(("user_id",)), "User id")
+		self.assertEqual(field_label(("pwd",)), "Pwd")
 		self.assertEqual(field_label(()), "This value")
+
+	def test_the_title_on_the_field_is_its_label(self):
+		self.assertEqual(field_label(("pwd",), auth.LoginSchema), "Password")
+		self.assertEqual(field_label(("usr",), auth.LoginSchema), "Email or username")
+		self.assertEqual(field_label(("user_id",), admin.UserRefSchema), "User ID")
+		self.assertEqual(field_label(("new_password",), auth.LoginSchema), "New password")
+
+	def test_a_title_belongs_to_its_schema_only(self):
+		class Titled(BaseModel):
+			name: str = Field(title="Organisation name")
+
+		class Plain(BaseModel):
+			name: str
+
+		self.assertEqual(field_label(("name",), Titled), "Organisation name")
+		self.assertEqual(field_label(("name",), Plain), "Name")
+		self.assertEqual(field_label(("user_id",), Plain), "User id")
+
+	def test_titles_are_found_in_nested_models_and_lists(self):
+		class Item(BaseModel):
+			kyc_number: str = Field(title="KYC number")
+			other: str
+
+		class Outer(BaseModel):
+			item: Item | None = None
+			items: list[Item] = []
+
+		self.assertEqual(field_label(("item", "kyc_number"), Outer), "KYC number")
+		self.assertEqual(field_label(("items", 2, "kyc_number"), Outer), "KYC number")
+		self.assertEqual(field_label(("items", 2, "other"), Outer), "Other")
+		self.assertEqual(field_label(("item", "unknown_field"), Outer), "Unknown field")
+
+	def test_a_title_is_found_by_the_alias_an_error_uses(self):
+		class Aliased(BaseModel):
+			phone: str = Field(alias="mobileNo", title="Mobile number")
+
+		with self.assertRaises(ValidationError) as caught:
+			Aliased(mobileNo=5)
+		self.assertEqual(
+			validation_details(caught.exception, Aliased), {"mobileNo": "Mobile number must be text."}
+		)
+
+	def test_the_titles_reach_the_400(self):
+		with self.assertRaises(ValidationError) as caught:
+			auth.LoginSchema()
+		self.assertEqual(
+			validation_details(caught.exception, auth.LoginSchema),
+			{"usr": "Email or username is required.", "pwd": "Password is required."},
+		)
 
 	def test_wording_for_each_rule(self):
 		def line(kind, **ctx):
@@ -237,6 +294,23 @@ class TestRewriter(unittest.TestCase):
 		self.assertEqual(friendly_message(error), "Kept as is")
 
 
+class TestCoverage(unittest.TestCase):
+	"""No request schema can raise an error whose text is pydantic's own."""
+
+	def test_every_built_in_error_type_a_schema_can_raise_has_wording(self):
+		schemas = request_schemas(auth, admin, notifications)
+		self.assertGreater(len(schemas), 10)
+		self.assertEqual(raw_message_leaks(schemas, has_wording), [])
+
+	def test_the_audit_reports_a_type_with_no_wording(self):
+		class Counted(BaseModel):
+			n: int
+
+		self.assertEqual(raw_message_leaks([Counted], has_wording), [])
+		leaks = raw_message_leaks([Counted], lambda kind: kind != "int_parsing")
+		self.assertIn("Counted.n: int_parsing", leaks)
+
+
 class TestCodes(unittest.TestCase):
 	"""Stable codes and limits, for clients that show their own translation."""
 
@@ -260,7 +334,7 @@ class TestCodes(unittest.TestCase):
 	def test_an_empty_string_is_missing_to_the_client_too(self):
 		error = {"type": "string_too_short", "loc": ("usr",), "msg": "x", "ctx": {"min_length": 1}}
 		self.assertEqual(friendly_code(error), {"code": "missing", "min_length": 1})
-		self.assertEqual(friendly_message(error), "Email or username is required.")
+		self.assertEqual(friendly_message(error, auth.ForgotPasswordSchema), "Email or username is required.")
 
 	def test_internals_are_not_exposed(self):
 		pattern = {"type": "string_pattern_mismatch", "loc": ("x",), "msg": "m", "ctx": {"pattern": "^a$"}}

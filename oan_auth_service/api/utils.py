@@ -265,7 +265,7 @@ def validate_request(schema: type[BaseModel], exclude_unset: bool = False):
 			try:
 				validated = schema(**params)
 			except PydanticValidationError as e:
-				errors = validation_details(e)
+				errors = validation_details(e, schema)
 
 				frappe.response["http_status_code"] = 400
 				frappe.local.message_log = []
@@ -804,7 +804,9 @@ def handle_api_errors(func):
 			# would otherwise resolve to 400 anyway.)
 			# 400 here must stay in step with `validate_request` — see its docstring
 			# for why this service uses 400 rather than 422.
-			errors = validation_details(e)
+			# The request schema is known only when the handler is wrapped the other way
+			# round; otherwise labels are the field names spelled out.
+			errors = validation_details(e, getattr(func, "_request_schema", None))
 			_rollback()
 			frappe.local.message_log = []
 			frappe.response["http_status_code"] = 400

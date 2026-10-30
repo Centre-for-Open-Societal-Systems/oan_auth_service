@@ -1,7 +1,7 @@
 """Notification endpoints, under `/api/v1/notifications`. Rules: docs/NOTIFICATIONS_RULES.md."""
 
 import frappe
-from frappe import _
+from frappe import N_, _
 from pydantic import BaseModel, Field, model_validator
 
 from oan_auth_service.api.router import prefixed
@@ -60,7 +60,7 @@ class ListNotificationsSchema(PageParams):
 
 
 class NotificationRefSchema(BaseModel):
-	notification_id: str = Field(..., min_length=1)
+	notification_id: str = Field(..., min_length=1, title=N_("Notification ID"))
 
 
 class UpdateNotificationSchema(NotificationRefSchema):
