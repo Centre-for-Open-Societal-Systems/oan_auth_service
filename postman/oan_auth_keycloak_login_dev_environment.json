@@ -1,0 +1,36 @@
+{
+  "name": "OAN Auth Keycloak Login (grievance dev)",
+  "values": [
+    {
+      "key": "base_url",
+      "value": "https://grievance-backend-dev.oanstaging.com/api",
+      "type": "default",
+      "enabled": true
+    },
+    {
+      "key": "return_url",
+      "value": "http://localhost:3000/api/auth/iam/complete",
+      "type": "default",
+      "enabled": true
+    },
+    {
+      "key": "keycloak_login_key",
+      "value": "framer-registry",
+      "type": "default",
+      "enabled": true
+    },
+    {
+      "key": "iam_user",
+      "value": "da-agent@services.com",
+      "type": "default",
+      "enabled": true
+    },
+    {
+      "key": "iam_password",
+      "value": "admin@123",
+      "type": "secret",
+      "enabled": true
+    }
+  ],
+  "_postman_variable_scope": "environment"
+}

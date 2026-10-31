@@ -62,6 +62,11 @@ DEFAULT_PASSWORD_RESET_OTP_LENGTH = 6
 # The cost of getting this wrong is a legitimate user requesting a new code.
 DEFAULT_PASSWORD_RESET_OTP_MAX_ATTEMPTS = 5
 
+# Codes texted to one account per day. Counted per resolved user and never reset
+# by issuing a code, so requesting fresh codes cannot refill the guess budget or
+# flood the owner's phone.
+DEFAULT_PASSWORD_RESET_OTP_MAX_ISSUED_PER_DAY = 5
+
 
 def password_reset_otp_ttl() -> int:
 	"""Seconds a password-reset OTP stays valid."""
@@ -76,6 +81,14 @@ def password_reset_otp_length() -> int:
 def password_reset_otp_max_attempts() -> int:
 	"""Wrong guesses allowed against one OTP before it is destroyed."""
 	return int(frappe.conf.get("password_reset_otp_max_attempts") or DEFAULT_PASSWORD_RESET_OTP_MAX_ATTEMPTS)
+
+
+def password_reset_otp_max_issued_per_day() -> int:
+	"""Password-reset OTPs one account may be sent in 24 hours."""
+	return int(
+		frappe.conf.get("password_reset_otp_max_issued_per_day")
+		or DEFAULT_PASSWORD_RESET_OTP_MAX_ISSUED_PER_DAY
+	)
 
 
 def issuer() -> str:
@@ -135,6 +148,7 @@ _IAM_SERVICE_FIELDS = (
 	"cookie_prefix",
 	"userinfo_url",
 	"jwks_url",
+	"request_timeout",
 )
 
 
@@ -204,14 +218,7 @@ def iam_service(key: str | None = None) -> frappe._dict | None:
 		return None
 	if key == LOCAL_LOGIN_KEY:
 		return None
-	service = next((s for s in iam_services() if s.key == key), None)
-	if service is not None:
-		return service
-	if key == "bene":
-		return next((s for s in iam_services() if s.key == "beneficiary"), None)
-	if key == "beneficiary":
-		return next((s for s in iam_services() if s.key == "bene"), None)
-	return None
+	return next((s for s in iam_services() if s.key == key), None)
 
 
 def iam_service_for_issuer(iss: str, azp: str | None = None) -> frappe._dict | None:

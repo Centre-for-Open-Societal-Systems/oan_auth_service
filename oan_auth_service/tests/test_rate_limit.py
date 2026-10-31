@@ -1,6 +1,7 @@
 """Tests for the request rate limiter and the endpoints that use it."""
 
 import unittest
+from types import SimpleNamespace
 
 import frappe
 
@@ -54,7 +55,7 @@ class TestCheckRateLimit(unittest.TestCase):
 
 
 class TestForgotPasswordIsRateLimited(unittest.TestCase):
-	"""Forgot password: 10 requests an hour from one address (Form Validation Summary)."""
+	"""Forgot password: 10 requests an hour from one address and 3 an hour for one account (Form Validation Summary)."""
 
 	def setUp(self):
 		clear_rate_limits()
@@ -62,18 +63,36 @@ class TestForgotPasswordIsRateLimited(unittest.TestCase):
 		previous = getattr(frappe.local, "request_ip", None)
 		frappe.local.request_ip = "203.0.113.7"
 		self.addCleanup(setattr, frappe.local, "request_ip", previous)
+		# Frappe's `@rate_limit` does nothing outside a request.
+		previous_request = getattr(frappe.local, "request", None)
+		frappe.local.request = SimpleNamespace(method="POST")
+		self.addCleanup(setattr, frappe.local, "request", previous_request)
 
-	def test_the_eleventh_request_in_an_hour_is_refused(self):
-		for attempt in range(10):
-			res = forgot_password(usr="nobody-here@example.com")
+	def request(self, usr):
+		"""Call the endpoint as a request would: the per-account limit reads `usr` from the form."""
+		frappe.local.form_dict = frappe._dict(cmd="forgot_password", usr=usr)
+		return forgot_password(usr=usr)
+
+	def test_the_fourth_request_for_one_account_in_an_hour_is_refused(self):
+		for attempt in range(3):
+			res = self.request("nobody-here@example.com")
 			self.assertEqual(res["status"], "success", msg=(attempt, res))
-		res = forgot_password(usr="nobody-here@example.com")
+		res = self.request("nobody-here@example.com")
+		self.assertEqual(res["status"], "error")
+		self.assertEqual(res["code"], "RATE_LIMIT_EXCEEDED")
+		self.assertEqual(frappe.response["http_status_code"], 429)
+
+	def test_the_eleventh_request_from_one_address_in_an_hour_is_refused(self):
+		for attempt in range(10):
+			res = self.request(f"nobody-{attempt}@example.com")
+			self.assertEqual(res["status"], "success", msg=(attempt, res))
+		res = self.request("nobody-10@example.com")
 		self.assertEqual(res["status"], "error")
 		self.assertEqual(res["code"], "RATE_LIMIT_EXCEEDED")
 		self.assertEqual(frappe.response["http_status_code"], 429)
 
 	def test_another_address_is_not_affected(self):
-		for _attempt in range(11):
-			forgot_password(usr="nobody-here@example.com")
+		for attempt in range(11):
+			self.request(f"nobody-{attempt}@example.com")
 		frappe.local.request_ip = "203.0.113.8"
-		self.assertEqual(forgot_password(usr="nobody-here@example.com")["status"], "success")
+		self.assertEqual(self.request("nobody-11@example.com")["status"], "success")

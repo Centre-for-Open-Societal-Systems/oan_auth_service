@@ -15,6 +15,7 @@
   "sort_order",
   "iam_section",
   "base_url",
+  "request_timeout",
   "provider_id",
   "issuer",
   "client_id",
@@ -80,6 +81,15 @@
    "label": "Base URL"
   },
   {
+   "default": "5",
+   "description": "Seconds to wait on this IAM, and on the provider behind it. Every request with this option's token waits on IAM, so keep it short; raise it for a slow provider such as Fayda.",
+   "fieldname": "request_timeout",
+   "fieldtype": "Int",
+   "label": "Request Timeout (seconds)",
+   "non_negative": 1,
+   "reqd": 1
+  },
+  {
    "description": "Row id of the provider in that IAM's login_providers table.",
    "fieldname": "provider_id",
    "fieldtype": "Int",
@@ -143,7 +153,7 @@
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-10-21 00:00:00.000000",
+ "modified": "2026-10-30 17:15:00.000000",
  "modified_by": "Administrator",
  "module": "OAN Auth",
  "name": "OAN IAM Service",

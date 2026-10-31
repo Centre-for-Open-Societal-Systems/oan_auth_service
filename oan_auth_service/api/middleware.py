@@ -449,12 +449,7 @@ def _provision_delegated_user(claims: dict, service, token: str) -> str:
 				frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
 			_reject(f"Principal {sub} of login option {service.key} has no roles for this application")
 		created = not frappe.db.exists("User", user)
-		# A first login may adopt an existing local account by email, and the
-		# cached principal has none: IAM's profile drops it. Asked only here.
-		resolve_from = (
-			{**claims, "email": _full_principal(service, token).get("email")} if created else claims
-		)
-		iam_users.resolve_user(resolve_from, service)
+		iam_users.resolve_user(claims, service)
 	except tokens.TokenError as exc:
 		_reject(f"Invalid or expired token: {exc}")
 
@@ -501,20 +496,12 @@ def _full_principal(service, token: str) -> dict:
 	names) added. Reuses the in-request principal if `get_principal` just fetched
 	it on this request, and this function's own answer if it already ran.
 	"""
-	try:
-		with_details = getattr(frappe.local, "_iam_details_principal", None)
-		if with_details is not None and token in with_details:
-			return with_details[token]
-	except Exception:
-		pass
+	with_details = getattr(frappe.local, "_iam_details_principal", None)
+	if with_details is not None and token in with_details:
+		return with_details[token]
 
-	principal = None
-	try:
-		local_cache = getattr(frappe.local, "_iam_full_principal", None)
-		if local_cache is not None and token in local_cache:
-			principal = local_cache[token]
-	except Exception:
-		pass
+	local_cache = getattr(frappe.local, "_iam_full_principal", None) or {}
+	principal = local_cache.get(token)
 
 	try:
 		if principal is None:
@@ -526,12 +513,9 @@ def _full_principal(service, token: str) -> dict:
 	except tokens.TokenError as exc:
 		_reject(f"Invalid or expired token: {exc}")
 
-	try:
-		if not hasattr(frappe.local, "_iam_details_principal"):
-			frappe.local._iam_details_principal = {}
-		frappe.local._iam_details_principal[token] = principal
-	except Exception:
-		pass
+	if not hasattr(frappe.local, "_iam_details_principal"):
+		frappe.local._iam_details_principal = {}
+	frappe.local._iam_details_principal[token] = principal
 	return principal
 
 

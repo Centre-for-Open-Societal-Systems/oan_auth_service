@@ -7,7 +7,7 @@ import frappe
 
 from oan_auth_service.api import tokens
 from oan_auth_service.api.v1.auth import register_user
-from oan_auth_service.tests.utils import configured_keys, ensure_role, override_conf
+from oan_auth_service.tests.utils import clear_rate_limits, configured_keys, ensure_role, override_conf
 
 
 def _random_ethiopian_national_phone() -> str:
@@ -24,6 +24,8 @@ def _random_phone() -> str:
 
 class TestUserRegistration(unittest.TestCase):
 	def setUp(self):
+		clear_rate_limits()
+		self.addCleanup(clear_rate_limits)
 		self.created_users = []
 		self.created_contacts = []
 		ensure_role("Customer")

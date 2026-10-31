@@ -53,16 +53,12 @@ after_migrate = [
 # fixtures = []
 
 
-# Scheduled Tasks
-# ---------------
-# Expired refresh tokens are deleted on a schedule; rows are only pruned here,
-# never read back, so a daily sweep is enough.
+# Log clearing
+# ------------
+# Expired refresh tokens are deleted by Frappe's daily Log Settings job, through
+# OANUserRefreshToken.clear_old_logs. Days past expiry before a row is deleted.
 
-scheduler_events = {
-	"daily": [
-		"oan_auth_service.oan_auth.doctype.oan_user_refresh_token.oan_user_refresh_token.prune_expired",
-	],
-}
+default_log_clearing_doctypes = {"OAN User Refresh Token": 0}
 
 
 # Testing

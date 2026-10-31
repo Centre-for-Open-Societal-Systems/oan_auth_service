@@ -7,3 +7,4 @@
 oan_auth_service.patches.add_login_email_field
 oan_auth_service.patches.add_must_change_password_field
 oan_auth_service.patches.enable_custom_docperm_tracking
+oan_auth_service.patches.index_user_full_name

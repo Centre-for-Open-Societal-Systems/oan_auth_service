@@ -1,6 +1,5 @@
 """General API utility functions, request validators, rate limiters, and error handlers."""
 
-import ast
 import inspect
 import json
 import math
@@ -194,6 +193,21 @@ SafeEmail = Annotated[str | None, BeforeValidator(validate_email_string)]
 # ---------------------------------------------------------------------------
 
 
+def incr_counter(key: str, window: int) -> int:
+	"""Atomically add one to a Redis counter and return the new count.
+
+	The window starts at the first increment and is not extended by later ones.
+	Concurrent callers each get a distinct count, unlike a read-then-set.
+	"""
+	# Raw pipeline ops skip Frappe's `{db_name}|` key prefix, so build the key the same way.
+	redis_key = frappe.cache.make_key(key)
+	pipeline = frappe.cache.pipeline()
+	pipeline.incr(redis_key)
+	pipeline.expire(redis_key, window, nx=True)
+	count, _expired = pipeline.execute()
+	return count
+
+
 def check_rate_limit(key: str, limit: int, window: int):
 	"""Allow `limit` calls per `window` seconds for `key`, then answer 429.
 
@@ -207,19 +221,32 @@ def check_rate_limit(key: str, limit: int, window: int):
 	:param limit: max calls allowed in window
 	:param window: seconds
 	"""
-	cache = frappe.cache
-	redis_key = cache.make_key(key)
-
-	pipeline = cache.pipeline()
-	pipeline.incr(redis_key)
-	pipeline.ttl(redis_key)
-	count, ttl = pipeline.execute()
-
-	if ttl == -1:
-		cache.expire(redis_key, window)
-
-	if count > limit:
+	if incr_counter(key, window) > limit:
 		raise frappe.TooManyRequestsError(_("Rate limit exceeded. Try again later."))
+
+
+def rate_limit_per_user(limit: int, window: int, name: str | None = None):
+	"""Rate limit an authenticated endpoint per session user.
+
+	Frappe's own `rate_limit` keys on IP or a request field and cannot see the
+	JWT user. Apps depending on this service can import this for their own
+	endpoints. Place it under `@handle_api_errors` so the 429 is enveloped.
+
+	:param name: bucket name; defaults to the function's module and name, so
+	    two endpoints never share a budget unless they pass the same name
+	"""
+
+	def decorator(fn):
+		bucket = name or f"{fn.__module__}.{fn.__qualname__}"
+
+		@wraps(fn)
+		def wrapper(*args, **kwargs):
+			check_rate_limit(f"oan_auth:user:{bucket}:{frappe.session.user}", limit=limit, window=window)
+			return fn(*args, **kwargs)
+
+		return wrapper
+
+	return decorator
 
 
 # ---------------------------------------------------------------------------
@@ -376,8 +403,8 @@ def require_role(roles: list[str]):
 	def decorator(fn):
 		@wraps(fn)
 		def wrapper(*args, **kwargs):
-			user_doc = frappe.get_doc("User", frappe.session.user)
-			if not any(d.role in roles for d in user_doc.roles):
+			# Cached per user and cleared when the user's roles change.
+			if not set(roles) & set(frappe.get_roles(frappe.session.user)):
 				roles_str = ", ".join(roles)
 				frappe.throw(_("Only {0} can perform this action.").format(roles_str), frappe.PermissionError)
 			return fn(*args, **kwargs)
@@ -528,10 +555,7 @@ def extract_message_from_str(val: str | None) -> str | None:
 
 	if isinstance(val, str) and val.startswith("{") and val.endswith("}"):
 		try:
-			try:
-				parsed = json.loads(val)
-			except Exception:
-				parsed = ast.literal_eval(val)
+			parsed = json.loads(val)
 			if isinstance(parsed, dict) and "message" in parsed:
 				val = str(parsed["message"])
 		except Exception:

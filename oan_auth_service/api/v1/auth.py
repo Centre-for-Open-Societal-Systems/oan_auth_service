@@ -23,6 +23,7 @@ import secrets
 
 import frappe
 from frappe import N_, _
+from frappe.rate_limiter import rate_limit
 from frappe.utils import cint
 from frappe.utils.password import passlibctx
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -37,6 +38,7 @@ from oan_auth_service.api.utils import (
 	check_rate_limit,
 	error_response,
 	handle_api_errors,
+	incr_counter,
 	parse_multi_value,
 	split_phone_number,
 	success_response,
@@ -258,7 +260,9 @@ class _SessionCredentialSchema(BaseModel):
 	expired one would be refused before reaching them.
 	"""
 
-	refresh_token: str | None = Field(default=None, min_length=1, description="This app's refresh token.")
+	refresh_token: str | None = Field(
+		default=None, min_length=1, max_length=512, description="This app's refresh token."
+	)
 	access_token: str | None = Field(
 		default=None,
 		min_length=1,
@@ -469,6 +473,7 @@ route = prefixed("/api/v1/auth")
 )
 @validate_request(LoginSchema)
 @handle_api_errors
+@rate_limit(limit=30, seconds=60)
 def login(usr: str, pwd: str, remember_me: bool = False, scope: str | list[str] | None = None):
 	"""Authenticate and issue an access token plus a refresh token.
 
@@ -521,6 +526,7 @@ def login(usr: str, pwd: str, remember_me: bool = False, scope: str | list[str] 
 )
 @validate_request(RegisterUserSchema)
 @handle_api_errors
+@rate_limit(limit=10, seconds=3600)
 def register_user(
 	password: str,
 	full_name: str,
@@ -619,6 +625,9 @@ def refresh(refresh_token: str | None = None, access_token: str | None = None):
 		{"token_hash": token_hash},
 		["name", "user", "expires_at", "remember_me"],
 		as_dict=True,
+		# Row lock: a concurrent exchange of the same token waits here, then finds
+		# the row gone after the first commits, instead of also minting a pair.
+		for_update=True,
 	)
 
 	if not row:
@@ -731,6 +740,7 @@ def issue_temporary_password(user: str, password: str) -> None:
 )
 @validate_request(SetInitialPasswordSchema)
 @handle_api_errors
+@rate_limit(limit=10, seconds=300)
 def set_initial_password(usr: str, current_password: str, new_password: str):
 	"""Rotate a temporary password into one only the account holder knows.
 
@@ -748,8 +758,6 @@ def set_initial_password(usr: str, current_password: str, new_password: str):
 	"""
 	from frappe.auth import LoginManager
 	from frappe.utils.password import update_password
-
-	check_rate_limit(f"oan_auth:set_initial_pwd:{frappe.local.request_ip}", limit=10, window=300)
 
 	user = _resolve_login_identifier(usr)
 
@@ -818,6 +826,10 @@ def _otp_attempts_cache_key(user: str) -> str:
 	return f"oan_auth:pwreset_otp_attempts:{user}"
 
 
+def _otp_issued_cache_key(user: str) -> str:
+	return f"oan_auth:pwreset_otp_issued:{user}"
+
+
 def _sms_gateway_configured() -> bool:
 	"""Whether an SMS actually has somewhere to go.
 
@@ -848,6 +860,12 @@ def _deliver_reset_by_sms(user: str, mobile_no: str) -> None:
 		)
 		return
 
+	# Silent when over the cap: raising would tell the caller this account exists
+	# and has a phone. Counted per resolved user and never reset, unlike the
+	# attempt counter below.
+	if incr_counter(_otp_issued_cache_key(user), 86400) > settings.password_reset_otp_max_issued_per_day():
+		return
+
 	otp = "".join(secrets.choice("0123456789") for _ in range(settings.password_reset_otp_length()))
 
 	# Stored as a pbkdf2 hash rather than the raw code or a SHA-256 of it. Frappe
@@ -865,9 +883,14 @@ def _deliver_reset_by_sms(user: str, mobile_no: str) -> None:
 	frappe.cache.delete_value(_otp_attempts_cache_key(user))
 
 	minutes = settings.password_reset_otp_ttl() // 60
-	_send_sms(
-		[mobile_no],
-		_("{0} is your password reset code. It expires in {1} minutes.").format(otp, minutes),
+	# Queued so a slow gateway cannot hold a worker or change the response time;
+	# after commit so a rolled-back request never sends a code it did not store.
+	frappe.enqueue(
+		_send_sms,
+		queue="short",
+		enqueue_after_commit=True,
+		receiver_list=[mobile_no],
+		msg=_("{0} is your password reset code. It expires in {1} minutes.").format(otp, minutes),
 		success_msg=False,
 	)
 
@@ -912,6 +935,11 @@ def _deliver_reset_by_email(user_doc, login_email: str) -> None:
 )
 @validate_request(ForgotPasswordSchema)
 @handle_api_errors
+# Limited on the caller (IP) against enumeration, and on the raw `usr` input
+# against flooding one victim. Neither does a lookup, so existing and unknown
+# accounts are limited identically.
+@rate_limit(limit=10, seconds=3600)
+@rate_limit(key="usr", limit=3, seconds=3600, ip_based=False)
 def forgot_password(usr: str):
 	"""Start a reset over whichever channel the account actually has.
 
@@ -931,15 +959,10 @@ def forgot_password(usr: str):
 	to be. The three paths cost wildly different amounts — a synchronous
 	`sendmail`, a pbkdf2 hash, an immediate return — and flattening that would
 	mean padding every request to the slowest one, which hands an attacker a
-	cheap way to tie up workers. The rate limit below is the control that makes
+	cheap way to tie up workers. The rate limit on this endpoint is the control that makes
 	the remaining timing signal impractical to harvest; it is not zero, and
 	should not be described as such.
 	"""
-	# Rate limited on the caller rather than the account, because the account is
-	# exactly what an attacker is trying to discover — a per-user limit would
-	# not apply until after the lookup that answers their question.
-	check_rate_limit(f"oan_auth:pwreset:{frappe.local.request_ip}", limit=10, window=3600)
-
 	user = _resolve_login_identifier(usr)
 
 	if user:
@@ -976,19 +999,14 @@ def _verify_password_reset_otp(user: str, otp: str) -> bool:
 	if not stored:
 		return False
 
-	attempts = cint(frappe.cache.get_value(_otp_attempts_cache_key(user), expires=True))
-	if attempts >= settings.password_reset_otp_max_attempts():
+	# Atomic increment, recorded before the comparison: concurrent guesses each
+	# get a distinct count, and a guess still counts if verification raises or
+	# the request dies partway through.
+	attempts = incr_counter(_otp_attempts_cache_key(user), settings.password_reset_otp_ttl())
+	if attempts > settings.password_reset_otp_max_attempts():
 		frappe.cache.delete_value(_otp_cache_key(user))
 		frappe.cache.delete_value(_otp_attempts_cache_key(user))
 		return False
-
-	# Recorded before the comparison, so a guess still counts if verification
-	# raises or the request dies partway through.
-	frappe.cache.set_value(
-		_otp_attempts_cache_key(user),
-		attempts + 1,
-		expires_in_sec=settings.password_reset_otp_ttl(),
-	)
 
 	if not passlibctx.verify(otp, stored):
 		return False
@@ -1369,6 +1387,7 @@ def get_iam_providers():
 )
 @validate_request(IAMLoginSchema)
 @handle_api_errors
+@rate_limit(limit=30, seconds=60)
 def iam_login(return_url: str, key: str | None = None):
 	"""Start login option `key` at its IAM, after checking `return_url`.
 
@@ -1376,7 +1395,6 @@ def iam_login(return_url: str, key: str | None = None):
 	Which consumers may call this is decided at the gateway, so only the shape
 	of `return_url` is checked here.
 	"""
-	check_rate_limit(f"oan_auth:iam_login:{frappe.local.request_ip}", limit=30, window=60)
 	service = _enabled_iam_service(key)
 
 	if iam_tokens.origin_of(return_url) is None:
@@ -1428,7 +1446,7 @@ def _iam_logout(service):
 
 	data = {"logged_out": True, "provider_logout": False}
 	if logout_url:
-		if iam_tokens.end_provider_session(logout_url):
+		if iam_tokens.end_provider_session(logout_url, service):
 			data["provider_logout"] = True
 		else:
 			data["logout_url"] = logout_url
