@@ -509,7 +509,9 @@ def parse_multi_value(value, allowed=None) -> list[str]:
 
 
 def to_tz_aware_iso(dt) -> str | None:
-	"""Convert a naive Frappe datetime (stored in the system timezone) to an ISO 8601 UTC string ending in `Z`."""
+	"""Convert a naive Frappe datetime (stored in the system timezone) to an ISO 8601 UTC string ending in `Z`.
+
+	Microseconds are kept: cursors are built from this string and compared back against the stored value."""
 	if not dt:
 		return None
 	from datetime import UTC
@@ -520,7 +522,7 @@ def to_tz_aware_iso(dt) -> str | None:
 	dt_obj = get_datetime(dt)
 	system_tz = pytz.timezone(get_system_timezone())
 	utc = system_tz.localize(dt_obj).astimezone(UTC)
-	return utc.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+	return utc.isoformat().replace("+00:00", "Z")
 
 
 def from_tz_aware_iso(value):
