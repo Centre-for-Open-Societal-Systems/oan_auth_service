@@ -1,0 +1,302 @@
+{
+	"info": {
+		"name": "OAN Auth Service - Fayda login (IAM)",
+		"description": "Login through Fayda (VeriFayda 2.0 / eSignet 1.8) via oan_auth_service /v1/auth/iam/login.\n\nUnlike the Keycloak collection this cannot be scripted end to end: Fayda needs a real person (OTP or biometrics) and consent. Flow: run 1, open `authorization_url` in a browser and sign in, paste the final redirect URL into `fayda_redirect_url` in the environment, then run 2-4.\n\nNeeds the `fayda` OAN IAM Service (provider_id 2) and the Fayda row in iam_bene.login_providers. The Fayda client's registered redirect URI must equal the provider's oauth_callback_url. Select the \"OAN Auth Fayda Login (local)\" environment.",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"item": [
+		{
+			"name": "1. Start Fayda login (via IAM)",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"url": {
+					"raw": "{{base_url}}/v1/auth/iam/login",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"v1",
+						"auth",
+						"iam",
+						"login"
+					]
+				},
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"key\": \"{{fayda_login_key}}\",\n  \"return_url\": \"{{return_url}}\"\n}"
+				},
+				"description": "Starts the login transaction for the `fayda` OAN IAM Service. IAM answers with the Fayda authorize URL (PKCE, state, nonce). Copy `authorization_url` from the collection variables (or the console) into a browser for step 2."
+			},
+			"event": [
+				{
+					"listen": "prerequest",
+					"script": {
+						"type": "text/javascript",
+						"exec": [
+							"pm.collectionVariables.unset(\"fayda_access_token\");",
+							"pm.collectionVariables.unset(\"authorization_url\");",
+							"[\"base_url\",\"return_url\",\"fayda_login_key\",\"iam_callback_base\"].forEach(function (k) {",
+							"    if (!pm.variables.get(k)) { throw new Error(\"Set `\" + k + \"` in the OAN Auth Fayda Login environment\"); }",
+							"});"
+						]
+					}
+				},
+				{
+					"listen": "test",
+					"script": {
+						"type": "text/javascript",
+						"exec": [
+							"pm.test(\"Status 200\", function () {",
+							"    if (pm.response.code !== 200) { console.error(pm.response.text()); }",
+							"    pm.response.to.have.status(200);",
+							"});",
+							"var jsonData = pm.response.json();",
+							"var data = jsonData.data || jsonData;",
+							"pm.test(\"redirect_url returned\", function () {",
+							"    pm.expect(data).to.have.property(\"redirect_url\");",
+							"});",
+							"if (data && data.redirect_url) {",
+							"    pm.collectionVariables.set(\"authorization_url\", data.redirect_url);\n    pm.collectionVariables.set(\"fayda_started_at\", String(Date.now()));",
+							"    console.log(\"[K1] Authorization URL:\", data.redirect_url);",
+							"}",
+							"pm.test(\"redirects to Fayda authorize\", function () {",
+							"    pm.expect(data.redirect_url).to.include(\"esignet.ida.fayda.et\");",
+							"});",
+							"console.log(\"[F1] Open this URL in a browser and sign in with Fayda:\", data.redirect_url);"
+						]
+					}
+				}
+			]
+		},
+		{
+			"name": "2. Complete IAM callback with the pasted Fayda redirect URL",
+			"request": {
+				"method": "GET",
+				"url": {
+					"raw": "{{iam_callback_base}}/auth/callback?state={{fayda_state}}&code={{fayda_code}}",
+					"host": [
+						"{{iam_callback_base}}"
+					],
+					"path": [
+						"auth",
+						"callback"
+					],
+					"query": [
+						{
+							"key": "state",
+							"value": "{{fayda_state}}"
+						},
+						{
+							"key": "code",
+							"value": "{{fayda_code}}"
+						}
+					]
+				},
+				"description": "Manual step before this: open `authorization_url` in a browser, sign in at Fayda (OTP or biometrics) and approve consent. Fayda redirects to the registered redirect URI (e.g. http://localhost:3000/callback?code=...&state=...). Nothing needs to be listening there: copy the full URL from the address bar into `fayda_redirect_url` in the \"OAN Auth Fayda Login (local)\" environment. This request forwards `code` and `state` to the IAM API callback, which exchanges the code (private_key_jwt + PKCE) and sets the X-Access-Token cookie."
+			},
+			"protocolProfileBehavior": {
+				"followRedirects": false
+			},
+			"event": [
+				{
+					"listen": "prerequest",
+					"script": {
+						"type": "text/javascript",
+						"exec": [
+							"var pasted = pm.variables.get(\"fayda_redirect_url\");",
+							"if (!pasted) { throw new Error(\"Paste the final Fayda redirect URL (localhost:3000/callback?state=...&code=...) into `fayda_redirect_url` in the OAN Auth Fayda Login environment\"); }",
+							"var q = pasted.split(\"?\")[1] || \"\";",
+							"var params = {};",
+							"q.split(\"#\")[0].split(\"&\").forEach(function (p) { var kv = p.split(\"=\"); if (kv[0]) { params[kv[0]] = kv[1] || \"\"; } });",
+							"if (params.error) { throw new Error(\"Fayda returned error=\" + params.error + \" \" + decodeURIComponent(params.error_description || \"\")); }",
+							"if (!params.code || !params.state) { throw new Error(\"The pasted URL has no code/state\"); }",
+							"// IAM keeps a login for 300 s, keyed by its state. Catch a stale or mismatched callback here,",
+							"// where the cause is known, rather than as IAM's \"Login Provider Id not received\".",
+							"var started = pm.variables.get(\"authorization_url\") || \"\";",
+							"var startedState = (started.match(/[?&]state=([^&]+)/) || [])[1];",
+							"if (startedState && startedState !== params.state) {",
+							"    throw new Error(\"This callback belongs to an older login, not the latest step 1. Sign in with the current `authorization_url` (or resend step 1 and use its URL), then paste that callback.\");",
+							"}",
+							"var startedAt = Number(pm.variables.get(\"fayda_started_at\") || 0);",
+							"if (startedAt && Date.now() - startedAt > 300 * 1000) {",
+							"    throw new Error(\"Login expired: IAM keeps it for 5 minutes and step 1 ran \" + Math.round((Date.now() - startedAt) / 1000) + \" s ago. Resend step 1, sign in, and send step 2 within 5 minutes.\");",
+							"}",
+							"pm.collectionVariables.set(\"fayda_state\", params.state);",
+							"pm.collectionVariables.set(\"fayda_code\", params.code);"
+						]
+					}
+				},
+				{
+					"listen": "test",
+					"script": {
+						"type": "text/javascript",
+						"exec": [
+							"pm.test(\"IAM callback redirects after exchange (302/303/307)\", function () {",
+							"    pm.expect([302, 303, 307]).to.include(pm.response.code);",
+							"});",
+							"var cookieHeaders = pm.response.headers.all().filter(function (h) {",
+							"    return h.key.toLowerCase() === \"set-cookie\";",
+							"});",
+							"var tokens = cookieHeaders.map(function (h) {",
+							"    var match = h.value.match(/^X-Access-Token=([^;]*)/i);",
+							"    return match ? match[1].replace(/^\"|\"$/g, \"\") : null;",
+							"}).filter(Boolean);",
+							"var token = tokens[tokens.length - 1];",
+							"pm.test(\"IAM issued access token\", function () {",
+							"    pm.expect(token).to.be.a(\"string\").and.not.empty;",
+							"});",
+							"if (token) { pm.environment.set(\"fayda_access_token\", token); }",
+							"if (token) {",
+							"    pm.collectionVariables.set(\"fayda_access_token\", token);",
+							"    console.log(\"[F2] Acquired fayda_access_token from IAM cookie\");",
+							"}",
+							"if (token) { pm.collectionVariables.set(\"fayda_access_token\", token); }",
+							"pm.environment.set(\"fayda_redirect_url\", \"\");",
+							"if (token) {",
+							"    try {",
+							"        var part = token.split(\".\")[1].replace(/-/g, \"+\").replace(/_/g, \"/\");",
+							"        var cl = JSON.parse(Buffer.from(part, \"base64\").toString());",
+							"        var summary = JSON.stringify({ iss: cl.iss, azp: cl.azp, aud: cl.aud, exp: cl.exp, jti: cl.jti });\n        console.log(\"[F2] token claims:\", summary);\n        pm.environment.set(\"fayda_token_claims\", summary);",
+							"    } catch (err) { console.log(\"[F2] access token is not a decodable JWT:\", String(err)); }",
+							"}"
+						]
+					}
+				}
+			]
+		},
+		{
+			"name": "3. Who am I (verify token)",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{base_url}}/v1/auth/me",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"v1",
+						"auth",
+						"me"
+					]
+				},
+				"auth": {
+					"type": "bearer",
+					"bearer": [
+						{
+							"key": "token",
+							"value": "{{fayda_access_token}}",
+							"type": "string"
+						}
+					]
+				}
+			},
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"type": "text/javascript",
+						"exec": [
+							"pm.test(\"Status 200\", function () { pm.response.to.have.status(200); });",
+							"var d = pm.response.json().data || {};",
+							"pm.test(\"Returns a user\", function () { pm.expect(JSON.stringify(d)).to.not.equal(\"{}\"); });",
+							"console.log(\"[5] /auth/me:\", JSON.stringify(d));",
+							"pm.environment.set(\"fayda_me\", JSON.stringify(d));"
+						]
+					}
+				}
+			]
+		},
+		{
+			"name": "4. Logout",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					}
+				],
+				"url": {
+					"raw": "{{base_url}}/v1/auth/logout",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"v1",
+						"auth",
+						"logout"
+					]
+				},
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"access_token\": \"{{fayda_access_token}}\"\n}"
+				},
+				"auth": {
+					"type": "bearer",
+					"bearer": [
+						{
+							"key": "token",
+							"value": "{{fayda_access_token}}",
+							"type": "string"
+						}
+					]
+				}
+			},
+			"event": [
+				{
+					"listen": "prerequest",
+					"script": {
+						"type": "text/javascript",
+						"exec": [
+							"var token = pm.collectionVariables.get(\"fayda_access_token\") || pm.environment.get(\"fayda_access_token\");",
+							"if (!token) { pm.execution.skipRequest(); }"
+						]
+					}
+				},
+				{
+					"listen": "test",
+					"script": {
+						"type": "text/javascript",
+						"exec": [
+							"pm.test(\"Status 200\", function () { pm.response.to.have.status(200); });"
+						]
+					}
+				}
+			]
+		}
+	],
+	"variable": [
+		{
+			"key": "authorization_url",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "fayda_access_token",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "fayda_state",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "fayda_code",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "fayda_started_at",
+			"value": "",
+			"type": "string"
+		}
+	]
+}

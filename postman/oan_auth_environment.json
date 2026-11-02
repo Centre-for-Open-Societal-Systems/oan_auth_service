@@ -1,0 +1,196 @@
+{
+	"id": "e427189c-a1d2-43bb-a579-24b9148d424b",
+	"name": "OAN Auth Environment",
+	"values": [
+		{
+			"key": "base_url",
+			"value": "",
+			"type": "default",
+			"enabled": true,
+			"description": "Site URL, e.g. http://testsite.localhost:8000"
+		},
+		{
+			"key": "user_email",
+			"value": "",
+			"type": "default",
+			"enabled": true,
+			"description": "Generated when blank. Register creates this account; Login uses it"
+		},
+		{
+			"key": "user_password",
+			"value": "",
+			"type": "secret",
+			"enabled": true,
+			"description": "Generated when blank"
+		},
+		{
+			"key": "user_full_name",
+			"value": "",
+			"type": "default",
+			"enabled": true,
+			"description": "Generated when blank"
+		},
+		{
+			"key": "user_phone_number",
+			"value": "",
+			"type": "default",
+			"enabled": true,
+			"description": "E.164. Generated when blank"
+		},
+		{
+			"key": "user_new_password",
+			"value": "",
+			"type": "secret",
+			"enabled": true,
+			"description": "Generated when blank. Used by Reset Password and Set Initial Password"
+		},
+		{
+			"key": "reset_key",
+			"value": "",
+			"type": "secret",
+			"enabled": true,
+			"description": "From the password reset email link"
+		},
+		{
+			"key": "iam_login_key",
+			"value": "",
+			"type": "default",
+			"enabled": true,
+			"description": "Key of an enabled OAN IAM Service row, e.g. staff"
+		},
+		{
+			"key": "iam_return_url",
+			"value": "",
+			"type": "default",
+			"enabled": true,
+			"description": "Absolute URL on one of that row's return origins"
+		},
+		{
+			"key": "iam_redirect_url",
+			"value": "",
+			"type": "default",
+			"enabled": true,
+			"description": "Set by SSO > Start SSO login. Open it in a browser to sign in"
+		},
+		{
+			"key": "iam_cookie_prefix",
+			"value": "",
+			"type": "default",
+			"enabled": true,
+			"description": "Set by SSO > Start SSO login"
+		},
+		{
+			"key": "iam_access_token",
+			"value": "",
+			"type": "secret",
+			"enabled": true,
+			"description": "Value of the <cookie_prefix>X-Access-Token cookie. Read from the cookie jar, or paste it after the IAM callback"
+		},
+		{
+			"key": "iam_id_token",
+			"value": "",
+			"type": "secret",
+			"enabled": true,
+			"description": "Value of the <cookie_prefix>X-ID-Token cookie"
+		},
+		{
+			"key": "iam_session_id",
+			"value": "",
+			"type": "secret",
+			"enabled": true,
+			"description": "Value of the <cookie_prefix>X-Session-Id cookie"
+		},
+		{
+			"key": "admin_username",
+			"value": "",
+			"type": "default",
+			"enabled": true,
+			"description": "A System Manager, used by Admin > Sign in as admin"
+		},
+		{
+			"key": "admin_password",
+			"value": "",
+			"type": "secret",
+			"enabled": true,
+			"description": "Password of admin_username"
+		},
+		{
+			"key": "admin_access_token",
+			"value": "",
+			"type": "secret",
+			"enabled": true,
+			"description": "Set by Admin > Sign in as admin"
+		},
+		{
+			"key": "access_token",
+			"value": "",
+			"type": "secret",
+			"enabled": true,
+			"description": "Set by Register, Login and Refresh"
+		},
+		{
+			"key": "refresh_token",
+			"value": "",
+			"type": "secret",
+			"enabled": true,
+			"description": "Set by Register, Login and Refresh"
+		},
+		{
+			"key": "target_email",
+			"value": "",
+			"type": "default",
+			"enabled": true,
+			"description": "Generated when blank. Login email of the user the admin onboards"
+		},
+		{
+			"key": "user_fayda_id",
+			"value": "",
+			"type": "default",
+			"enabled": true,
+			"description": "16 digits, new each run. Needed by the grievance app's registration hook"
+		},
+		{
+			"key": "target_fayda_id",
+			"value": "",
+			"type": "default",
+			"enabled": true,
+			"description": "16 digits, new each run. Needed by the grievance app's registration hook"
+		},
+		{
+			"key": "target_phone_number",
+			"value": "",
+			"type": "default",
+			"enabled": true,
+			"description": "E.164, new each run. Phone of the user the admin onboards"
+		},
+		{
+			"key": "target_role",
+			"value": "",
+			"type": "default",
+			"enabled": true,
+			"description": "Defaults to Grievance Submitter. Role the admin grants and revokes"
+		},
+		{
+			"key": "target_user_id",
+			"value": "",
+			"type": "default",
+			"enabled": true,
+			"description": "Set by Admin > Create User"
+		},
+		{
+			"key": "temporary_password",
+			"value": "",
+			"type": "secret",
+			"enabled": true,
+			"description": "Set by Admin > Create User and Issue Temporary Password"
+		},
+		{
+			"key": "notification_id",
+			"value": "",
+			"type": "default",
+			"enabled": true,
+			"description": "Set by Notifications > List my notifications"
+		}
+	],
+	"_postman_variable_scope": "environment"
+}

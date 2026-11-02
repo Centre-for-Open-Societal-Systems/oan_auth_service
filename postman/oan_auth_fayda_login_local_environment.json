@@ -1,0 +1,36 @@
+{
+	"name": "OAN Auth Fayda Login (local)",
+	"values": [
+		{
+			"key": "base_url",
+			"value": "http://a2c.localhost:8000/api",
+			"type": "default",
+			"enabled": true
+		},
+		{
+			"key": "return_url",
+			"value": "http://localhost:3000/api/auth/iam/complete",
+			"type": "default",
+			"enabled": true
+		},
+		{
+			"key": "fayda_login_key",
+			"value": "fayda",
+			"type": "default",
+			"enabled": true
+		},
+		{
+			"key": "iam_callback_base",
+			"value": "http://localhost:8030",
+			"type": "default",
+			"enabled": true
+		},
+		{
+			"key": "fayda_redirect_url",
+			"value": "",
+			"type": "default",
+			"enabled": true
+		}
+	],
+	"_postman_variable_scope": "environment"
+}

@@ -1,0 +1,267 @@
+"""The token codec: what it accepts, and what it must refuse."""
+
+import unittest
+from datetime import UTC, datetime, timedelta
+from unittest.mock import patch
+
+import jwt as pyjwt
+from cryptography.hazmat.primitives import serialization
+
+from oan_auth_service.api import tokens
+from oan_auth_service.tests.utils import TEST_PRIVATE_KEYS, configured_keys, generate_rsa_pem, override_conf
+
+
+def _encode(claims: dict, kid: str = "v1", private_key: str | None = None) -> str:
+	"""Hand-roll a token so tests can produce ones the codec would never mint."""
+	return pyjwt.encode(
+		claims,
+		private_key or TEST_PRIVATE_KEYS[kid],
+		algorithm=tokens.ALGORITHM,
+		headers={"kid": kid},
+	)
+
+
+def _valid_claims(**overrides) -> dict:
+	now = datetime.now(UTC)
+	claims = {
+		"iss": "test-issuer",
+		"sub": "someone@example.com",
+		"iat": now,
+		"exp": now + timedelta(minutes=15),
+		"typ": tokens.ACCESS_TOKEN_TYPE,
+		"roles": [],
+	}
+	claims.update(overrides)
+	return claims
+
+
+class TestAccessTokenRoundTrip(unittest.TestCase):
+	def test_issued_token_decodes_to_its_claims(self):
+		with configured_keys():
+			token, ttl = tokens.issue_access_token("a@example.com", ["Bank Agent"])
+			claims = tokens.decode_access_token(token)
+
+		self.assertEqual(claims["sub"], "a@example.com")
+		self.assertEqual(claims["roles"], ["Bank Agent"])
+		for reserved in ("aud", "azp", "nbf"):
+			self.assertNotIn(reserved, claims)
+		self.assertEqual(claims["typ"], tokens.ACCESS_TOKEN_TYPE)
+		self.assertEqual(claims["iss"], "test-issuer")
+		self.assertEqual(ttl, 15 * 60)
+
+	def test_token_carries_the_signing_kid_in_its_header(self):
+		with configured_keys(current_kid="v2"):
+			token, _ = tokens.issue_access_token("a@example.com", [])
+
+		self.assertEqual(pyjwt.get_unverified_header(token)["kid"], "v2")
+
+	def test_scope_is_omitted_entirely_when_not_requested(self):
+		"""Absent, not null. A consumer branching on presence must see a difference."""
+		with configured_keys():
+			token, _ = tokens.issue_access_token("a@example.com", ["X"])
+			claims = tokens.decode_access_token(token)
+
+		self.assertNotIn("scope", claims)
+
+	def test_scope_survives_the_round_trip(self):
+		with configured_keys():
+			token, _ = tokens.issue_access_token("a@example.com", ["X", "Y"], scope=["X"])
+			claims = tokens.decode_access_token(token)
+
+		self.assertEqual(claims["scope"], ["X"])
+		self.assertEqual(claims["roles"], ["X", "Y"])
+
+	def test_each_token_gets_a_distinct_jti(self):
+		with configured_keys():
+			first, _ = tokens.issue_access_token("a@example.com", [])
+			second, _ = tokens.issue_access_token("a@example.com", [])
+
+			self.assertNotEqual(
+				tokens.decode_access_token(first)["jti"],
+				tokens.decode_access_token(second)["jti"],
+			)
+
+	def test_ttl_follows_configuration(self):
+		with configured_keys(), override_conf(jwt_access_token_ttl=60):
+			_token, ttl = tokens.issue_access_token("a@example.com", [])
+
+		self.assertEqual(ttl, 60)
+
+
+def _extra_claims(user, roles):
+	return {
+		"user_type": "farmer",
+		"sub": "attacker@example.com",
+		"roles": ["System Manager"],
+		"aud": "elsewhere",
+		"azp": "elsewhere",
+		"nbf": 4102444800,
+	}
+
+
+def _raising_claims(user, roles):
+	raise RuntimeError("boom")
+
+
+def _non_dict_claims(user, roles):
+	return ["not", "a", "dict"]
+
+
+class TestAccessTokenClaimsHook(unittest.TestCase):
+	def _issue_with_hook(self):
+		hooks = {"on_access_token_claims": ["oan_auth_service.tests.test_tokens._extra_claims"]}
+		with configured_keys(), patch.object(tokens.frappe, "get_hooks", lambda name: hooks.get(name, [])):
+			token, _ = tokens.issue_access_token("a@example.com", ["Bank Agent"])
+			return tokens.decode_access_token(token)
+
+	def test_hook_claims_are_added_to_the_token(self):
+		self.assertEqual(self._issue_with_hook()["user_type"], "farmer")
+
+	def test_hook_cannot_override_registered_claims(self):
+		claims = self._issue_with_hook()
+
+		self.assertEqual(claims["sub"], "a@example.com")
+		self.assertEqual(claims["roles"], ["Bank Agent"])
+
+
+class TestBrokenClaimsHook(unittest.TestCase):
+	def _issue(self, *hook_paths):
+		hooks = {"on_access_token_claims": list(hook_paths)}
+		with (
+			configured_keys(),
+			patch.object(tokens.frappe, "get_hooks", lambda name: hooks.get(name, [])),
+			patch.object(tokens.frappe, "log_error") as log_error,
+		):
+			token, _ = tokens.issue_access_token("a@example.com", ["Bank Agent"])
+			return tokens.decode_access_token(token), log_error
+
+	def test_raising_hook_is_skipped_and_logged(self):
+		claims, log_error = self._issue(
+			"oan_auth_service.tests.test_tokens._raising_claims",
+			"oan_auth_service.tests.test_tokens._extra_claims",
+		)
+		self.assertEqual(claims["user_type"], "farmer")
+		log_error.assert_called_once()
+
+	def test_non_dict_return_is_skipped_and_logged(self):
+		claims, log_error = self._issue("oan_auth_service.tests.test_tokens._non_dict_claims")
+		self.assertEqual(claims["sub"], "a@example.com")
+		log_error.assert_called_once()
+
+
+class TestAccessTokenRejection(unittest.TestCase):
+	def assert_rejected(self, token):
+		with self.assertRaises(tokens.TokenError):
+			tokens.decode_access_token(token)
+
+	def test_empty_token(self):
+		with configured_keys():
+			self.assert_rejected("")
+			self.assert_rejected(None)
+
+	def test_garbage(self):
+		with configured_keys():
+			self.assert_rejected("not-a-jwt")
+
+	def test_tampered_payload(self):
+		"""Flipping a claim must break the signature."""
+		with configured_keys():
+			token, _ = tokens.issue_access_token("a@example.com", ["Viewer"])
+			header, _payload, signature = token.split(".")
+			forged, _ = tokens.issue_access_token("a@example.com", ["Administrator"])
+			swapped_payload = forged.split(".")[1]
+
+			self.assert_rejected(f"{header}.{swapped_payload}.{signature}")
+
+	def test_expired_token(self):
+		with configured_keys():
+			past = datetime.now(UTC) - timedelta(hours=1)
+			self.assert_rejected(_encode(_valid_claims(iat=past, exp=past + timedelta(minutes=1))))
+
+	def test_signed_with_a_key_we_do_not_hold(self):
+		with configured_keys():
+			self.assert_rejected(_encode(_valid_claims(), private_key=generate_rsa_pem()))
+
+	def test_unknown_kid(self):
+		with configured_keys():
+			token = pyjwt.encode(
+				_valid_claims(), TEST_PRIVATE_KEYS["v1"], algorithm=tokens.ALGORITHM, headers={"kid": "v9"}
+			)
+			self.assert_rejected(token)
+
+	def test_no_kid_header(self):
+		with configured_keys():
+			token = pyjwt.encode(_valid_claims(), TEST_PRIVATE_KEYS["v1"], algorithm=tokens.ALGORITHM)
+			self.assert_rejected(token)
+
+	def test_issuer_mismatch(self):
+		"""A token from another deployment must not verify here."""
+		with configured_keys():
+			self.assert_rejected(_encode(_valid_claims(iss="some-other-site")))
+
+	def test_wrong_token_type(self):
+		"""A JWT signed with the same key for another purpose is not an access token."""
+		with configured_keys():
+			self.assert_rejected(_encode(_valid_claims(typ="password-reset")))
+
+	def test_missing_required_claims(self):
+		with configured_keys():
+			claims = _valid_claims()
+			del claims["sub"]
+			self.assert_rejected(_encode(claims))
+
+	def test_alg_none_is_refused(self):
+		"""The classic JWT forgery: strip the signature, claim it was intended."""
+		with configured_keys():
+			token = pyjwt.encode(_valid_claims(), key="", algorithm="none", headers={"kid": "v1"})
+			self.assert_rejected(token)
+
+	def test_hs256_signed_with_the_public_key_is_refused(self):
+		"""Algorithm confusion: the public key is public, so as an HMAC secret it forges.
+
+		Hand-built because PyJWT itself refuses to HMAC with a PEM key.
+		"""
+		import base64
+		import hashlib
+		import hmac
+		import json
+
+		from oan_auth_service.api import jwt_keys
+
+		def b64(raw: bytes) -> str:
+			return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+		with configured_keys():
+			public_pem = jwt_keys.get_verification_key("v1").public_bytes(
+				serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+			)
+			claims = _valid_claims()
+			claims["iat"] = int(claims["iat"].timestamp())
+			claims["exp"] = int(claims["exp"].timestamp())
+			signing_input = (
+				b64(json.dumps({"alg": "HS256", "typ": "JWT", "kid": "v1"}).encode())
+				+ "."
+				+ b64(json.dumps(claims).encode())
+			)
+			signature = hmac.new(public_pem, signing_input.encode(), hashlib.sha256).digest()
+
+			self.assert_rejected(f"{signing_input}.{b64(signature)}")
+
+
+class TestRefreshTokens(unittest.TestCase):
+	def test_generated_tokens_are_unique(self):
+		self.assertNotEqual(tokens.generate_refresh_token(), tokens.generate_refresh_token())
+
+	def test_hash_is_stable_and_hex(self):
+		token = tokens.generate_refresh_token()
+		digest = tokens.hash_refresh_token(token)
+
+		self.assertEqual(digest, tokens.hash_refresh_token(token))
+		self.assertEqual(len(digest), 64)
+		self.assertNotIn(token, digest)
+
+	def test_distinct_tokens_hash_differently(self):
+		self.assertNotEqual(
+			tokens.hash_refresh_token(tokens.generate_refresh_token()),
+			tokens.hash_refresh_token(tokens.generate_refresh_token()),
+		)

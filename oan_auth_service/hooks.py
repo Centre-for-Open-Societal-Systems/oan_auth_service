@@ -1,0 +1,67 @@
+app_name = "oan_auth_service"
+app_title = "OAN Auth Service"
+app_publisher = "OpenAgriNet"
+app_description = "JWT authentication service for OAN services"
+app_email = "admin@openagrinet.org"
+app_license = "mit"
+
+
+# Apps
+# ------------------
+# Consuming apps declare `required_apps = ["oan_auth_service"]` so bench installs
+# this one first and the refresh-token doctype exists before they migrate.
+
+# required_apps = []
+
+
+# Authentication
+# --------------
+# Registered once here rather than in each consuming app: the hook fires for
+# every request, and the middleware decides whether the path belongs to a
+# registered namespace. Consuming apps register their namespace and exempt paths
+# via api.middleware.register_namespace() — see that module.
+
+auth_hooks = ["oan_auth_service.api.middleware.validate_jwt_request"]
+
+# Register Werkzeug REST routes for Frappe API Map
+before_request = ["oan_auth_service.api.router.ensure_routes_registered"]
+
+# Revokes refresh tokens when a session ends through Frappe's own logout. Without
+# it a desk logout drops the session cookie but leaves every refresh token live
+# for its full lifetime, so a user who believes they logged out has not.
+on_logout = "oan_auth_service.api.v1.auth.on_logout"
+
+
+# Installation
+# ------------
+# Adds User.oan_login_email on fresh sites. `bench install-app` marks patches as
+# applied without running them (frappe/installer.py:357), so the patch that adds
+# this field covers upgrades only — new sites, and the site CI builds each run,
+# depend on this hook. Both call the same idempotent function.
+
+after_install = "oan_auth_service.setup.install.after_install"
+
+after_migrate = [
+	"oan_auth_service.api.permission_rules.warn_permission_drift",
+]
+
+
+# Fixtures
+# --------
+# Roles owned by this app, exported to oan_auth_service/fixtures/ and committed.
+
+# fixtures = []
+
+
+# Log clearing
+# ------------
+# Expired refresh tokens are deleted by Frappe's daily Log Settings job, through
+# OANUserRefreshToken.clear_old_logs. Days past expiry before a row is deleted.
+
+default_log_clearing_doctypes = {"OAN User Refresh Token": 0}
+
+
+# Testing
+# -------
+
+# before_tests = "oan_auth_service.setup.install.before_tests"

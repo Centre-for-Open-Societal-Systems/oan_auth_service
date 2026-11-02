@@ -1,0 +1,930 @@
+"""General API utility functions, request validators, rate limiters, and error handlers."""
+
+import inspect
+import json
+import math
+import re
+import uuid
+from functools import wraps
+from typing import Annotated, Any
+
+import frappe
+import phonenumbers
+from frappe import _
+from pydantic import BaseModel, BeforeValidator, Field, TypeAdapter
+from pydantic import ValidationError as PydanticValidationError
+
+from oan_auth_service.api.field_errors import validation_codes, validation_details
+from oan_auth_service.api.jwt_keys import JWTKeyConfigurationError
+
+
+class _DummyException(Exception):
+	pass
+
+
+class PasswordChangeRequired(frappe.AuthenticationError):
+	"""The credentials were right, but the password is a temporary one that must be replaced first.
+
+	Subclasses AuthenticationError so it fails closed anywhere a plain
+	authentication failure would, and answers 403 rather than 401 because the
+	caller did nothing wrong: a 401 reads to a client as an expired session and
+	sends the user to a global sign-out, when the right next screen is
+	"choose a new password".
+	"""
+
+	http_status_code = 403
+
+
+class ResponseValidationError(Exception):
+	"""An endpoint returned data that does not match its declared `response_model`.
+
+	This is always a fault in this service, never caller error: the endpoint
+	promised a shape and did not produce it. It is therefore a 500, and the
+	offending field errors are logged rather than echoed to the caller.
+	"""
+
+	http_status_code = 500
+
+	def __init__(self, endpoint: str, errors: list[dict]):
+		self.endpoint = endpoint
+		self.errors = errors
+		super().__init__(f"Response validation failed for {endpoint}: {errors}")
+
+
+# ---------------------------------------------------------------------------
+# Password & Input Validations
+# ---------------------------------------------------------------------------
+
+
+def validate_password_complexity(value: str) -> str:
+	"""Validate that a password meets complexity rules: at least 1 letter, 1 digit, and 1 symbol."""
+	if not any(c.isalpha() for c in value):
+		raise ValueError("Password must contain at least one letter.")
+	if not any(c.isdigit() for c in value):
+		raise ValueError("Password must contain at least one number.")
+	if not any(not c.isalnum() for c in value):
+		raise ValueError("Password must contain at least one special character.")
+	return value
+
+
+def validate_temporary_password(value: str) -> str:
+	"""Rule for a password an admin types for someone else: at least 8 characters, a letter and a digit.
+
+	Deliberately weaker than `validate_password_complexity`. It is handed from an
+	admin to a person by hand and lives for exactly one use, after which
+	`set_initial_password` demands the full rule of the password that replaces it.
+	"""
+	if len(value) < 8:
+		raise ValueError("Password must be at least 8 characters.")
+	if not any(c.isalpha() for c in value) or not any(c.isdigit() for c in value):
+		raise ValueError("Password must contain at least one letter and one number.")
+	return value
+
+
+def validate_date_string(v: str | None) -> str | None:
+	"""Validate that a string represents a valid date or datetime."""
+	if v:
+		try:
+			import datetime
+
+			try:
+				datetime.date.fromisoformat(v)
+			except ValueError:
+				datetime.datetime.fromisoformat(v)
+		except ValueError:
+			raise ValueError("Invalid date format. Expected YYYY-MM-DD or ISO 8601 string.")
+	return v
+
+
+def validate_email_string(v: str | None) -> str | None:
+	"""Validate that a string represents a valid email address format."""
+	if v:
+		from frappe.utils import validate_email_address
+
+		if not validate_email_address(v):
+			raise ValueError("Email address is not in a valid format.")
+	return v
+
+
+# Phone-only accounts recover their password by SMS, so a landline would be an
+# account that can never be recovered. FIXED_LINE_OR_MOBILE covers regions (US,
+# Canada) whose numbering plan does not distinguish the two.
+_MOBILE_TYPES = {
+	phonenumbers.PhoneNumberType.MOBILE,
+	phonenumbers.PhoneNumberType.FIXED_LINE_OR_MOBILE,
+}
+
+
+def validate_mobile(v: str | None) -> str:
+	"""Validate an international mobile number and return it in E.164.
+
+	`parse` with no default region rejects anything without a leading `+` and a
+	known country code. `number_type` returns UNKNOWN for any number that is not
+	valid, so the mobile check also covers `is_valid_number`.
+	"""
+	raw = str(v or "").strip()
+	try:
+		parsed = phonenumbers.parse(raw, None)
+	except phonenumbers.NumberParseException:
+		parsed = None
+
+	if parsed is None or phonenumbers.number_type(parsed) not in _MOBILE_TYPES:
+		frappe.throw(
+			_("Enter a mobile number in international format, e.g. +251911223344: {0}").format(raw),
+			frappe.ValidationError,
+		)
+
+	return phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.E164)
+
+
+def split_phone_number(
+	phone_str: str | None, default_region: str | None = None
+) -> tuple[str | None, str | None]:
+	"""Decompose an E.164 or national phone string into (country_code, national_number) via libphonenumber.
+
+	Returns (country_code, national_number) if valid, or (None, None) if invalid or unparseable.
+	"""
+	if not phone_str or not str(phone_str).strip():
+		return None, None
+	raw = str(phone_str).strip()
+	try:
+		candidate = raw if raw.startswith("+") else (f"+{raw}" if not default_region else raw)
+		parsed = phonenumbers.parse(candidate, default_region if not raw.startswith("+") else None)
+		if phonenumbers.is_valid_number(parsed):
+			# national_significant_number keeps a leading zero that belongs to the
+			# number (Italian `06…`); `parsed.national_number` is an int and drops it.
+			return f"+{parsed.country_code}", phonenumbers.national_significant_number(parsed)
+	except Exception:
+		pass
+	return None, None
+
+
+def assemble_phone_number(phone: str | None, country_code: str | None = None) -> str | None:
+	"""Join a split country code and national number into one `+<cc><national>` string.
+
+	The two input shapes never mix:
+	- `country_code` given: `phone` is always the national number. It is never
+	  inspected for an embedded country code, so a national number that happens
+	  to start with the same digits (e.g. Indian `91…` with `+91`) is kept whole.
+	  A leading trunk `0` is left in place: libphonenumber, via `validate_mobile`,
+	  drops it where it is a trunk prefix (`+2510911…` → `+251911…`) and keeps it
+	  where it belongs to the number (Italian `+3906…`).
+	- `country_code` absent: `phone` must already be in international form and
+	  is returned unchanged.
+
+	No validity check here; callers run `validate_mobile` on the result.
+	"""
+	if not phone or not str(phone).strip():
+		return None
+	raw_phone = str(phone).strip()
+	if not country_code:
+		return raw_phone
+	cc_digits = re.sub(r"\D", "", str(country_code))
+	national_digits = re.sub(r"\D", "", raw_phone)
+	return f"+{cc_digits}{national_digits}"
+
+
+SafeDate = Annotated[str | None, BeforeValidator(validate_date_string)]
+SafeEmail = Annotated[str | None, BeforeValidator(validate_email_string)]
+
+
+# ---------------------------------------------------------------------------
+# Rate Limiting
+# ---------------------------------------------------------------------------
+
+
+def incr_counter(key: str, window: int) -> int:
+	"""Atomically add one to a Redis counter and return the new count.
+
+	The window starts at the first increment and is not extended by later ones.
+	Concurrent callers each get a distinct count, unlike a read-then-set.
+	"""
+	# Raw pipeline ops skip Frappe's `{db_name}|` key prefix, so build the key the same way.
+	redis_key = frappe.cache.make_key(key)
+	pipeline = frappe.cache.pipeline()
+	pipeline.incr(redis_key)
+	pipeline.expire(redis_key, window, nx=True)
+	count, _expired = pipeline.execute()
+	return count
+
+
+def check_rate_limit(key: str, limit: int, window: int):
+	"""Allow `limit` calls per `window` seconds for `key`, then answer 429.
+
+	The counter is a plain Redis integer under Frappe's site-prefixed key. It is read and
+	written through the same key (an earlier version read through `get_value` and wrote
+	through a raw pipeline under the bare key, so the count it read was always 0 and nothing
+	was ever limited). INCR is atomic, so concurrent callers cannot both slip under the
+	limit, and a counter that somehow has no expiry gets one rather than blocking forever.
+
+	:param key: unique identifier per caller and endpoint
+	:param limit: max calls allowed in window
+	:param window: seconds
+	"""
+	if incr_counter(key, window) > limit:
+		raise frappe.TooManyRequestsError(_("Rate limit exceeded. Try again later."))
+
+
+def rate_limit_per_user(limit: int, window: int, name: str | None = None):
+	"""Rate limit an authenticated endpoint per session user.
+
+	Frappe's own `rate_limit` keys on IP or a request field and cannot see the
+	JWT user. Apps depending on this service can import this for their own
+	endpoints. Place it under `@handle_api_errors` so the 429 is enveloped.
+
+	:param name: bucket name; defaults to the function's module and name, so
+	    two endpoints never share a budget unless they pass the same name
+	"""
+
+	def decorator(fn):
+		bucket = name or f"{fn.__module__}.{fn.__qualname__}"
+
+		@wraps(fn)
+		def wrapper(*args, **kwargs):
+			check_rate_limit(f"oan_auth:user:{bucket}:{frappe.session.user}", limit=limit, window=window)
+			return fn(*args, **kwargs)
+
+		return wrapper
+
+	return decorator
+
+
+# ---------------------------------------------------------------------------
+# Decorators: Schema Validation & Role Guard
+# ---------------------------------------------------------------------------
+
+
+def validate_request(schema: type[BaseModel], exclude_unset: bool = False):
+	"""Decorator to validate API inputs using a Pydantic schema.
+
+	`cmd` is dropped before validation: Frappe's RPC path (`/api/method/...`) adds it
+	to the form dict, and it would otherwise trip schemas that forbid extra fields.
+
+	`exclude_unset=True` is for PATCH endpoints. The handler receives only the fields
+	the client actually sent; without it, every omitted optional field would arrive as
+	None and read as "set to null".
+
+	Schema failures are reported as **400 with code VALIDATION_ERROR**, not 422.
+	Both are defensible and much of the ecosystem (FastAPI among them) picks 422;
+	400 is chosen here and held deliberately, because it is what this service has
+	always returned and `_ERROR_CODES` already keys VALIDATION_ERROR off it, so a
+	change would break every client branching on the pair. The rule is: one code
+	for "your input was rejected", set in exactly two places — here and the
+	`PydanticValidationError` branch of `handle_api_errors`. Change both or
+	neither.
+	"""
+
+	def decorator(func):
+		@wraps(func)
+		def wrapper(*args, **kwargs):
+			sig = inspect.signature(func)
+			bound = sig.bind_partial(*args, **kwargs)
+			bound.apply_defaults()
+
+			params = {}
+			for k, v in bound.arguments.items():
+				if k == "kwargs" and isinstance(v, dict):
+					params.update(v)
+				else:
+					params[k] = v
+			params.pop("cmd", None)
+
+			try:
+				validated = schema(**params)
+			except PydanticValidationError as e:
+				errors = validation_details(e, schema)
+
+				frappe.response["http_status_code"] = 400
+				frappe.local.message_log = []
+				return error_response(
+					message=_("Validation failed"),
+					code="VALIDATION_ERROR",
+					details=errors,
+					field_codes=validation_codes(e),
+				)
+
+			validated_dict = validated.model_dump(exclude_unset=exclude_unset)
+			return func(**validated_dict)
+
+		wrapper._request_schema = schema
+		wrapper.__pydantic_schema__ = schema
+		return wrapper
+
+	return decorator
+
+
+def _apply_response_model(endpoint: str, adapter: TypeAdapter, res):
+	"""Validate and filter an endpoint's payload against its declared response model.
+
+	Returns the payload re-serialised through the model, so fields the model does
+	not declare are dropped. On this service that filtering is the point as much
+	as the validation is: a password hash, a reset key or an internal user id
+	added to a return dict cannot leak through an endpoint that declares its
+	shape.
+	"""
+	envelope_key = None
+	payload = res
+
+	if isinstance(res, dict):
+		if res.get("status") == "error":
+			# Error envelopes are shaped by `error_response`, not by the model.
+			return res
+		if "data" in res:
+			envelope_key = "data"
+			payload = res["data"]
+
+	if payload is None:
+		return res
+
+	try:
+		validated = adapter.validate_python(payload)
+	except PydanticValidationError as e:
+		raise ResponseValidationError(endpoint, e.errors()) from e
+
+	dumped = adapter.dump_python(validated, mode="json")
+
+	if envelope_key is None:
+		return dumped
+
+	out = dict(res)
+	out[envelope_key] = dumped
+	return out
+
+
+def api_doc(
+	summary: str | None = None,
+	description: str | None = None,
+	tags: list[str] | None = None,
+	response_model: Any = None,
+	deprecated: bool = False,
+):
+	"""Attach OpenAPI metadata to an endpoint, and enforce `response_model` if given.
+
+	`response_model` is not documentation-only. If the endpoint returns data that
+	does not match it, the call fails with a 500 rather than serving a payload of
+	the wrong shape — the caller is better served by a clear server error than by
+	data it cannot rely on. Any pydantic-compatible type works, including
+	`list[Model]` and `Model | None`.
+
+	Place this decorator *below* `@handle_api_errors` in the stack so the raised
+	`ResponseValidationError` is caught, logged and enveloped:
+
+	    @route("/my-endpoint")
+	    @validate_request(MySchema)
+	    @handle_api_errors
+	    @api_doc(summary="...", response_model=MyResponse)
+	    def my_endpoint(...): ...
+	"""
+	adapter = TypeAdapter(response_model) if response_model is not None else None
+
+	def decorator(func):
+		@wraps(func)
+		def wrapper(*args, **kwargs):
+			res = func(*args, **kwargs)
+			if adapter is None:
+				return res
+			return _apply_response_model(func.__name__, adapter, res)
+
+		wrapper._api_doc = {
+			"summary": summary,
+			"description": description,
+			"tags": tags,
+			"response_model": response_model,
+			"deprecated": deprecated,
+		}
+		return wrapper
+
+	return decorator
+
+
+def require_role(roles: list[str]):
+	"""Decorator that enforces the caller holds at least one of `roles`."""
+
+	def decorator(fn):
+		@wraps(fn)
+		def wrapper(*args, **kwargs):
+			# Cached per user and cleared when the user's roles change.
+			if not set(roles) & set(frappe.get_roles(frappe.session.user)):
+				roles_str = ", ".join(roles)
+				frappe.throw(_("Only {0} can perform this action.").format(roles_str), frappe.PermissionError)
+			return fn(*args, **kwargs)
+
+		return wrapper
+
+	return decorator
+
+
+def require_permission(doctype: str, ptype: str):
+	"""Reject the call unless the caller holds `ptype` on `doctype` through DocPerm.
+
+	This is the doctype-level check only. Row-level access still comes from the
+	app's permission hooks when the handler loads the document.
+	"""
+
+	def decorator(fn):
+		@wraps(fn)
+		def wrapper(*args, **kwargs):
+			frappe.has_permission(doctype, ptype, throw=True)
+			return fn(*args, **kwargs)
+
+		return wrapper
+
+	return decorator
+
+
+# ---------------------------------------------------------------------------
+# Multi-value Parsing & Datetime Helpers
+# ---------------------------------------------------------------------------
+
+
+def match_allowed_tokens(text: str, allowed: set | list | tuple, strict: bool = True) -> list[str] | None:
+	"""Split comma-separated `text`, keeping `allowed` values that contain commas intact."""
+	if not text:
+		return []
+	allowed_sorted = sorted({str(a).strip() for a in allowed if str(a).strip()}, key=len, reverse=True)
+	tokens = []
+	remaining = text.strip()
+	while remaining:
+		for item_str in allowed_sorted:
+			if remaining == item_str:
+				tokens.append(item_str)
+				remaining = ""
+				break
+			if remaining.startswith(item_str):
+				rest = remaining[len(item_str) :].lstrip()
+				if rest.startswith(","):
+					tokens.append(item_str)
+					remaining = rest[1:].lstrip()
+					break
+		else:
+			if strict:
+				return None
+			token, _sep, remaining = remaining.partition(",")
+			token = token.strip()
+			if token:
+				tokens.append(token)
+			remaining = remaining.lstrip()
+	return tokens
+
+
+def parse_multi_value(value, allowed=None) -> list[str]:
+	"""Split a single value or comma-separated string into a de-duplicated list."""
+	if value is None:
+		return []
+	if isinstance(value, (list, tuple, set)):
+		requested = [str(v).strip() for v in value]
+	else:
+		v_str = str(value).strip()
+		if not v_str:
+			return []
+		if v_str.startswith("[") and v_str.endswith("]"):
+			try:
+				parsed = frappe.parse_json(v_str)
+				requested = [str(v).strip() for v in parsed] if isinstance(parsed, list) else [v_str]
+			except Exception:
+				requested = [v.strip() for v in v_str.split(",")]
+		elif allowed is not None and v_str in allowed:
+			requested = [v_str]
+		elif allowed is not None:
+			matched_tokens = match_allowed_tokens(v_str, allowed)
+			if matched_tokens is not None:
+				requested = matched_tokens
+			else:
+				requested = [v.strip() for v in v_str.split(",")]
+		else:
+			requested = [v.strip() for v in v_str.split(",")]
+	seen = set()
+	result = []
+	for v in requested:
+		if not v or v in seen:
+			continue
+		if allowed is not None and v not in allowed:
+			allowed_list = ", ".join(str(a) for a in allowed)
+			frappe.throw(
+				_("Invalid value '{0}'. Allowed values: {1}").format(v, allowed_list), frappe.ValidationError
+			)
+		seen.add(v)
+		result.append(v)
+	return result
+
+
+def to_tz_aware_iso(dt) -> str | None:
+	"""Convert a naive Frappe datetime (stored in the system timezone) to an ISO 8601 UTC string ending in `Z`."""
+	if not dt:
+		return None
+	from datetime import UTC
+
+	import pytz
+	from frappe.utils import get_datetime, get_system_timezone
+
+	dt_obj = get_datetime(dt)
+	system_tz = pytz.timezone(get_system_timezone())
+	utc = system_tz.localize(dt_obj).astimezone(UTC)
+	return utc.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def from_tz_aware_iso(value):
+	"""Convert an ISO 8601 string (tz-aware or naive) into a naive datetime in system timezone."""
+	if not value:
+		return None
+	import pytz
+	from frappe.utils import get_datetime, get_system_timezone
+
+	if isinstance(value, str):
+		from datetime import datetime
+
+		try:
+			dt_obj = datetime.fromisoformat(value)
+		except ValueError:
+			return get_datetime(value)
+	else:
+		dt_obj = value
+
+	if dt_obj.tzinfo is not None:
+		system_tz = pytz.timezone(get_system_timezone())
+		dt_obj = dt_obj.astimezone(system_tz).replace(tzinfo=None)
+	return dt_obj
+
+
+# ---------------------------------------------------------------------------
+# Message Extraction & Error Envelopes
+# ---------------------------------------------------------------------------
+
+
+def extract_message_from_str(val: str | None) -> str | None:
+	"""Extract plain message string from possible json, ast, or html formatted text."""
+	if not val:
+		return val
+
+	if isinstance(val, str) and val.startswith("{") and val.endswith("}"):
+		try:
+			parsed = json.loads(val)
+			if isinstance(parsed, dict) and "message" in parsed:
+				val = str(parsed["message"])
+		except Exception:
+			frappe.logger().debug("Could not parse message payload; returning raw value")
+
+	if isinstance(val, str) and "<" in val and ">" in val:
+		val = re.sub(r"<[^>]+>", "", val).strip()
+
+	return val
+
+
+def get_error_message(e: Exception, default_msg: str = "Validation Error") -> str:
+	"""Retrieve clean error message from exception or frappe.local.message_log."""
+	error_msg = ""
+	if hasattr(e, "args") and e.args:
+		first_arg = e.args[0]
+		if isinstance(first_arg, dict):
+			error_msg = first_arg.get("message") or str(first_arg)
+		elif isinstance(first_arg, str):
+			error_msg = extract_message_from_str(first_arg)
+		else:
+			error_msg = str(first_arg)
+	else:
+		error_msg = str(e)
+
+	error_msg = extract_message_from_str(error_msg)
+
+	messages = getattr(frappe.local, "message_log", [])
+	if messages:
+		parsed_msgs = []
+		for m in messages:
+			if isinstance(m, dict):
+				msg_str = m.get("message") or str(m)
+			elif isinstance(m, str):
+				msg_str = extract_message_from_str(m)
+			else:
+				msg_str = str(m)
+			if msg_str:
+				parsed_msgs.append(msg_str)
+		if parsed_msgs:
+			return " | ".join(parsed_msgs)
+
+	return error_msg or default_msg
+
+
+# ---------------------------------------------------------------------------
+# Pagination
+# ---------------------------------------------------------------------------
+
+
+class PageParams(BaseModel):
+	"""Page window for list endpoints. Subclass it in a list schema to add filters."""
+
+	page: int = Field(default=1, ge=1, description="Page number, 1-indexed")
+	page_size: int = Field(default=20, ge=1, le=100, description="Items per page")
+
+	@property
+	def start(self) -> int:
+		return (self.page - 1) * self.page_size
+
+
+def page_meta(total_count: int, page: int, page_size: int) -> dict:
+	"""The `pagination` block of a list response, for `success_response(pagination=...)`."""
+	total_pages = math.ceil(total_count / page_size) if total_count > 0 and page_size > 0 else 1
+	return {
+		"page": page,
+		"page_size": page_size,
+		"total_count": total_count,
+		"total_pages": total_pages,
+		"has_next": page < total_pages,
+		"has_prev": page > 1,
+	}
+
+
+def success_response(data=None, message="Success", meta=None, pagination=None) -> dict:
+	"""Developer-facing payload builder for standardized success responses."""
+	return {
+		"data": data,
+		"message": message,
+		"meta": meta,
+		"pagination": pagination,
+	}
+
+
+def _envelope_success(data=None, message="Success", meta=None, pagination=None) -> dict:
+	"""Format standardized JSON success envelope with request_id."""
+	clean_message = extract_message_from_str(message) if isinstance(message, str) else str(message)
+	res = {
+		"status": "success",
+		"message": clean_message,
+		"data": data,
+		"meta": meta or {},
+	}
+	req_id = getattr(frappe.local, "request_id", None)
+	if req_id:
+		res["request_id"] = req_id
+	if pagination:
+		res["pagination"] = pagination
+	return res
+
+
+def error_response(
+	message: str,
+	code: str = "GENERIC_ERROR",
+	details: dict | None = None,
+	meta: dict | None = None,
+	field_codes: dict | None = None,
+) -> dict:
+	"""Format standardized JSON error envelope with request_id and metadata.
+
+	`field_codes` is for validation failures: the same fields as `details`, each as
+	`{"code": ..., **limits}`, so a client can show its own translation of the rule.
+	It is left out of every other error."""
+	clean_message = extract_message_from_str(message) if isinstance(message, str) else str(message)
+	res = {
+		"status": "error",
+		"message": clean_message,
+		"code": code,
+		"details": details or {},
+		"meta": meta or {},
+	}
+	if field_codes:
+		res["field_codes"] = field_codes
+	req_id = getattr(frappe.local, "request_id", None)
+	if req_id:
+		res["request_id"] = req_id
+	return res
+
+
+def _resolve_version_meta(func, explicit_meta: dict | None = None) -> dict:
+	"""Dynamically resolve the API version_meta from the caller's package if not explicitly provided."""
+	auto_meta = {}
+	mod_name = getattr(func, "__module__", "")
+
+	if ".api." in mod_name:
+		try:
+			parts = mod_name.split(".api.")
+			base_pkg = parts[0] + ".api"
+			ver_candidate = parts[1].split(".")[0]
+
+			import importlib
+
+			# nosemgrep: non-literal-import, python.lang.security.audit.non-literal-import.non-literal-import
+			api_mod = importlib.import_module(base_pkg)
+			version_meta_fn = getattr(api_mod, "version_meta", None)
+			if callable(version_meta_fn):
+				auto_meta = version_meta_fn(ver_candidate)
+			else:
+				auto_meta = {"api_version": ver_candidate}
+		except Exception:
+			auto_meta = {}
+
+	if explicit_meta and isinstance(explicit_meta, dict):
+		return {**auto_meta, **explicit_meta}
+	return auto_meta
+
+
+# Frappe already carries the exception -> status mapping we need: every class in
+# frappe/exceptions.py declares `http_status_code`, and frappe/app.py's own
+# handle_exception() reads it with getattr(e, "http_status_code", 500). Deriving
+# the status the same way — instead of hand-listing exception types — keeps this
+# decorator correct for exception types it was never written against.
+_CONSTRAINT_ERRORS = tuple(
+	exc
+	for exc in (
+		getattr(frappe, "MandatoryError", None),
+		getattr(frappe, "UniqueValidationError", None),
+		getattr(frappe, "DuplicateEntryError", None),
+		getattr(frappe, "DataError", None),
+	)
+	if exc is not None
+) or (_DummyException,)
+
+# Stable, caller-facing vocabulary. Consumers branch on these strings, so they are
+# part of the API contract — add cases here rather than inventing codes at throw sites.
+_ERROR_CODES = {
+	400: "VALIDATION_ERROR",
+	401: "AUTHENTICATION_ERROR",
+	403: "PERMISSION_DENIED",
+	404: "NOT_FOUND",
+	409: "DUPLICATE_ENTRY",
+	429: "RATE_LIMIT_EXCEEDED",
+	500: "INTERNAL_ERROR",
+	502: "BAD_GATEWAY",
+	503: "SERVICE_UNAVAILABLE",
+}
+
+_DEFAULT_MESSAGES = {
+	400: "Validation Error",
+	401: "Authentication failed",
+	403: "Permission denied",
+	404: "Resource not found",
+	409: "Duplicate entry",
+	429: "Rate limit exceeded",
+}
+
+
+def _http_status_for(e: Exception) -> int:
+	"""Resolve the HTTP status for an exception the way Frappe itself does."""
+	status = getattr(e, "http_status_code", None)
+
+	if status is None:
+		# The `validate_*_string` helpers raise plain ValueError so they can double as
+		# pydantic BeforeValidators; those are caller input errors, not server faults.
+		return 400 if isinstance(e, ValueError) else 500
+
+	# Frappe maps ValidationError to 417 Expectation Failed, which is not what the
+	# status means and not what consumers of this envelope have ever received.
+	return 400 if status == 417 else status
+
+
+def _rollback():
+	"""Discard partial writes made before an error.
+
+	`handle_api_errors` returns an envelope instead of letting the exception
+	escape, so Frappe never sees a failure and commits the request transaction
+	as usual. Without this, a throw partway through a multi-write endpoint
+	leaves the earlier writes behind. Call it *before* `frappe.log_error`, whose
+	own insert would otherwise be rolled back along with everything else.
+	"""
+	try:
+		frappe.db.rollback()
+	except Exception:
+		frappe.logger().debug("Rollback failed or no active transaction")
+
+
+def handle_api_errors(func):
+	"""Decorator to wrap API methods with standardized error handling and JSON envelopes."""
+
+	@wraps(func)
+	def wrapper(*args, **kwargs):
+		if not getattr(frappe.local, "request_id", None):
+			req_id = None
+			if frappe.request:
+				headers = getattr(frappe.request, "headers", None)
+				environ = getattr(frappe.request, "environ", None)
+				req_id = (headers.get("X-Request-Id") if headers else None) or (
+					environ.get("REQUEST_ID") if environ else None
+				)
+			if not req_id:
+				req_id = str(uuid.uuid4())
+			frappe.local.request_id = req_id
+
+		try:
+			res = func(*args, **kwargs)
+
+			if getattr(frappe.local, "response", None) and frappe.local.response.get("type") == "download":
+				return res
+
+			if isinstance(res, dict) and res.get("status") == "error":
+				return res
+
+			message = "Success"
+			pagination = None
+			meta = None
+			data = res
+
+			if isinstance(res, dict) and ("data" in res or "message" in res):
+				data = res.get("data", res if "data" not in res else None)
+				message = res.get("message", "Success")
+				pagination = res.get("pagination")
+				meta = res.get("meta")
+
+			resolved_meta = _resolve_version_meta(func, meta)
+			return _envelope_success(data=data, message=message, pagination=pagination, meta=resolved_meta)
+
+		except PydanticValidationError as e:
+			# Handled ahead of the generic path only because it carries a per-field
+			# `details` map no other exception has. (It subclasses ValueError, so it
+			# would otherwise resolve to 400 anyway.)
+			# 400 here must stay in step with `validate_request` — see its docstring
+			# for why this service uses 400 rather than 422.
+			# The request schema is known only when the handler is wrapped the other way
+			# round; otherwise labels are the field names spelled out.
+			errors = validation_details(e, getattr(func, "_request_schema", None))
+			_rollback()
+			frappe.local.message_log = []
+			frappe.response["http_status_code"] = 400
+			resolved_meta = _resolve_version_meta(func)
+			return error_response(
+				message=_("Validation failed"),
+				code="VALIDATION_ERROR",
+				details=errors,
+				meta=resolved_meta,
+				field_codes=validation_codes(e),
+			)
+
+		except ResponseValidationError as e:
+			# Handled ahead of the generic path so the per-field errors reach the
+			# log. They are deliberately not echoed: the caller cannot act on them
+			# and they describe this service's internals.
+			_rollback()
+			frappe.local.message_log = []
+			frappe.response["http_status_code"] = 500
+			frappe.log_error(
+				title=f"Response Validation Error | {func.__name__}",
+				message=json.dumps(
+					{
+						"request_id": getattr(frappe.local, "request_id", None),
+						"endpoint": e.endpoint,
+						"errors": e.errors,
+					},
+					indent=2,
+					default=str,
+				),
+			)
+			resolved_meta = _resolve_version_meta(func)
+			return error_response(_("An unexpected error occurred"), "INTERNAL_ERROR", meta=resolved_meta)
+
+		except JWTKeyConfigurationError as e:
+			# The one 5xx whose message is safe — and necessary — to show the caller:
+			# it means the deployment has no usable signing key, and masking it as a
+			# generic 500 sends operators hunting through logs for a config typo.
+			_rollback()
+			frappe.local.message_log = []
+			frappe.response["http_status_code"] = 500
+			frappe.log_error(title="JWT Key Configuration Error", message=str(e))
+			resolved_meta = _resolve_version_meta(func)
+			return error_response(str(e), "CONFIGURATION_ERROR", meta=resolved_meta)
+
+		except PasswordChangeRequired as e:
+			# Ahead of the generic path, which would answer AUTHENTICATION_ERROR: a client
+			# branches on this code to show "choose a new password" instead of a sign-in failure.
+			_rollback()
+			frappe.local.message_log = []
+			frappe.response["http_status_code"] = 403
+			resolved_meta = _resolve_version_meta(func)
+			return error_response(
+				get_error_message(e, _("You must set your own password before signing in.")),
+				"PASSWORD_CHANGE_REQUIRED",
+				meta=resolved_meta,
+			)
+
+		except Exception as e:
+			_rollback()
+			status = _http_status_for(e)
+			code = _ERROR_CODES.get(status, "INTERNAL_ERROR" if status >= 500 else "GENERIC_ERROR")
+
+			# Log server faults, plus constraint errors: those are 4xx to the caller
+			# but usually signal a schema or race problem worth investigating.
+			if status >= 500 or isinstance(e, _CONSTRAINT_ERRORS):
+				log_title = ("API Error" if status >= 500 else "DB/Constraint Error") + f" | {func.__name__}"
+				frappe.log_error(
+					title=log_title,
+					message=json.dumps(
+						{
+							"request_id": getattr(frappe.local, "request_id", None),
+							"endpoint": func.__name__,
+							"user": frappe.session.user if frappe.session else None,
+							"traceback": frappe.get_traceback(),
+							"exception": str(e),
+						},
+						indent=2,
+					),
+				)
+
+			# A 5xx message can carry internals (SQL, paths), so it is never echoed.
+			message = (
+				_("An unexpected error occurred")
+				if status >= 500
+				else get_error_message(e, _(_DEFAULT_MESSAGES.get(status, "Request could not be processed")))
+			)
+
+			frappe.local.message_log = []
+			frappe.response["http_status_code"] = status
+			resolved_meta = _resolve_version_meta(func)
+			return error_response(message, code, meta=resolved_meta)
+
+	return wrapper

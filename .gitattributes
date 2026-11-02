@@ -1,0 +1,18 @@
+# Store every text file with LF in the repository and check it out with LF.
+* text=auto eol=lf
+
+# patches.txt is an append-only list, and two branches almost always append to
+# it in the same release. `merge=union` keeps both sides' lines instead of
+# raising a conflict over the last line of the file.
+oan_auth_service/patches.txt merge=union
+
+# Same story: modules.txt is a registry that only ever grows, one line per module.
+oan_auth_service/modules.txt merge=union
+
+# Give conflict hunks a useful @@ header: the enclosing heading for Markdown and
+# the enclosing def/class for Python, so a conflict says where it is.
+*.md diff=markdown
+*.py diff=python
+
+# Lock files are generated. Never hand-merge them; regenerate instead.
+uv.lock linguist-generated=true
