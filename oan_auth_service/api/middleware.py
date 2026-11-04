@@ -212,8 +212,12 @@ def _session_user() -> str | None:
 	return user if user and user != "Guest" else None
 
 
-def _bearer_token() -> str | None:
-	"""Return the token from the Authorization header, if it carries one."""
+def bearer_token() -> str | None:
+	"""Return the token from the Authorization header, if it carries one.
+
+	Public for apps that forward the caller's own token. A request can also be
+	authenticated by a cookie session, in which case this returns None.
+	"""
 	header = frappe.get_request_header("Authorization") or ""
 	parts = header.split(None, 1)
 
@@ -222,6 +226,8 @@ def _bearer_token() -> str | None:
 
 	return parts[1].strip() or None
 
+
+_bearer_token = bearer_token
 
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 

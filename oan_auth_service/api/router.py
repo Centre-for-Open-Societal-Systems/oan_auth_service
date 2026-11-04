@@ -24,6 +24,8 @@ TLS, HSTS and transport security headers belong to nginx. 404/405 belong to
 Frappe's matcher. Neither appears here.
 """
 
+import importlib
+import inspect
 import threading
 from collections.abc import Callable
 from functools import wraps
@@ -65,6 +67,7 @@ def rest(
 	tier: str | None = None,
 	auth: str | tuple[str, ...] | None = None,
 	roles: list[str] | tuple[str, ...] | None = None,
+	cache_seconds: int = 0,
 ) -> Callable:
 	"""Expose `fn` at `path`, and return `fn` unchanged.
 
@@ -75,6 +78,10 @@ def rest(
 	JWTs; it is a transition, not a design (see the middleware docstring).
 	`allow_guest=True` is the older spelling of `auth="public"`. A path takes one
 	scheme for all its methods, because the middleware decides by path.
+
+	`cache_seconds` lets a client reuse a successful GET for that long
+	(`Cache-Control: private, max-age=N`). Frappe's default is `no-store`, so a
+	route opts in; only the owner of the data knows how long it stays valid.
 
 	The wrapper is registered as the rule's endpoint; the module-level name stays
 	bound to the original function, so any direct caller is unaffected by the
@@ -88,11 +95,15 @@ def rest(
 	auth, roles = _resolve_auth(path, auth, allow_guest, roles)
 
 	def decorator(fn: Callable) -> Callable:
+		# The app that owns the handler, by the package it lives in.
+		owner = fn.__module__.split(".")[0]
+
 		@wraps(fn)  # gives readable debug names
 		def endpoint(**path_args):
-			# The only installed-app check needed: API_URL_MAP is shared by every
-			# site a worker serves, so these rules match on sites without this app.
-			if "oan_auth_service" not in frappe.get_installed_apps():
+			# API_URL_MAP is shared by every site a worker serves, so these rules match
+			# on sites without this app, or without the app that declared the route.
+			installed = frappe.get_installed_apps()
+			if "oan_auth_service" not in installed or owner not in installed:
 				raise NotFound()
 
 			params = {**frappe.form_dict, **path_args}
@@ -114,6 +125,8 @@ def rest(
 			# a separate, internally generated trace id.
 			if req_id := getattr(frappe.local, "request_id", None):
 				res.headers["X-Request-Id"] = req_id
+			if cache_seconds and code < 300 and frappe.request.method == "GET":
+				res.headers["Cache-Control"] = f"private, max-age={cache_seconds}"
 			return res
 
 		endpoint._route = {
@@ -167,6 +180,19 @@ def _resolve_auth(path: str, auth, allow_guest: bool, roles) -> tuple[str | tupl
 	if previous is not None and previous != (auth, roles):
 		raise ValueError(f"{path}: already declared with auth={previous[0]!r}; one scheme per path")
 	return auth, roles
+
+
+def declared_routes(app: str) -> list[dict]:
+	"""The `_route` metadata of every route declared through `rest` by a handler in package `app`.
+
+	For an app's gateway generator: import its route modules first, since importing
+	them is what declares the routes.
+	"""
+	return [
+		rule.endpoint._route
+		for rule in _rules
+		if inspect.unwrap(rule.endpoint).__module__.split(".")[0] == app
+	]
 
 
 def prefixed(prefix: str) -> Callable:
@@ -232,3 +258,41 @@ def register_declared_paths(prefix: str = NAMESPACE) -> None:
 		api_key_paths=dict(_api_key_paths),
 		jwt_or_api_key_paths=dict(_jwt_or_api_key_paths),
 	)
+
+
+def make_route_registrar(modules: list[str], prefix: str = NAMESPACE) -> Callable[[], None]:
+	"""A `before_request` hook for an app that declares its routes with this module's `rest`.
+
+	Imports `modules` (importing them is what declares the routes), adds every declared
+	rule to Frappe's URL map and claims `prefix` with the middleware, once per worker.
+	The state is per-process, so it has to run in each worker rather than at install time.
+	"""
+	registered = False
+	lock = threading.Lock()
+
+	def ensure_routes_registered() -> None:
+		nonlocal registered
+		if registered:
+			return
+
+		# The dev server is threaded: two first requests arriving together would both
+		# find `registered` unset, and the second add raises "url rule already bound".
+		with lock:
+			if registered:
+				return
+
+			import frappe.api
+
+			for module in modules:
+				importlib.import_module(module)
+
+			# An unbound copy each time: a Rule binds to one map only, and another app
+			# sharing this list may already have added it. Rules compare by pattern.
+			for rule in _rules:
+				if rule not in frappe.api.API_URL_MAP._rules:
+					frappe.api.API_URL_MAP.add(rule.empty())
+
+			register_declared_paths(prefix)
+			registered = True
+
+	return ensure_routes_registered

@@ -23,7 +23,15 @@ One mobile app (farmer / beneficiary). One base URL. Three backends behind it:
 **But the entry points differ:**
 
 - Grievance starts login through `oan_auth_service`: `GET /v1/auth/iam/providers`, `POST /v1/auth/iam/login`, then `GET /v1/auth/me` provisions the Frappe user on first login. Also `POST /v1/auth/refresh` and `POST /v1/auth/logout`.
-- A2C and Consent Manager call IAM directly: `GET {iam}/auth/get_login_providers`, `GET {iam}/auth/get_login_provider_redirect/{provider_id}`, `GET {iam}/auth/callback`, `GET {iam}/auth/get_user_profile`. A2C then calls `GET /api/v1/auth/me` and `GET /api/v1/me/dashboard`.
+- In the A2C and Consent Manager collections, the **client** (Postman, standing in for the app) calls IAM directly: `GET {iam}/auth/get_login_providers`, `GET {iam}/auth/get_login_provider_redirect/{provider_id}`, `GET {iam}/auth/callback`, `GET {iam}/auth/get_user_profile`. The A2C and Consent Manager **backends** never call IAM or eSignet for login. Login always runs client -> IAM -> eSignet. A2C then receives `GET /api/v1/auth/me` and `GET /api/v1/me/dashboard` from the client.
+
+**What each backend accepts as credentials** (reported by the team, not yet verified against the code):
+
+| Backend         | Credential accepted                                                                |
+| --------------- | ---------------------------------------------------------------------------------- |
+| Grievance       | IAM cookie as-is, or `Authorization: Bearer`                                       |
+| A2C             | IAM cookie as-is, or `Authorization: Bearer`                                       |
+| Consent Manager | `Authorization: Bearer` only. It has no login UI and does not read the IAM cookie. |
 
 **Different API prefixes and envelopes.** `/v1/`, `/api/v1/`, `/consent/v1/my/`. Frappe responses use `{status, data, message, pagination}`. The Consent Manager envelope is not confirmed and must be checked.
 
@@ -55,15 +63,25 @@ The BFF owns the mobile contract. Backends keep their own contracts and can chan
 ## 4. Auth design
 
 1. App calls `GET /m/v1/auth/providers`, then `POST /m/v1/auth/login`. Both map to the existing `oan_auth_service` endpoints (`/v1/auth/iam/providers`, `/v1/auth/iam/login`).
-2. App opens the returned eSignet URL in the system browser (AppAuth, PKCE). It does not use an embedded webview. A custom scheme or universal link returns the code to the app.
-3. Callback exchange goes through IAM, then the BFF returns the access token and refresh token. Today IAM returns an access-token cookie. Mobile needs the token in the response body.
+2. App opens the returned eSignet URL in the system browser with `flutter_web_auth_2` (`FlutterWebAuth2.authenticate`). It does not use an embedded webview, and eSignet's hosted page does the OTP and the rest. IAM builds the URL and owns the PKCE verifier, so the app has no PKCE logic. `flutter_appauth` is not used: it builds its own authorize URL and cannot take one from IAM.
+3. The callback is an **https app link** on the IAM host, not a custom scheme (see 4.1). eSignet redirects to `https://<iam-host>/auth/callback?code=...&state=...`. The OS matches the app link, opens the app instead of loading the page, and `authenticate()` returns that URL. The app posts `code` and `state` to `POST /m/v1/auth/callback`.
+   3a. The BFF replays them to IAM `GET /auth/callback?code=...&state=...` server-to-server, reads the token from the `Set-Cookie` header (`<cookie_prefix>X-Access-Token`, `cookie_prefix` comes from the login response), and returns the access and refresh token in the response body. No cookie has to be extracted from the browser session, which the app cannot read.
 4. `GET /m/v1/auth/me` provisions the Frappe user on first login, as `1i` does today.
 5. Every later call carries `Authorization: Bearer <token>`. The existing JWT middleware validates it and calls `frappe.set_user()`.
 6. Tokens live in Keychain/Keystore. Refresh via `POST /m/v1/auth/refresh`.
 
+### 4.1 Callback mechanism
+
+- **Why an https app link:** `start_login` passes `return_url` to IAM as `redirect_uri` and `iam_tokens.origin_of` rejects anything that is not an absolute http(s) URL. A custom scheme such as `oanfarmer://` would be a 400 today. A verified https link also cannot be claimed by another app.
+- **Setup:** `callbackUrlScheme: 'https'`, `httpsHost: <iam-host>`, `httpsPath: '/auth/callback'`. Android needs `/.well-known/assetlinks.json` on the IAM host (package name and signing SHA-256, debug and release); iOS needs `apple-app-site-association` and the Associated Domains entitlement. https callbacks in the iOS auth session may need iOS 17.4+ (unverified).
+- **The IAM callback never loads in the browser.** The OS intercepts it, so IAM does not exchange the code at that moment. The BFF triggers the exchange in step 3a. The `redirect_uri` registered with eSignet is unchanged, so the exchange matches the authorize request.
+- **Fallback if 3a fails (IAM binds `state` to a browser cookie):** make the app link a different path (`/app/callback`), let IAM finish the callback in the browser, and have IAM or the BFF redirect to `/app/callback?ticket=<single-use, short-lived>`. The app exchanges the ticket at the BFF. Never put the access token itself in a redirect URL.
+- **Single-use `code`:** the BFF must not call IAM twice for one code. Rate limit `/m/v1/auth/callback`.
+
 **Per-backend credentials (decision needed, section 8):**
 
-- If all three accept the same IAM realm/client token: forward `Authorization` as-is.
+- All three upstreams accept `Authorization: Bearer` (Consent Manager only accepts that; Grievance and A2C also take the cookie). The BFF therefore sends the IAM access token as Bearer on every upstream call. No cookie rebuilding, and the app never sees the cookie format.
+- If all three accept the same IAM realm/client token: forward the same token in the form each upstream accepts.
 - If not: the BFF exchanges or maps the token per backend. Never forward a token to a backend that did not issue it or does not list it in `aud`.
 
 ## 5. Why Frappe, and where it hurts
@@ -130,16 +148,18 @@ Naming trap: "consent" exists twice. A2C consent creates the farmer profile. Con
 ## 8. Open questions (resolve before building)
 
 1. Do the IAM tokens for grievance, A2C and Consent Manager share one issuer/audience, or does each backend need its own token?
-2. Does IAM return tokens in the response body for a mobile redirect, or only as a cookie? The Consent Manager env has both `bene_token` and `bene_access_token`, so clarify which one the API accepts.
+2. Does IAM return tokens in the response body for a mobile redirect, or only as a cookie? The Consent Manager env has both `bene_token` and `bene_access_token`, so clarify which one the API accepts. Resolved: Grievance and A2C accept Bearer as well as the cookie, so Bearer works for all three.
 3. Is the A2C `/api/v1/auth/me` call a separate login, or does it accept the grievance token?
 4. Consent Manager response envelope and error format.
 5. Expected peak concurrency and attachment sizes. This decides when to move heavy routes to nginx.
 6. Where does the BFF run: on the grievance bench, the auth-service bench, or its own site?
+7. Does IAM validate `state` and hold the PKCE verifier server-side (keyed by `state`), or tie them to a browser cookie? This decides whether step 3a works or the ticket fallback in 4.1 is needed. IAM is an external service, so test with one real login.
+8. Can the IAM host serve `assetlinks.json` and `apple-app-site-association` in every environment (dev, staging, prod)?
 
 ## 9. Phased plan
 
 1. **Skeleton:** new app `oan_mobile_gateway`, upstream client with timeouts, envelope normalization, JWT via `oan_auth_service`.
-2. **Auth routes:** providers, login, me, refresh, logout, token in body for mobile.
+2. **Auth routes:** providers, login, callback (3a), me, refresh, logout, token in body for mobile. Before building, run one real login to answer open question 7.
 3. **Pass-through routes:** grievance, then A2C, then Consent Manager.
 4. **Aggregate:** `/m/v1/home`.
 5. **Heavy routes:** nginx `auth_request` path for attachments and exports.

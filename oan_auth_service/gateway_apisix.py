@@ -645,7 +645,8 @@ def to_crd_upstream(
 	missing = [k for k in ("pass_host", "retries", "timeout") if k not in up]
 	if missing:
 		raise GatewayConfigError(f"Upstream of service {service['name']} lacks: {', '.join(missing)}.")
-	spec: dict[str, Any] = {}
+	# Without it the ingress controller ignores the upstream and the route fails.
+	spec: dict[str, Any] = {"ingressClassName": "${INGRESS_CLASS_NAME}"}
 	if external:
 		spec["externalNodes"] = [{"type": "Domain", "name": external[0], "port": external[1]}]
 	spec |= {"scheme": up["scheme"], "passHost": up["pass_host"]}
