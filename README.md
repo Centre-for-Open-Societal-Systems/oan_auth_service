@@ -114,6 +114,23 @@ def submit_grievance(**kwargs): ...
 def get_grievance(grievance_id: str): ...
 ```
 
+### Idempotent POSTs
+
+A client on a flaky network retries a POST, and without protection one tap can create two records. Put `@idempotent` innermost, under `@handle_api_errors`, and the endpoint runs at most once per `Idempotency-Key` header:
+
+```python
+from oan_auth_service.api.idempotency import idempotent
+
+
+@route("/applications", methods=("POST",))
+@validate_request(CreateApplication)
+@handle_api_errors
+@idempotent
+def create_application(**kwargs): ...
+```
+
+The key is stored in the `OAN Idempotency Key` doctype, in the same transaction as the endpoint's own writes, so both are committed or both are rolled back. A retry gets the stored response (encrypted at rest) with `Idempotency-Replayed: true`; a retry while the first request is still running gets 409; the same key with a different body gets 422; a malformed key gets 400. Limits and logging are in `docs/IDEMPOTENCY.md`. The key is scoped to the caller, the method and the path. Without the header the endpoint runs as before, unless you pass `@idempotent(required=True)`. Rows are deleted a day after they are written, which is how long a retry is recognised. Do not commit inside the endpoint before it returns.
+
 ## Consuming this app
 
 In the consumer's `hooks.py`:

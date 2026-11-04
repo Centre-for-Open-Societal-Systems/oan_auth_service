@@ -509,7 +509,9 @@ def parse_multi_value(value, allowed=None) -> list[str]:
 
 
 def to_tz_aware_iso(dt) -> str | None:
-	"""Convert a naive Frappe datetime (stored in the system timezone) to an ISO 8601 UTC string ending in `Z`."""
+	"""Convert a naive Frappe datetime (stored in the system timezone) to an ISO 8601 UTC string ending in `Z`.
+
+	Microseconds are kept: cursors are built from this string and compared back against the stored value."""
 	if not dt:
 		return None
 	from datetime import UTC
@@ -520,7 +522,7 @@ def to_tz_aware_iso(dt) -> str | None:
 	dt_obj = get_datetime(dt)
 	system_tz = pytz.timezone(get_system_timezone())
 	utc = system_tz.localize(dt_obj).astimezone(UTC)
-	return utc.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+	return utc.isoformat().replace("+00:00", "Z")
 
 
 def from_tz_aware_iso(value):
@@ -697,7 +699,8 @@ def _resolve_version_meta(func, explicit_meta: dict | None = None) -> dict:
 		try:
 			parts = mod_name.split(".api.")
 			base_pkg = parts[0] + ".api"
-			ver_candidate = parts[1].split(".")[0]
+			# A handler outside a `v1` package names its version with an `api_version` attribute.
+			ver_candidate = getattr(func, "api_version", None) or parts[1].split(".")[0]
 
 			import importlib
 
@@ -745,6 +748,12 @@ _ERROR_CODES = {
 	502: "BAD_GATEWAY",
 	503: "SERVICE_UNAVAILABLE",
 }
+
+
+def error_code_for(status: int) -> str:
+	"""The envelope `code` for an HTTP `status`."""
+	return _ERROR_CODES.get(status, "INTERNAL_ERROR" if status >= 500 else "GENERIC_ERROR")
+
 
 _DEFAULT_MESSAGES = {
 	400: "Validation Error",
@@ -895,7 +904,7 @@ def handle_api_errors(func):
 		except Exception as e:
 			_rollback()
 			status = _http_status_for(e)
-			code = _ERROR_CODES.get(status, "INTERNAL_ERROR" if status >= 500 else "GENERIC_ERROR")
+			code = error_code_for(status)
 
 			# Log server faults, plus constraint errors: those are 4xx to the caller
 			# but usually signal a schema or race problem worth investigating.

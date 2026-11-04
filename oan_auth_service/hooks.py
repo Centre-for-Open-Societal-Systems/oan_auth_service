@@ -61,6 +61,16 @@ after_migrate = [
 default_log_clearing_doctypes = {"OAN User Refresh Token": 0}
 
 
+# Scheduler
+# ---------
+# Idempotency keys are purged hourly in batches, not by the daily Log Settings job:
+# on a busy site one DELETE over a day of rows is a long transaction.
+
+scheduler_events = {
+	"hourly": ["oan_auth_service.oan_auth.doctype.oan_idempotency_key.oan_idempotency_key.purge_expired"],
+}
+
+
 # Testing
 # -------
 
