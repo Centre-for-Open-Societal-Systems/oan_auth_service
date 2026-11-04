@@ -82,8 +82,8 @@ def idempotent(fn: Callable | None = None, *, required: bool = False) -> Callabl
 	def decorator(fn: Callable) -> Callable:
 		@wraps(fn)
 		def wrapper(*args, **kwargs):
-			request = frappe.request
-			if request is None or request.method not in _METHODS:
+			request = getattr(frappe.local, "request", None)
+			if not request or request.method not in _METHODS:
 				return fn(*args, **kwargs)
 
 			key = request.headers.get(HEADER)
@@ -126,8 +126,10 @@ def _caller() -> str:
 
 
 def _key_hash(key: str) -> str:
-	request = frappe.request
-	return hashlib.sha256(f"{_caller()}|{request.method}|{request.path}|{key}".encode()).hexdigest()
+	request = getattr(frappe.local, "request", None)
+	method = getattr(request, "method", "")
+	path = getattr(request, "path", "")
+	return hashlib.sha256(f"{_caller()}|{method}|{path}|{key}".encode()).hexdigest()
 
 
 def _status_code() -> int:
@@ -205,11 +207,12 @@ def _observe(outcome: str, name: str | None = None, **fields) -> None:
 	ticket or application ID. `key` is the first 8 characters of the row's hash, enough
 	to find the row; `route` is the URL template.
 	"""
-	rule = getattr(frappe.request, "url_rule", None)
+	request = getattr(frappe.local, "request", None)
+	rule = getattr(request, "url_rule", None)
 	entry = {
 		"outcome": outcome,
 		"route": getattr(rule, "rule", None) or "unknown",
-		"method": getattr(frappe.request, "method", None),
+		"method": getattr(request, "method", None),
 		**({"key": name[:8]} if name else {}),
 		**fields,
 	}
