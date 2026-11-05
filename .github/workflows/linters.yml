@@ -3,6 +3,15 @@ name: Linters
 on:
   pull_request:
   workflow_dispatch:
+  # Other Frappe apps on oan_auth_service run the same checks:
+  #   uses: Centre-for-Open-Societal-Systems/oan_auth_service/.github/workflows/linters.yml@develop
+  # A repo without its own commitlint.config.mjs or .semgrep/rules.yml gets this repo's.
+  workflow_call:
+    inputs:
+      auth-service-ref:
+        description: "oan_auth_service branch to take the shared lint config from"
+        type: string
+        default: develop
 
 permissions:
   contents: read
@@ -26,6 +35,11 @@ jobs:
           node-version: 24
           check-latest: true
 
+      - name: Shared commitlint config
+        if: hashFiles('commitlint.config.mjs') == ''
+        run: |
+          curl -fsSL "https://raw.githubusercontent.com/Centre-for-Open-Societal-Systems/oan_auth_service/${{ inputs.auth-service-ref || 'develop' }}/commitlint.config.mjs" -o commitlint.config.mjs
+
       - name: Check commit titles
         run: |
           npm install @commitlint/cli @commitlint/config-conventional
@@ -47,12 +61,19 @@ jobs:
       - uses: pre-commit/action@v3.0.1
 
       - name: Download Semgrep rules
-        run: git clone --depth 1 https://github.com/frappe/semgrep-rules.git frappe-semgrep-rules
+        run: |
+          git clone --depth 1 https://github.com/frappe/semgrep-rules.git frappe-semgrep-rules
+          if [ ! -f .semgrep/rules.yml ]; then
+            git clone --depth 1 --branch "${{ inputs.auth-service-ref || 'develop' }}" https://github.com/Centre-for-Open-Societal-Systems/oan_auth_service.git /tmp/oan_auth_service
+            echo "SHARED_RULES=/tmp/oan_auth_service/.semgrep/rules.yml" >> "$GITHUB_ENV"
+          else
+            echo "SHARED_RULES=.semgrep/rules.yml" >> "$GITHUB_ENV"
+          fi
 
       - name: Run Semgrep rules
         run: |
           pip install semgrep
-          semgrep ci --metrics=off --config ./frappe-semgrep-rules/rules --config r/python.lang.correctness --config .semgrep/rules.yml
+          semgrep ci --metrics=off --config ./frappe-semgrep-rules/rules --config r/python.lang.correctness --config "$SHARED_RULES"
 
   deps-vulnerable-check:
     name: "Vulnerable Dependency Check"

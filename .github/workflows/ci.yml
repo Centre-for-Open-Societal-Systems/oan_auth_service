@@ -6,6 +6,23 @@ on:
       - main
       - develop
   pull_request:
+  # Other Frappe apps on oan_auth_service run the same job:
+  #   uses: Centre-for-Open-Societal-Systems/oan_auth_service/.github/workflows/ci.yml@develop
+  #   with: { app: oan_my_app, frappe-branch: version-16 }
+  workflow_call:
+    inputs:
+      app:
+        description: "The app under test, checked out in the caller's workspace"
+        type: string
+        default: oan_auth_service
+      frappe-branch:
+        description: "Frappe branch for bench init. Empty takes frappe's default branch."
+        type: string
+        default: ""
+      auth-service-ref:
+        description: "oan_auth_service branch to install when `app` is another app"
+        type: string
+        default: develop
 
 concurrency:
   group: ci-oan-auth-service-${{ github.event_name }}-${{ github.event.number || github.ref }}
@@ -17,6 +34,11 @@ jobs:
     strategy:
       fail-fast: false
     name: Server Tests
+    env:
+      # A direct run (push, pull_request) has no inputs, so these fall back to this repo.
+      APP: ${{ inputs.app || 'oan_auth_service' }}
+      FRAPPE_BRANCH: ${{ inputs.frappe-branch }}
+      AUTH_SERVICE_REF: ${{ inputs.auth-service-ref || 'develop' }}
 
     services:
       redis-cache:
@@ -67,23 +89,36 @@ jobs:
       - name: Setup Bench
         run: |
           pip install frappe-bench
-          bench init --skip-redis-config-generation --skip-assets --python "$(which python)" ~/frappe-bench
+          bench init ${FRAPPE_BRANCH:+--frappe-branch "$FRAPPE_BRANCH"} --skip-redis-config-generation --skip-assets --python "$(which python)" ~/frappe-bench
 
       - name: Install App
         working-directory: /home/runner/frappe-bench
         run: |
-          bench get-app oan_auth_service "$GITHUB_WORKSPACE"
+          # Another app runs on top of oan_auth_service, so it is installed first.
+          if [ "$APP" != "oan_auth_service" ]; then
+            bench get-app oan_auth_service https://github.com/Centre-for-Open-Societal-Systems/oan_auth_service.git --branch "$AUTH_SERVICE_REF"
+          fi
+          bench get-app "$APP" "$GITHUB_WORKSPACE"
           bench setup requirements --dev
           bench new-site --db-root-password root --admin-password admin test_site
-          bench --site test_site install-app oan_auth_service
+          if [ "$APP" != "oan_auth_service" ]; then
+            bench --site test_site install-app oan_auth_service
+          fi
+          bench --site test_site install-app "$APP"
           bench build
         env:
           CI: "Yes"
 
+      # An app with no tests still gets the site build and install above, which catches a
+      # broken hook, doctype or import.
       - name: Run Tests
         working-directory: /home/runner/frappe-bench
         run: |
+          if ! grep -rq "def test" "$GITHUB_WORKSPACE/$APP"; then
+            echo "No tests in $APP; the site installed, so nothing more to run."
+            exit 0
+          fi
           bench --site test_site set-config allow_tests true
-          bench --site test_site run-tests --app oan_auth_service
+          bench --site test_site run-tests --app "$APP"
         env:
           TYPE: server
