@@ -16,6 +16,7 @@ from pydantic import ValidationError as PydanticValidationError
 
 from oan_auth_service.api.field_errors import validation_codes, validation_details
 from oan_auth_service.api.jwt_keys import JWTKeyConfigurationError
+from oan_auth_service.api.operational_log import ensure_correlation_id
 
 
 class _DummyException(Exception):
@@ -799,17 +800,17 @@ def handle_api_errors(func):
 
 	@wraps(func)
 	def wrapper(*args, **kwargs):
+		# The `before_request` hook (request_log.begin) has normally set the id already. This is
+		# for a handler reached some other way, and takes the id by the same validated route.
 		if not getattr(frappe.local, "request_id", None):
-			req_id = None
+			candidate = None
 			if frappe.request:
 				headers = getattr(frappe.request, "headers", None)
 				environ = getattr(frappe.request, "environ", None)
-				req_id = (headers.get("X-Request-Id") if headers else None) or (
+				candidate = (headers.get("X-Request-Id") if headers else None) or (
 					environ.get("REQUEST_ID") if environ else None
 				)
-			if not req_id:
-				req_id = str(uuid.uuid4())
-			frappe.local.request_id = req_id
+			ensure_correlation_id(candidate)
 
 		try:
 			res = func(*args, **kwargs)

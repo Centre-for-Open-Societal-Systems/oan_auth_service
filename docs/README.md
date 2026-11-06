@@ -10,6 +10,7 @@ Shared standards for every OAN Frappe app. Each file covers one topic and stands
 | `RUNTIME_ARCHITECTURE.md`       | Process layout: workers, scheduler, Redis, file storage.     |
 | `VERIFICATION_PIPELINE.md`      | Pre-commit, pre-push and CI gates.                           |
 | `GIT_WORKFLOW.md`               | Branches, commits, merge hygiene, pull requests.             |
+| `OPERATIONAL_LOGGING.md`        | Structured logs, correlation ids, masking, `emit`.           |
 | `STANDARDS_DEVIATIONS.md`       | Where the current apps do not follow these standards yet.    |
 
 `oan_auth_service`'s own reference: `API_DOCUMENTATION.md`, `ADMIN_API_RULES.md`, `NOTIFICATIONS_RULES.md`, `IAM_DELEGATED_LOGIN_PLAN.md`.

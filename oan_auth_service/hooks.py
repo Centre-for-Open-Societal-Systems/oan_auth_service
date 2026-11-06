@@ -23,8 +23,16 @@ app_license = "mit"
 
 auth_hooks = ["oan_auth_service.api.middleware.validate_jwt_request"]
 
+# The correlation id and the request log, for every OAN app on the site (see api/request_log.py).
+# Frappe runs before_request hooks ahead of the auth hooks, and after_request hooks in a `finally`,
+# so a request the auth layer refuses still gets an id and a log line. The id is set first so the
+# hook after it can use it.
 # Register Werkzeug REST routes for Frappe API Map
-before_request = ["oan_auth_service.api.router.ensure_routes_registered"]
+before_request = [
+	"oan_auth_service.api.request_log.begin",
+	"oan_auth_service.api.router.ensure_routes_registered",
+]
+after_request = ["oan_auth_service.api.request_log.end"]
 
 # Revokes refresh tokens when a session ends through Frappe's own logout. Without
 # it a desk logout drops the session cookie but leaves every refresh token live
