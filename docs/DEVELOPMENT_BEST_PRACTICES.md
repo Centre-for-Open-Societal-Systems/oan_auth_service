@@ -621,7 +621,9 @@ Always escape values in SQL fragments with `frappe.db.escape`.
 - Every user-facing string goes through `_()`. Use positional placeholders with
   `.format()` after `_()`, not f-strings inside `_()`
   (`_("Category '{0}' does not exist.").format(name)`).
-- Log through `frappe.logger("<app_name>")` or `frappe.log_error(title="<app_name>: …")`.
+- Log events through `oan_auth_service.api.operational_log.emit("area.what", level, **fields)` and
+  errors through `log_error(title=...)` in place of `frappe.log_error`: one JSON format, a correlation id,
+  and masking of credentials and personal data for every OAN app. See `OPERATIONAL_LOGGING.md`.
   No `print()`, `console.log` or `debugger` in committed code.
 - Log an error once, at the layer that handles it, with enough context to act on it. Do
   not log secrets, tokens, OTPs or full personal data.
