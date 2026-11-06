@@ -253,6 +253,24 @@ def jwt_issuer_consumer() -> dict[str, Any]:
 	}
 
 
+# Key-auth consumers whose routes live in more than one app, such as the IVR vendor that
+# calls both A2C and grievance, with one key. In Kubernetes they belong to the shared
+# APISIX release (oan-helm `environments/<env>/values/apisix.yaml`, `extraDeploy`), not
+# to an app chart, so app charts only name them in `consumer-restriction`.
+IVR_VENDOR_CONSUMER = "oan-ivr-vendor"
+SHARED_CONSUMERS = {IVR_VENDOR_CONSUMER: "OAN_IVR_VENDOR_KEY"}
+
+
+def shared_consumer(name: str, app: str) -> dict[str, Any]:
+	"""A shared consumer for the app's ADC document, its key read by APISIX from its own
+	environment. Not rendered into the app's Helm chart."""
+	return {
+		"username": name,
+		"labels": {"app": app},
+		"plugins": {"key-auth": {"key": f"$env://{SHARED_CONSUMERS[name]}"}},
+	}
+
+
 def to_apisix_uri(path: str) -> str:
 	"""OpenAPI `{name}` -> radixtree `:name`. Needs `router.http:
 	radixtree_uri_with_parameter` in the gateway's config.yaml."""
@@ -560,6 +578,7 @@ HELM_COMMON_VALUES = {
 	"APISIX_REDIS_HOST": ".Values.redis.host",
 	"INGRESS_CLASS_NAME": ".Values.ingressClassName",
 }
+SHARED_CONSUMER_NAMESPACE = 'required "sharedConsumerNamespace is required" .Values.sharedConsumerNamespace'
 HELM_LISTS = {
 	"__HOSTS__": ".Values.hosts",
 	"__REALTIME_ORIGINS__": ".Values.realtimeAllowedOrigins",
@@ -607,8 +626,11 @@ def to_crd_plugins(plugins: dict[str, Any]) -> list[dict[str, Any]]:
 			config["whitelist"] = ["__IP_ALLOWLIST__"]
 		if name == "consumer-restriction":
 			# The Ingress Controller names an ApisixConsumer's APISIX consumer
-			# `<namespace>_<name>`.
-			config["whitelist"] = [f"{{{{ .Release.Namespace }}}}_{c}" for c in config["whitelist"]]
+			# `<namespace>_<name>`. A shared consumer lives in the APISIX release's namespace.
+			config["whitelist"] = [
+				f"{{{{ {SHARED_CONSUMER_NAMESPACE if c in SHARED_CONSUMERS else '.Release.Namespace'} }}}}_{c}"
+				for c in config["whitelist"]
+			]
 		out.append({"name": name, "enable": True, "config": config})
 	return out
 
@@ -773,7 +795,7 @@ def write_helm_templates(
 
 	One ApisixRoute per ADC service, one ApisixUpstream per backend Service carrying the
 	service's upstream settings (rewritten Host, timeouts, retries), and one
-	ApisixConsumer per consumer. `backends` maps each ADC service name to the
+	ApisixConsumer per consumer, except the SHARED_CONSUMERS. `backends` maps each ADC service name to the
 	`(service name, port)` placeholders of its Kubernetes Service, plus optionally an
 	external host placeholder for a gateway in another cluster (see helm_external).
 	`values` maps the app's own placeholders to `.Values` paths, on top of
@@ -786,21 +808,28 @@ def write_helm_templates(
 		backend = {"serviceName": svc_name, "servicePort": svc_port}
 		if ext_host:
 			external.append((svc_name, svc_port, ext_host[0]))
+		# The controller names each route `<namespace>_<ApisixRoute>_<rule>`. Each app
+		# gateway has its own namespace, so both names drop the app prefix.
+		rules = [
+			to_crd_route(
+				{**r, "name": r["name"].removeprefix(f"{app}-")}, service.get("plugins", {}), backend
+			)
+			for r in service["routes"]
+		]
 		routes.append(
 			{
 				"apiVersion": "apisix.apache.org/v2",
 				"kind": "ApisixRoute",
-				"metadata": {"name": service["name"], "labels": labels},
-				"spec": {
-					"ingressClassName": "${INGRESS_CLASS_NAME}",
-					"http": [to_crd_route(r, service.get("plugins", {}), backend) for r in service["routes"]],
-				},
+				"metadata": {"name": service["name"].removeprefix(f"{app}-"), "labels": labels},
+				"spec": {"ingressClassName": "${INGRESS_CLASS_NAME}", "http": rules},
 			}
 		)
 		upstreams.append(
 			to_crd_upstream(service, svc_name, labels, (ext_host[0], svc_port) if ext_host else None)
 		)
-	consumers = [to_crd_consumer(c, labels) for c in doc.get("consumers", [])]
+	consumers = [
+		to_crd_consumer(c, labels) for c in doc.get("consumers", []) if c["username"] not in SHARED_CONSUMERS
+	]
 
 	values = {**HELM_COMMON_VALUES, **values}
 	out_dir.mkdir(parents=True, exist_ok=True)
@@ -808,6 +837,8 @@ def write_helm_templates(
 	files = {"apisix-route.yaml": routes, "apisix-upstream.yaml": upstreams}
 	if consumers:
 		files["apisix-consumer.yaml"] = consumers
+	else:
+		(out_dir / "apisix-consumer.yaml").unlink(missing_ok=True)
 	for filename, resources in files.items():
 		body = "---\n".join(
 			yaml.safe_dump(r, sort_keys=False, default_flow_style=False, width=100) for r in resources

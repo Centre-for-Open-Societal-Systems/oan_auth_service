@@ -29,10 +29,12 @@ next request.
 import hashlib
 import re
 from datetime import date, datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import frappe
 
 from oan_auth_service.api.tokens import TokenError
+from oan_auth_service.api.user_image import sync_user_image
 
 DELEGATED_USER_DOMAIN = "iam.internal"
 
@@ -128,15 +130,26 @@ def sync_profile(user: str, principal: dict) -> bool:
 	`full_name` is derived from the two names, as Frappe does on save. Returns
 	whether anything changed.
 
-	Covers the fields a `User` has: names, mobile number, birth date, gender.
-	Anything else (national id, address, ...) belongs to the consuming app's
-	own records, which read the principal in an `oan_auth_on_delegated_login`
-	hook.
+	Covers what Frappe holds for a person: on the `User` the names, mobile number,
+	birth date, gender, language, time zone and picture, and on a linked
+	`Address` the street, locality, region, postal code and country. Anything else
+	(national id, ...) belongs to the consuming app's own records, which read the
+	principal in an `oan_auth_on_delegated_login` hook.
 	"""
 	current = frappe.db.get_value(
 		"User",
 		user,
-		["first_name", "last_name", "full_name", "mobile_no", "birth_date", "gender", "oan_login_email"],
+		[
+			"first_name",
+			"last_name",
+			"full_name",
+			"mobile_no",
+			"birth_date",
+			"gender",
+			"language",
+			"time_zone",
+			"oan_login_email",
+		],
 		as_dict=True,
 	)
 	if not current:
@@ -157,12 +170,100 @@ def sync_profile(user: str, principal: dict) -> bool:
 	gender = str(principal.get("gender") or "").strip().title()
 	if gender and frappe.db.exists("Gender", gender):
 		wanted["gender"] = gender
+	language = _language(principal.get("locale"))
+	if language:
+		wanted["language"] = language
+	time_zone = _time_zone(principal.get("zoneinfo"))
+	if time_zone:
+		wanted["time_zone"] = time_zone
 
 	changes = {k: v for k, v in wanted.items() if (current.get(k) or None) != (v or None)}
-	email_changed = _sync_login_email(user, principal.get("email"), current.get("oan_login_email"))
-	if not changes:
-		return email_changed
-	frappe.db.set_value("User", user, changes, update_modified=False)
+	changed = _sync_login_email(user, principal.get("email"), current.get("oan_login_email"))
+	if changes:
+		frappe.db.set_value("User", user, changes, update_modified=False)
+		changed = True
+	# The address and picture are best effort: a claim that cannot be saved never refuses the sign-in.
+	changed = _best_effort("address", _sync_address, user, principal.get("address")) or changed
+	return _best_effort("picture", sync_user_image, user, principal.get("picture")) or changed
+
+
+def _best_effort(what: str, sync, user: str, claim) -> bool:
+	frappe.db.savepoint("iam_sync")
+	try:
+		return sync(user, claim)
+	except Exception:
+		frappe.db.rollback(save_point="iam_sync")
+		frappe.log_error(title=f"oan_auth_service: could not sync {what}", message=frappe.get_traceback())
+		return False
+
+
+def _language(locale) -> str | None:
+	"""The Frappe `Language` for a `locale` claim such as `am` or `en-US`, else None."""
+	locale = str(locale or "").strip().replace("_", "-")
+	return next((c for c in (locale, locale.split("-")[0]) if c and frappe.db.exists("Language", c)), None)
+
+
+def _time_zone(value) -> str | None:
+	"""`value` if it is an IANA time zone name, else None."""
+	name = str(value or "").strip()
+	try:
+		ZoneInfo(name)
+	except ValueError:
+		return None
+	except ZoneInfoNotFoundError:
+		return None
+	return name
+
+
+def _sync_address(user: str, claim) -> bool:
+	"""Keep the person's personal `Address`, linked to the `User`, in line with the `address` claim.
+
+	Frappe requires a street, a city and a country to save an address, so with none yet
+	one is created only when the claim has all three, the country being a Frappe
+	`Country`. An address already there takes whichever of the five fields the claim sends.
+	"""
+	if not isinstance(claim, dict):
+		return False
+	text = lambda key: str(claim.get(key) or "").strip()  # noqa: E731
+	country = text("country")
+	wanted = {
+		"address_line1": text("street_address"),
+		"city": text("locality"),
+		"state": text("region"),
+		"pincode": text("postal_code"),
+		"country": country if frappe.db.exists("Country", country) else "",
+	}
+	wanted = {k: v for k, v in wanted.items() if v}
+	if not wanted:
+		return False
+
+	existing = frappe.get_all(
+		"Address",
+		filters=[
+			["Dynamic Link", "link_doctype", "=", "User"],
+			["Dynamic Link", "link_name", "=", user],
+			["Address", "address_type", "=", "Personal"],
+		],
+		pluck="name",
+		order_by="creation asc, name asc",
+		limit=1,
+	)
+	if existing:
+		current = frappe.db.get_value("Address", existing[0], list(wanted), as_dict=True)
+		changes = {k: v for k, v in wanted.items() if (current.get(k) or "") != v}
+		if changes:
+			frappe.db.set_value("Address", existing[0], changes)
+		return bool(changes)
+	if not all(wanted.get(k) for k in ("address_line1", "city", "country")):
+		return False
+	frappe.get_doc(
+		{
+			"doctype": "Address",
+			"address_type": "Personal",
+			**wanted,
+			"links": [{"link_doctype": "User", "link_name": user}],
+		}
+	).insert(ignore_permissions=True)
 	return True
 
 
