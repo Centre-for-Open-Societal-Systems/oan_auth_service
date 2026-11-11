@@ -196,7 +196,7 @@ SafeEmail = Annotated[str | None, BeforeValidator(validate_email_string)]
 
 _INCR_WITH_WINDOW = """
 local count = redis.call('INCR', KEYS[1])
-if count == 1 then
+if redis.call('TTL', KEYS[1]) < 0 then
 	redis.call('EXPIRE', KEYS[1], ARGV[1])
 end
 return count
