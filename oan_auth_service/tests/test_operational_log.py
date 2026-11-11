@@ -71,6 +71,7 @@ class LogCase(FrappeTestCase):
 	def _reset_request_state():
 		frappe.local.request_id = None
 		frappe.local.oan_request_started = None
+		frappe.local.oan_error_code = None
 
 	def assertNoLeak(self, text: str):
 		for secret in SENSITIVE:
@@ -354,14 +355,36 @@ class TestCorrelationId(LogCase):
 				self.assertNotEqual(frappe.local.request_id, hostile)
 				self.assertTrue(uuid.UUID(frappe.local.request_id))
 
-	def test_an_id_with_a_line_break_is_never_valid(self):
+	def test_an_id_with_a_line_break_is_never_adopted(self):
 		# A WSGI server will hand one over even though the test client refuses to build it.
 		for hostile in ('abc"}\n{"event":"fake"', "abcdefgh\r\nX: y", "abcdefgh\n"):
 			with self.subTest(hostile=hostile):
-				self.assertIsNone(oplog.valid_correlation_id(hostile))
-		trace_id = "0af7651916cd43dd8448eb211c80319c"
-		self.assertEqual(oplog.valid_correlation_id(trace_id), trace_id)
-		self.assertEqual(oplog.valid_correlation_id("req_01HZX:7-a.b"), "req_01HZX:7-a.b")
+				self._reset_request_state()
+				self.assertNotEqual(oplog.ensure_correlation_id(hostile), hostile)
+
+	def test_plain_ids_are_adopted_underscores_and_dots_included(self):
+		for plain in (
+			"0af7651916cd43dd8448eb211c80319c",
+			"req_01HZX:7-a.b",
+			"job-sla_reminders-0123456789ab",
+		):
+			with self.subTest(plain=plain):
+				self._reset_request_state()
+				self.assertEqual(oplog.ensure_correlation_id(plain), plain)
+
+	def test_frappes_trace_id_is_the_correlation_id_when_its_monitor_is_on(self):
+		"""One id for these lines, the monitor log, background jobs and Sentry."""
+		trace = "0af7651916cd43dd8448eb211c80319c"
+		make_test_request("/api/v1/widgets", headers={"X-Request-Id": "trace-abc-12345"})
+		with mock.patch("oan_auth_service.api.operational_log.get_trace_id", return_value=trace):
+			rl.begin()
+		self.assertEqual(frappe.local.request_id, trace)
+
+	def test_the_inbound_id_is_used_when_the_monitor_is_off(self):
+		make_test_request("/api/v1/widgets", headers={"X-Request-Id": "trace-abc-12345"})
+		with mock.patch("oan_auth_service.api.operational_log.get_trace_id", return_value=None):
+			rl.begin()
+		self.assertEqual(frappe.local.request_id, "trace-abc-12345")
 
 	def test_an_id_already_set_is_kept(self):
 		frappe.local.request_id = "already-set-12345"
@@ -381,17 +404,15 @@ class TestCorrelationId(LogCase):
 		rl.begin()
 		self.assertEqual(handler()["request_id"], "trace-abc-12345")
 
-	def test_a_handler_reached_without_the_hook_validates_the_id_too(self):
-		"""`handle_api_errors` used to adopt any inbound id; it now takes the validated route."""
-
+	def test_a_handler_reads_the_id_the_hook_set_and_makes_none_itself(self):
 		@handle_api_errors
 		def handler():
 			return {"data": {"ok": True}}
 
-		make_test_request("/api/v1/auth/health", headers={"X-Request-Id": "has space in it"})
-		self.assertNotEqual(handler()["request_id"], "has space in it")
-		self._reset_request_state()
 		make_test_request("/api/v1/auth/health", headers={"X-Request-Id": "trace-abc-12345"})
+		# No hook has run: the envelope has no id rather than a second mechanism inventing one.
+		self.assertNotIn("request_id", handler())
+		rl.begin()
 		self.assertEqual(handler()["request_id"], "trace-abc-12345")
 
 	def test_every_line_in_a_request_carries_the_id(self):
@@ -458,31 +479,24 @@ class TestRequestLogging(LogCase):
 				captured, _ = self._run("/api/v1/widgets", status=status)
 				self.assertEqual(captured.named("http.request")[0]["level"], level)
 
-	def test_an_error_response_logs_its_code_and_nothing_else_from_the_body(self):
-		body = {
-			"status": "error",
-			"code": "NOT_FOUND",
-			"message": f"No grievance for {EMAIL}",
-			"details": {"phone": PHONE},
-		}
-		captured, _ = self._run("/api/v1/widgets/3001002A0/timeline", status=404, body=body)
-		(line,) = captured.named("http.request")
-		self.assertEqual(line["error_code"], "NOT_FOUND")
-		self.assertNoLeak(captured.text)
+	def test_an_error_response_logs_the_code_the_decorator_set_and_never_reads_the_body(self):
+		@handle_api_errors
+		def handler():
+			frappe.throw("No record for jane.doe@example.com", frappe.DoesNotExistError)
 
-	def test_a_frappe_error_page_reports_its_exception_type(self):
-		captured, _ = self._run(
-			"/api/v1/widgets", status=500, body={"exc_type": "OperationalError", "exc": "Traceback"}
-		)
-		self.assertEqual(captured.named("http.request")[0]["error_code"], "OperationalError")
-
-	def test_a_download_is_not_read(self):
-		request = make_test_request("/api/v1/attachments/x/download")
-		response = Response(b"%PDF", status=404, content_type="application/pdf")
+		request = make_test_request("/api/v1/widgets/3001002A0")
 		with CapturedLog() as captured:
 			rl.begin()
-			rl.end(response, request)
-		self.assertIsNone(captured.named("http.request")[0].get("error_code"))
+			envelope = handler()
+			body = {**envelope, "details": {"phone": PHONE}}
+			response = Response(json.dumps(body), status=404, content_type="application/json")
+			with mock.patch.object(Response, "get_data") as read:
+				rl.end(response, request)
+		read.assert_not_called()
+		(line,) = captured.named("http.request")
+		self.assertEqual(line["error_code"], "NOT_FOUND")
+		self.assertEqual(line["level"], "WARNING")
+		self.assertNoLeak(captured.text)
 
 	def test_a_slow_request_is_flagged_and_raised_to_a_warning(self):
 		request = make_test_request("/api/v1/widgets")
@@ -494,13 +508,6 @@ class TestRequestLogging(LogCase):
 		self.assertTrue(line["slow"])
 		self.assertEqual(line["level"], "WARNING")
 		self.assertGreaterEqual(line["duration_ms"], 500)
-
-	def test_health_checks_are_debug_lines(self):
-		request = make_test_request("/api/v1/auth/ping")
-		with CapturedLog(level=logging.INFO) as captured:
-			rl.begin()
-			rl.end(Response("{}", status=200, content_type="application/json"), request)
-		self.assertEqual(captured.named("http.request"), [])
 
 	def test_no_value_from_the_request_reaches_the_log(self):
 		captured, _ = self._run(
@@ -545,7 +552,6 @@ class TestRequestLogging(LogCase):
 		(line,) = captured.named("http.request")
 		self.assertEqual(line["correlation_id"], "trace-early-123")
 		self.assertEqual(line["status"], 400)
-		self.assertEqual(line["error_code"], "CSRFTokenError")
 		self.assertNotIn("duration_ms", line)
 		self.assertNotIn("slow", line)
 
@@ -576,7 +582,7 @@ class TestRequestLogging(LogCase):
 
 	def test_a_request_below_the_configured_level_builds_no_log_fields(self):
 		request = make_test_request("/api/v1/widgets")
-		with CapturedLog(level=logging.ERROR) as captured, mock.patch.object(oplog, "scrub_path") as scrub:
+		with CapturedLog(level=logging.ERROR) as captured, mock.patch.object(oplog, "scrub_text") as scrub:
 			rl.begin()
 			response = Response("{}", status=200, content_type="application/json")
 			rl.end(response, request)
@@ -596,56 +602,65 @@ class TestAuthenticationFailures(LogCase):
 		super().setUp()
 		ensure_routes_registered()
 
-	def _refused(self, status, **request_kwargs):
-		request = make_test_request("/api/v1/auth/me", **request_kwargs)
-		with CapturedLog() as captured:
-			rl.begin()
-			rl.end(
-				Response(
-					json.dumps({"code": "AUTHENTICATION_ERROR"}),
-					status=status,
-					content_type="application/json",
-				),
-				request,
-			)
-		return captured
-
-	def test_a_request_refused_by_the_auth_layer_is_logged_with_its_correlation_id(self):
-		"""The auth hook raises after `before_request`, so the refusal has an id to be traced by."""
+	def _refused_by_the_middleware(self, **request_kwargs):
+		"""Run the auth hook on a request it refuses, then the request hook, and return the log."""
 		frappe.set_user("Guest")
 		frappe.local.session = frappe._dict({"user": "Guest"})
-		headers = {"Authorization": f"Bearer {JWT}", "X-Request-Id": "trace-abc-12345"}
-		request = make_test_request("/api/v1/auth/me", headers=headers)
-		rl.begin()
+		request = make_test_request("/api/v1/auth/me", **request_kwargs)
 		with configured_keys(), CapturedLog() as captured:
+			rl.begin()
 			with self.assertRaises(frappe.AuthenticationError):
 				validate_jwt_request(request)
-			rl.end(
-				Response(
-					json.dumps({"code": "AUTHENTICATION_ERROR"}), status=401, content_type="application/json"
-				),
-				request,
-			)
+			rl.end(Response("{}", status=401, content_type="application/json"), request)
 		frappe.set_user("Administrator")
+		return captured
 
-		(failure,) = captured.named("security.auth_failure")
-		self.assertEqual(failure["correlation_id"], "trace-abc-12345")
-		self.assertEqual(failure["status"], 401)
-		self.assertEqual(failure["path"], "/api/v1/auth/me")
-		self.assertEqual(failure["error_code"], "AUTHENTICATION_ERROR")
-		self.assertEqual(failure["auth_scheme"], "bearer")
-		self.assertEqual(failure["level"], "WARNING")
-		self.assertNoLeak(captured.text)
-
-	def test_a_failed_sign_in_names_the_account_only_masked(self):
-		captured = self._refused(
-			401, method="POST", data={"usr": EMAIL, "pwd": PASSWORD}, headers={"User-Agent": "okhttp/4"}
+	def test_a_refused_token_is_logged_with_its_reason_and_correlation_id(self):
+		captured = self._refused_by_the_middleware(
+			headers={"Authorization": f"Bearer {JWT}", "X-Request-Id": "trace-abc-12345"}
 		)
 		(failure,) = captured.named("security.auth_failure")
-		self.assertEqual(failure["attempted_user"], "j***@example.com")
-		self.assertEqual(failure["auth_scheme"], "none")
-		self.assertEqual(failure["user_agent"], "okhttp/4")
+		self.assertEqual(failure["correlation_id"], "trace-abc-12345")
+		self.assertEqual(failure["level"], "WARNING")
+		self.assertTrue(failure["reason"].startswith("Invalid or expired token"))
+		# The reason is the point of the event: it must reach the line readable, not scrubbed
+		# because "token: <word>" looks like a credential pair.
+		self.assertNotIn(oplog.REDACTED, failure["reason"])
+		self.assertEqual(failure["auth_scheme"], "bearer")
+		self.assertEqual(failure["path"], "/api/v1/auth/me")
+		self.assertEqual(failure["client_ip"], "127.0.0.0")
 		self.assertNoLeak(captured.text)
+
+	def test_a_missing_token_says_so(self):
+		(failure,) = self._refused_by_the_middleware().named("security.auth_failure")
+		self.assertEqual(failure["reason"], "Missing bearer token")
+		self.assertEqual(failure["auth_scheme"], "none")
+
+	def test_one_refusal_is_one_event_and_one_request_line(self):
+		captured = self._refused_by_the_middleware(headers={"Authorization": f"Bearer {JWT}"})
+		self.assertEqual(len(captured.named("security.auth_failure")), 1)
+		(line,) = captured.named("http.request")
+		self.assertEqual(line["status"], 401)
+		self.assertEqual(line["level"], "WARNING")
+		self.assertEqual(line["error_code"], "AUTHENTICATION_ERROR")
+		self.assertEqual(len(captured.events), 2)
+
+	def test_a_refusal_writes_no_error_log_row(self):
+		"""The event carries the reason; a row per refusal was a database write any caller could force."""
+		with mock.patch.object(frappe, "log_error") as log_error:
+			self._refused_by_the_middleware(headers={"Authorization": f"Bearer {JWT}"})
+		log_error.assert_not_called()
+
+	def test_a_stale_cookie_on_an_exempt_path_is_info_not_a_warning(self):
+		frappe.flags.oan_quiet_reject = True
+		self.addCleanup(setattr, frappe.flags, "oan_quiet_reject", False)
+		make_test_request("/api/v1/auth/login", method="POST")
+		with CapturedLog() as captured:
+			from oan_auth_service.api.middleware import _reject
+
+			with self.assertRaises(frappe.AuthenticationError):
+				_reject("Invalid or expired token")
+		self.assertEqual(captured.named("security.auth_failure")[0]["level"], "INFO")
 
 	def test_the_scheme_is_recorded_without_the_credential(self):
 		cases = (
@@ -653,32 +668,63 @@ class TestAuthenticationFailures(LogCase):
 			({"Authorization": "token key:secret-value"}, "token"),
 			({"Authorization": "Basic dXNlcjpwYXNz"}, "basic"),
 			({"Authorization": "Negotiate abcdef"}, "other"),
+			# No scheme word: the header is the credential itself.
+			({"Authorization": "secret-value-with-no-scheme"}, "other"),
 			({"Cookie": f"oan_access={JWT}"}, "cookie"),
 			({}, "none"),
 		)
 		for headers, scheme in cases:
-			with self.subTest(scheme=scheme):
-				captured = self._refused(401, headers=headers)
+			with self.subTest(scheme=scheme, headers=list(headers)):
+				make_test_request("/api/v1/auth/me", headers=headers)
+				with CapturedLog() as captured:
+					oplog.auth_failure("test")
 				self.assertEqual(captured.named("security.auth_failure")[0]["auth_scheme"], scheme)
 				self.assertNoLeak(captured.text)
-				self.assertNotIn("secret-value", captured.text)
-				self.assertNotIn("dXNlcjpwYXNz", captured.text)
+				for credential in ("secret-value", "dXNlcjpwYXNz", "abcdef"):
+					self.assertNotIn(credential, captured.text)
 
-	def test_permission_denied_and_rate_limiting_are_security_events(self):
-		self.assertEqual(len(self._refused(403).named("security.permission_denied")), 1)
-		self.assertEqual(len(self._refused(429).named("security.rate_limited")), 1)
+	def test_a_failed_sign_in_is_recorded_by_the_endpoint_that_refused_it(self):
+		@handle_api_errors
+		def login():
+			raise frappe.AuthenticationError("Invalid login credentials")
 
-	def test_other_statuses_raise_no_security_event(self):
-		for status in (200, 400, 404, 500):
-			with self.subTest(status=status):
-				captured = self._refused(status)
-				self.assertFalse([e for e in captured.events if e["event"].startswith("security.")])
-
-	def test_a_signed_in_user_denied_is_not_named_in_the_line(self):
-		with mock.patch.dict(frappe.local.session, {"user": EMAIL}):
-			captured = self._refused(403)
+		make_test_request("/api/v1/auth/login", method="POST", data={"usr": EMAIL, "pwd": PASSWORD})
+		with CapturedLog() as captured:
+			rl.begin()
+			envelope = login()
+		self.assertEqual(envelope["code"], "AUTHENTICATION_ERROR")
+		(failure,) = captured.named("security.auth_failure")
+		self.assertEqual(failure["attempted_user"], "j***@example.com")
+		self.assertEqual(failure["reason"], "Invalid login credentials")
+		self.assertEqual(failure["auth_scheme"], "none")
 		self.assertNoLeak(captured.text)
-		self.assertNotIn("user", captured.named("security.permission_denied")[0])
+
+	def test_403_and_429_are_request_lines_with_their_code_not_security_events(self):
+		for error, code, status in (
+			(frappe.PermissionError, "PERMISSION_DENIED", 403),
+			(frappe.TooManyRequestsError, "RATE_LIMIT_EXCEEDED", 429),
+			(frappe.DoesNotExistError, "NOT_FOUND", 404),
+		):
+			with self.subTest(code=code):
+				self._reset_request_state()
+
+				@handle_api_errors
+				def handler():
+					raise error("nope")
+
+				request = make_test_request("/api/v1/widgets")
+				with CapturedLog() as captured:
+					rl.begin()
+					envelope = handler()
+					rl.end(
+						Response(json.dumps(envelope), status=status, content_type="application/json"),
+						request,
+					)
+				self.assertFalse([e for e in captured.events if e["event"].startswith("security.")])
+				(line,) = captured.named("http.request")
+				self.assertEqual(
+					(line["status"], line["error_code"], line["level"]), (status, code, "WARNING")
+				)
 
 	def test_an_event_carries_no_credential_even_if_a_caller_passes_one(self):
 		with CapturedLog() as captured:
@@ -1002,6 +1048,7 @@ class TestLoggerConfiguration(FrappeTestCase):
 	def _reset():
 		frappe.local.request_id = None
 		frappe.local.oan_request_started = None
+		frappe.local.oan_error_code = None
 
 
 class TestScope(FrappeTestCase):

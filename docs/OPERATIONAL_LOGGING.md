@@ -45,38 +45,68 @@ jq -r 'select(.event == "security.auth_failure") | .attempted_user // empty' log
 ## Correlation id
 
 `request_log.begin` is a `before_request` hook. Frappe runs those before the auth hooks, so a request the
-auth layer refuses has an id.
+auth layer refuses has an id. `ensure_correlation_id` picks it, in this order:
 
-- A caller's `X-Request-Id` is adopted when it is 8 to 64 characters of letters, digits and `. _ : -`.
-  Anything else (a space, a quote, a line break, too long) is replaced, because an id is written into every
-  log line and a free-form one would let a caller forge lines.
-- Otherwise a UUID4 is generated.
-- It is stored in `frappe.local.request_id`. So it is the `request_id` in every JSON envelope and the
-  `X-Request-Id` response header, including on 401, 404 and framework error pages.
-  `handle_api_errors` takes the id through the same `ensure_correlation_id`, so there is one mechanism.
+1. **Frappe's monitor trace id**, when `monitor: 1` is set (`frappe.monitor.get_trace_id()`). Frappe's own
+   `before_request` hook runs before ours, so it is already there. Then these lines, the monitor log,
+   background jobs and Sentry all share one id.
+2. A caller's **`X-Request-Id`**, if it is 8 to 64 characters of letters, digits and `. _ : -`. Anything
+   else (a space, a quote, a line break, too long) is replaced, because an id is written into every log
+   line and a free-form one would let a caller forge lines.
+3. Otherwise a **UUID4**.
+
+It is stored in `frappe.local.request_id`, so it is the `request_id` in every JSON envelope and the
+`X-Request-Id` response header, including on 401, 404 and framework error pages. `handle_api_errors` only
+reads it; nothing else sets it.
+
 - Frappe starts the session before it runs `before_request` hooks, and maintenance mode stops a request
   before them too. A CSRF or session failure, or a site in maintenance, never reaches `begin`. The
-  `after_request` hook (`end`) still runs for it: it adopts or mints the id there, returns it in the header,
-  and logs the request **without `duration_ms`** (nothing started the clock).
-- An app that runs scheduled work sets its own id for the run (the grievance service uses
-  `job-<name>-<12 hex>`), so every line the run writes can be pulled with one filter.
+  `after_request` hook (`end`) still runs for it: it picks the id there, returns it in the header, and logs
+  the request **without `duration_ms`** (nothing started the clock).
+- An app that runs scheduled work calls `ensure_correlation_id()` for the run (the grievance service's
+  `logged_job` does), so every line the run writes can be pulled with one filter.
 
 The APISIX gateway does not generate an id today. Turning on its `request-id` plugin would make the
 gateway's own log and this one share ids end to end.
 
+### Relationship to `frappe.monitor`
+
+Frappe's monitor (`monitor: 1`) already gives each request an id, adopted from `X-Frappe-Request-Id`, and a
+JSON line per request, and it covers background jobs and Sentry. This module shares its id when it is on
+rather than running a second one. It does not replace the stdout logger, for these reasons:
+
+- The monitor writes `logs/monitor.json.log` with a plain `open()`, not through `frappe.logger`, so
+  `FRAPPE_STREAM_LOGGING=1` does not send it to stdout in a container.
+- Its lines arrive only on the scheduler's next tick. With the scheduler stopped the Redis buffer grows (up
+  to a million entries), and a Redis restart before a flush loses them.
+- It logs the raw path and the full client address, with no masking.
+- It is site-wide, not scoped to OAN routes, and it has no place for an event with a reason
+  (`security.auth_failure`, `error`) or an app's own events.
+
 ## Events
 
-| Event                                                  | Level   | When                                                                          |
-| ------------------------------------------------------ | ------- | ----------------------------------------------------------------------------- |
-| `http.request`                                         | by code | Every request under `/api/v1/` or a namespace an app registered.              |
-| `security.auth_failure`                                | WARNING | Response 401, with the auth scheme tried and, for a sign-in, the masked user. |
-| `security.permission_denied` / `security.rate_limited` | WARNING | Response 403 / 429.                                                           |
-| `error`                                                | ERROR   | Every `log_error`: `title`, `exception`, `summary` (last line), `detail`.     |
+Each event is recorded where the decision is made, so it carries the reason; `request_log.end` does not
+work them out afterwards from the status code.
+
+| Event                   | Level   | Emitted by                                                                                       |
+| ----------------------- | ------- | ------------------------------------------------------------------------------------------------ |
+| `http.request`          | by code | `request_log.end`: one line for every request under `/api/v1/` or a namespace an app registered. |
+| `security.auth_failure` | WARNING | The auth middleware (`_reject`), and `handle_api_errors` for an endpoint that answers 401.       |
+| `error`                 | ERROR   | `log_error`: `title`, `exception`, `summary` (last line), `detail`.                              |
 
 `http.request` is INFO for 2xx and 3xx, WARNING for 4xx and for any request slower than
-`oan_slow_request_ms`, ERROR for 5xx. A path ending in `/health` or `/ping` is DEBUG when it succeeds, so a
-monitor polling every few seconds does not fill the log. Desk pages, assets and Frappe's own methods are
-not logged. Apps add their own events (the grievance service logs `sla.*`, `escalation.*` and `job.*`).
+`oan_slow_request_ms`, ERROR for 5xx. It carries `error_code`, which `error_response` leaves on
+`frappe.local.oan_error_code` (the middleware sets `AUTHENTICATION_ERROR`); a 403 or a 429 is therefore a
+WARNING line with `PERMISSION_DENIED` or `RATE_LIMIT_EXCEEDED`, not a separate event. Desk pages, assets and
+Frappe's own methods are not logged. A health check is an ordinary INFO line; a monitor polling every few
+seconds is best filtered at the gateway. Apps add their own events (the grievance service logs `sla.*`,
+`escalation.*` and `job.*`).
+
+**`security.auth_failure`** records the `reason` the caller was refused (`Missing bearer token`, `Invalid or expired token (Token has expired)`, `Invalid login credentials`...), the auth scheme offered (never the
+credential; a header with no scheme word is `other`), the masked client address, a trimmed user agent and,
+for a sign-in, the masked `attempted_user`. The caller is told one undifferentiated 401. A refusal used to
+write an Error Log row as well, a database write any caller could force; the event replaces it. On a public
+path, a stale cookie that fails a check is "no credentials", not an attack, and is logged at INFO.
 
 **Error rows and lines.** `log_error` is called from `except` blocks, so it never raises: if the Error Log
 insert fails, the line says `error_log_failed` instead. The title is cut to the 140 characters the column
@@ -173,12 +203,9 @@ read only for a 4xx or 5xx, and only when it is a small JSON document.
 
 ## Known gaps
 
-- The reason the auth layer refuses a token (expired, forged, revoked) stays in its Error Log; the response
-  and the log say only `401`. Having `_reject` store a reason code on `frappe.local` would let
-  `security.auth_failure` carry it.
-- Every refusal still writes an Error Log row (a database write an unauthenticated caller can trigger at
-  will).
 - A 500 raised outside `handle_api_errors` is logged by Frappe in the Error Log without the correlation id;
   the matching `http.request` line (status 500) carries it, and the two can be paired by time and path.
+- A 401 that Frappe's own `validate_auth` raises (a bad API key) has no `security.auth_failure` event, only
+  the `http.request` WARNING.
 - Masked users are not unique: two officers with the same initial and domain look alike. A stable keyed
   handle (an HMAC of the user id) would tell them apart; it is left for a follow-up.

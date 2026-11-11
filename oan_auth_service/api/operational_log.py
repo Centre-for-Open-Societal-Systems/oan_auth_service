@@ -26,6 +26,7 @@ import uuid
 from datetime import UTC, datetime
 
 import frappe
+from frappe.monitor import get_trace_id
 
 LOGGER_NAME = "oan"
 # `frappe.logger(..., allow_site=False)` names its logger "<module>-all".
@@ -252,9 +253,9 @@ _PHONE = re.compile(
 # One local variable in a `get_traceback(with_context=True)` listing: `      name = value`.
 _LOCAL_VAR = re.compile(r"^(\s{4,})([A-Za-z_][A-Za-z0-9_]*) = ")
 
-# Only this many times the limit is ever scanned. The patterns are linear, but a traceback
-# listing every local variable of a request can be megabytes, and what is cut away afterwards
-# need not be read at all.
+# Only this many times the limit is ever scanned (a slice, at the two places that scrub). The
+# patterns are linear, but a traceback listing every local variable of a request can be
+# megabytes, and what is cut away afterwards need not be read at all.
 SCAN_FACTOR = 4
 
 
@@ -270,18 +271,6 @@ def _cut(value: str, limit: int, keep: str) -> str:
 	return marker + value[-room:] if keep == "tail" else value[:room] + marker
 
 
-def _precap(value: str, limit: int, keep: str) -> str:
-	"""`value` reduced to the part that can survive a cut to `limit`, plus a margin."""
-	room = max(limit, 1) * SCAN_FACTOR
-	if len(value) <= room:
-		return value
-	if keep == "tail":
-		value = value[-room:]
-		# The first line is probably cut mid-way; half of a token is not worth scanning.
-		return value.split("\n", 1)[1] if "\n" in value else value
-	return value[:room]
-
-
 def scrub_text(text, limit: int = MAX_TEXT, keep: str = "head") -> str:
 	"""Remove credentials and personal data from free text, then cap its length.
 
@@ -292,7 +281,9 @@ def scrub_text(text, limit: int = MAX_TEXT, keep: str = "head") -> str:
 	"""
 	if text is None:
 		return ""
-	value = _precap(str(text), limit, keep)
+	value = str(text)
+	scan = max(limit, 1) * SCAN_FACTOR
+	value = value[-scan:] if keep == "tail" else value[:scan]
 	value = _JWT.sub(REDACTED, value)
 	value = _AUTH_HEADER.sub(lambda m: f"{m.group(1)}{REDACTED}", value)
 	value = _BEARER_OPAQUE.sub(f"Bearer {REDACTED}", value)
@@ -311,7 +302,7 @@ def scrub_traceback(text, limit: int = ERROR_LOG_LIMIT) -> str:
 	kept when it is cut: that is the exception message.
 	"""
 	lines = []
-	for line in _precap(str(text or ""), limit, "tail").split("\n"):
+	for line in str(text or "")[-limit * SCAN_FACTOR :].split("\n"):
 		match = _LOCAL_VAR.match(line)
 		if match:
 			prefix, name = match.group(0), match.group(2)
@@ -323,14 +314,6 @@ def scrub_traceback(text, limit: int = ERROR_LOG_LIMIT) -> str:
 				line = _PII_PAIR.sub(lambda m: f"{m.group(1)}{MASKED}", line)
 		lines.append(line)
 	return scrub_text("\n".join(lines), limit, keep="tail")
-
-
-def last_line(text) -> str:
-	"""The last non-blank line of `text`: a traceback's exception type and message."""
-	for line in reversed(str(text or "").splitlines()):
-		if line.strip():
-			return line.strip()
-	return ""
 
 
 def redact(value, key=None, _depth: int = 0):
@@ -369,11 +352,6 @@ def redact(value, key=None, _depth: int = 0):
 	return scrub_text(str(value), MAX_FIELD_TEXT)
 
 
-def scrub_path(path: str) -> str:
-	"""A URL path with personal ids removed: an officer is addressed by email, for instance."""
-	return scrub_text(path, 300)
-
-
 # --- Correlation ------------------------------------------------------------------------
 
 # A caller-supplied correlation id is honoured only when it is plain. Anything else
@@ -381,30 +359,27 @@ def scrub_path(path: str) -> str:
 _CORRELATION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:\-]{7,63}")
 
 
-def valid_correlation_id(candidate) -> str | None:
-	"""`candidate` when it is a plain token of 8 to 64 characters, otherwise None."""
-	# fullmatch, not `$`: `$` also matches before a trailing newline.
-	if isinstance(candidate, str) and _CORRELATION_ID.fullmatch(candidate):
-		return candidate
-	return None
-
-
-def correlation_id() -> str | None:
-	"""The id of the request or job in progress. Also what API envelopes call `request_id`."""
-	return getattr(frappe.local, "request_id", None)
-
-
 def ensure_correlation_id(candidate=None) -> str:
 	"""Set the id for this request or job unless one is already set, and return it.
 
-	`candidate` is a caller's `X-Request-Id`; it is adopted only if `valid_correlation_id`
-	accepts it, otherwise a UUID is generated. The envelope helpers read
-	`frappe.local.request_id`, so this is the id in `request_id` and the `X-Request-Id` header.
+	With Frappe's monitor on (`monitor: 1`) the id is the monitor's trace id, so these lines, the
+	monitor log, background jobs and Sentry share one. Otherwise it is `candidate`, a caller's
+	`X-Request-Id`, if it is a plain token of 8 to 64 characters; anything else (a space, a quote, a
+	line break, too long) is how a client forges log lines, so it is replaced by a UUID.
+
+	The envelope helpers read `frappe.local.request_id`, so this is the id in `request_id` and the
+	`X-Request-Id` header.
 	"""
-	current = correlation_id()
+	current = getattr(frappe.local, "request_id", None)
 	if current:
 		return current
-	new = valid_correlation_id(candidate) or str(uuid.uuid4())
+	if trace_id := get_trace_id():
+		new = trace_id
+	# fullmatch, not `$`: `$` also matches before a trailing newline.
+	elif isinstance(candidate, str) and _CORRELATION_ID.fullmatch(candidate):
+		new = candidate
+	else:
+		new = str(uuid.uuid4())
 	frappe.local.request_id = new
 	return new
 
@@ -460,7 +435,10 @@ def emit(event: str, level: int = logging.INFO, **fields) -> None:
 		logger = get_logger()
 		if not logger.isEnabledFor(level):
 			return
-		record = {"correlation_id": correlation_id(), "site": getattr(frappe.local, "site", None)}
+		record = {
+			"correlation_id": getattr(frappe.local, "request_id", None),
+			"site": getattr(frappe.local, "site", None),
+		}
 		record.update(redact(fields))
 		logger.log(level, event, extra={"oan_fields": {k: v for k, v in record.items() if v is not None}})
 	except Exception:
@@ -495,12 +473,15 @@ def log_error(title: str, message: str | None = None, **kwargs) -> None:
 	else:
 		body = plain = message
 
-	cid = correlation_id()
+	cid = getattr(frappe.local, "request_id", None)
 	stored = scrub_traceback(body)
 	if cid:
 		stored = f"correlation_id: {cid}\n{stored}"
 	# One line: `frappe.log_error` takes a title with a line break to be a swapped traceback.
 	title = scrub_text(" ".join(str(title or "Error").split()), ERROR_TITLE_LIMIT)
+
+	# The last non-blank line: a traceback's exception type and message.
+	summary = next((line.strip() for line in reversed(plain.splitlines()) if line.strip()), "")
 
 	stored_ok = True
 	try:
@@ -513,7 +494,45 @@ def log_error(title: str, message: str | None = None, **kwargs) -> None:
 		logging.ERROR,
 		title=Scrubbed(title),
 		exception=exc_type,
-		summary=Scrubbed(scrub_text(last_line(plain), ERROR_MESSAGE_LIMIT)),
+		summary=Scrubbed(scrub_text(summary, ERROR_MESSAGE_LIMIT)),
 		detail=Scrubbed(scrub_text(plain, ERROR_DETAIL_LIMIT, keep="tail")),
 		error_log_failed=None if stored_ok else True,
+	)
+
+
+def auth_failure(reason: str, level: int = logging.WARNING) -> None:
+	"""`security.auth_failure`, with the reason the caller was refused.
+
+	Emitted where the refusal is decided, which is two places: the auth middleware (`_reject`: a
+	missing, expired or forged token) and `handle_api_errors` for an endpoint that answers 401 (a
+	wrong password, a bad refresh token). The caller is told one undifferentiated 401; the reason
+	is for this line. It records what the request looked like: which kind of credential was offered
+	(never the credential), from where, and for which account.
+	"""
+	request = getattr(frappe.local, "request", None)
+	if request is None:
+		return
+	form = getattr(frappe.local, "form_dict", None) or {}
+	scheme = request.headers.get("Authorization", "").split(" ", 1)[0].lower()
+	if scheme not in ("bearer", "basic", "token"):
+		# A header with no scheme word is the credential itself, so it is never logged.
+		scheme = "other" if scheme else ("cookie" if request.cookies else "none")
+	emit(
+		"security.auth_failure",
+		level,
+		reason=reason,
+		method=request.method,
+		path=scrub_text(request.path, 300),
+		auth_scheme=scheme,
+		client_ip=mask_ip(getattr(frappe.local, "request_ip", None)),
+		user_agent=scrub_text(request.headers.get("User-Agent"), 120) or None,
+		# Where a sign-in names the account it was for (`usr` on login, password reset).
+		attempted_user=next(
+			(
+				form[n]
+				for n in ("usr", "username", "email")
+				if isinstance(form.get(n), str) and 0 < len(form[n]) <= 254
+			),
+			None,
+		),
 	)

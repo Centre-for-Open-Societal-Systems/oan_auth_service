@@ -40,6 +40,7 @@ is a distinct Authorization scheme rather than a patch to the exception handling
 """
 
 import hmac
+import logging
 import re
 
 import frappe
@@ -47,6 +48,7 @@ from frappe import _
 
 from oan_auth_service.api import iam_tokens, iam_users, tokens
 from oan_auth_service.api.jwt_keys import JWTKeyConfigurationError
+from oan_auth_service.api.operational_log import auth_failure
 from oan_auth_service.config import settings
 from oan_auth_service.setup.install import MUST_CHANGE_PASSWORD_FIELD
 
@@ -387,7 +389,7 @@ def _authenticate_token(token: str, config: dict) -> None:
 		frappe.local.response["message"] = _("Identity service unavailable")
 		raise frappe.ServiceUnavailableError
 	except tokens.TokenError as exc:
-		_reject(f"Invalid or expired token: {exc}")
+		_reject(f"Invalid or expired token ({exc})")
 
 	# IAM's `sub` is the identity provider's id; the local user is derived from it.
 	user = _provision_delegated_user(claims, service, token) if delegated else claims.get("sub")
@@ -457,7 +459,7 @@ def _provision_delegated_user(claims: dict, service, token: str) -> str:
 		created = not frappe.db.exists("User", user)
 		iam_users.resolve_user(claims, service)
 	except tokens.TokenError as exc:
-		_reject(f"Invalid or expired token: {exc}")
+		_reject(f"Invalid or expired token ({exc})")
 
 	changed = created
 	hooks_done_key = None
@@ -517,7 +519,7 @@ def _full_principal(service, token: str) -> dict:
 		frappe.local.response["message"] = _("Identity service unavailable")
 		raise frappe.ServiceUnavailableError
 	except tokens.TokenError as exc:
-		_reject(f"Invalid or expired token: {exc}")
+		_reject(f"Invalid or expired token ({exc})")
 
 	if not hasattr(frappe.local, "_iam_details_principal"):
 		frappe.local._iam_details_principal = {}
@@ -577,13 +579,15 @@ def _verify_scope_still_held(user: str, claims: dict) -> None:
 def _reject(reason: str):
 	"""Fail authentication with a uniform response.
 
-	`reason` is for the server-side log. The client gets one undifferentiated
-	401 regardless: telling a caller whether their token was expired, forged or
-	revoked helps them work out which half of an attempt succeeded.
+	`reason` is for the server-side log (the `security.auth_failure` event). The client gets
+	one undifferentiated 401 regardless: telling a caller whether their token was expired,
+	forged or revoked helps them work out which half of an attempt succeeded.
+
+	It used to write an Error Log row per refusal, a database write any caller could trigger at
+	will; the event carries the same reason without it. On an exempt path a cookie that fails a
+	check is "no credentials", not an attack, so that is INFO.
 	"""
 	frappe.local.response["message"] = _("Authentication failed")
-	if frappe.flags.get("oan_quiet_reject"):
-		frappe.logger("oan_auth_service").info("rejected request (exempt path): %s", reason)
-	else:
-		frappe.log_error(title="oan_auth_service: rejected request", message=reason)
+	frappe.local.oan_error_code = "AUTHENTICATION_ERROR"
+	auth_failure(reason, logging.INFO if frappe.flags.get("oan_quiet_reject") else logging.WARNING)
 	raise frappe.AuthenticationError
