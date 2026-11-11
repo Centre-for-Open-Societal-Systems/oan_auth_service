@@ -16,6 +16,7 @@ from pydantic import ValidationError as PydanticValidationError
 
 from oan_auth_service.api.field_errors import validation_codes, validation_details
 from oan_auth_service.api.jwt_keys import JWTKeyConfigurationError
+from oan_auth_service.api.operational_log import auth_failure
 
 
 class _DummyException(Exception):
@@ -687,6 +688,8 @@ def error_response(
 	req_id = getattr(frappe.local, "request_id", None)
 	if req_id:
 		res["request_id"] = req_id
+	# For the request log, which would otherwise have to read it back out of the response body.
+	frappe.local.oan_error_code = code
 	return res
 
 
@@ -799,18 +802,6 @@ def handle_api_errors(func):
 
 	@wraps(func)
 	def wrapper(*args, **kwargs):
-		if not getattr(frappe.local, "request_id", None):
-			req_id = None
-			if frappe.request:
-				headers = getattr(frappe.request, "headers", None)
-				environ = getattr(frappe.request, "environ", None)
-				req_id = (headers.get("X-Request-Id") if headers else None) or (
-					environ.get("REQUEST_ID") if environ else None
-				)
-			if not req_id:
-				req_id = str(uuid.uuid4())
-			frappe.local.request_id = req_id
-
 		try:
 			res = func(*args, **kwargs)
 
@@ -930,6 +921,11 @@ def handle_api_errors(func):
 				if status >= 500
 				else get_error_message(e, _(_DEFAULT_MESSAGES.get(status, "Request could not be processed")))
 			)
+
+			# An endpoint that refuses a credential (a wrong password, a bad refresh token) is
+			# decided here; the middleware records the ones it refuses itself.
+			if status == 401:
+				auth_failure(message)
 
 			frappe.local.message_log = []
 			frappe.response["http_status_code"] = status
