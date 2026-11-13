@@ -194,19 +194,25 @@ SafeEmail = Annotated[str | None, BeforeValidator(validate_email_string)]
 # ---------------------------------------------------------------------------
 
 
+_INCR_WITH_WINDOW = """
+local count = redis.call('INCR', KEYS[1])
+if redis.call('TTL', KEYS[1]) < 0 then
+	redis.call('EXPIRE', KEYS[1], ARGV[1])
+end
+return count
+"""
+
+
 def incr_counter(key: str, window: int) -> int:
 	"""Atomically add one to a Redis counter and return the new count.
 
 	The window starts at the first increment and is not extended by later ones.
 	Concurrent callers each get a distinct count, unlike a read-then-set.
 	"""
-	# Raw pipeline ops skip Frappe's `{db_name}|` key prefix, so build the key the same way.
+	# Raw commands skip Frappe's `{db_name}|` key prefix, so build the key the same way.
 	redis_key = frappe.cache.make_key(key)
-	pipeline = frappe.cache.pipeline()
-	pipeline.incr(redis_key)
-	pipeline.expire(redis_key, window, nx=True)
-	count, _expired = pipeline.execute()
-	return count
+	# A script, not `EXPIRE ... NX`: that flag needs Redis 7.0 and older servers reject it.
+	return int(frappe.cache.eval(_INCR_WITH_WINDOW, 1, redis_key, window))
 
 
 def check_rate_limit(key: str, limit: int, window: int):
