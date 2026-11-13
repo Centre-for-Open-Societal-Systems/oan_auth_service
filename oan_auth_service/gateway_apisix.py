@@ -356,8 +356,8 @@ def build_document(
 	`hosts` restricts the app's routes to those Host headers, so several apps with the
 	same `/v1/auth/*` paths can share one APISIX. Without it the routes match any host.
 
-	Each tier's routes share one limit-count counter per (app, tier, auth): a tier's
-	limit applies to the tier as a whole, not once per HTTP method or route.
+	Each route carries its tier's limit-count and counts on its own: a tier's limit applies per
+	(tier, auth, method) route, not to the tier as a whole.
 
 	Route paths come from the public spec (`/v1/...`), the only spelling the gateway
 	serves. A service-level `proxy-rewrite` sends them to Frappe as `/api/v1/...`.
@@ -371,9 +371,11 @@ def build_document(
 	adc_routes = []
 	for (tier, auth, method), uris in sorted(groups.items()):
 		plugins = {"limit-count": limit_count(tiers[tier], gateway_jwt, auth)}
-		# `group` makes routes with the same group share a counter. Routes in one
-		# (tier, auth) group carry identical limit-count settings, as APISIX requires.
-		plugins["limit-count"]["group"] = f"{app}:{tier}:{auth}"
+		# No `group`: APISIX 3.19 rejects `group` together with `rules` ("group and rules cannot be
+		# specified at the same time"), which left every route unapplied. Counters are per route.
+		# TODO: move the tier limit into one shared policy per (tier, auth) so a tier counts as a whole
+		# again: an ApisixPluginConfig (its counter is shared by the routes that use it, also with
+		# `rules`), then per-consumer plans and a global per-IP rule in the central gateway config.
 		if auth == "bearer" and gateway_jwt:
 			plugins["jwt-auth"] = jwt_auth()
 		adc_routes.append(
