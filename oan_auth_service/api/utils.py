@@ -131,7 +131,7 @@ def validate_mobile(v: str | None) -> str:
 
 	if parsed is None or phonenumbers.number_type(parsed) not in _MOBILE_TYPES:
 		frappe.throw(
-			_("Enter a mobile number in international format, e.g. +251911223344: {0}").format(raw),
+			_("Enter a valid mobile number in international format, e.g. +251911223344"),
 			frappe.ValidationError,
 		)
 
