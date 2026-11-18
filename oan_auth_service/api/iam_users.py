@@ -35,6 +35,7 @@ import frappe
 
 from oan_auth_service.api.tokens import TokenError
 from oan_auth_service.api.user_image import sync_user_image
+from oan_auth_service.setup.install import DA_REGISTRY_ID_FIELD
 
 DELEGATED_USER_DOMAIN = "iam.internal"
 
@@ -98,6 +99,10 @@ def _create_user(user: str, principal: dict) -> None:
 			"first_name": first_name or "IAM User",
 			"last_name": last_name or None,
 			"send_welcome_email": 0,
+			# Frappe's validate_username clears a username another account already holds.
+			# The login email and DA-ID are unique too; sync_profile sets them right after
+			# the first sign-in, skipping a value another account holds.
+			"username": _claim(principal, "preferred_username"),
 			"enabled": 1,
 		}
 	)
@@ -149,6 +154,8 @@ def sync_profile(user: str, principal: dict) -> bool:
 			"language",
 			"time_zone",
 			"oan_login_email",
+			DA_REGISTRY_ID_FIELD,
+			"username",
 		],
 		as_dict=True,
 	)
@@ -177,6 +184,13 @@ def sync_profile(user: str, principal: dict) -> bool:
 	if time_zone:
 		wanted["time_zone"] = time_zone
 
+	# Unique columns: a value another account already holds is skipped rather than
+	# failing the sign-in, as for the login email.
+	for field, claim in ((DA_REGISTRY_ID_FIELD, "da_id"), ("username", "preferred_username")):
+		value = _claim(principal, claim)
+		if value and not frappe.db.exists("User", {field: value, "name": ("!=", user)}):
+			wanted[field] = value
+
 	changes = {k: v for k, v in wanted.items() if (current.get(k) or None) != (v or None)}
 	changed = _sync_login_email(user, principal.get("email"), current.get("oan_login_email"))
 	if changes:
@@ -185,6 +199,12 @@ def sync_profile(user: str, principal: dict) -> bool:
 	# The address and picture are best effort: a claim that cannot be saved never refuses the sign-in.
 	changed = _best_effort("address", _sync_address, user, principal.get("address")) or changed
 	return _best_effort("picture", sync_user_image, user, principal.get("picture")) or changed
+
+
+def _claim(principal: dict, key: str) -> str | None:
+	"""A string claim, stripped, or None when it is missing or blank."""
+	value = str(principal.get(key) or "").strip()
+	return value or None
 
 
 def _best_effort(what: str, sync, user: str, claim) -> bool:
