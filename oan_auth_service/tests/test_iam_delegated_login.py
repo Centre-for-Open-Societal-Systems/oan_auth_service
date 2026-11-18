@@ -627,7 +627,14 @@ class TestIAMDelegatedLogin(unittest.TestCase):
 		_name, hook_user, principal, login_option = HOOK_CALLS[0]
 		self.assertEqual(hook_user, user)
 		self.assertEqual(login_option, STAFF)
-		self.assertEqual(principal, self.iam.principals[token][1])
+		# The token's claims are the base; IAM's answer only adds what the token lacks.
+		claims = iam_tokens.peek_claims(token)
+		self.assertEqual({k: principal[k] for k in claims}, claims)
+		iam_answer = self.iam.principals[token][1]
+		self.assertEqual(
+			{k: principal[k] for k in iam_answer if k not in claims},
+			{k: v for k, v in iam_answer.items() if k not in claims},
+		)
 
 		# A new token runs it again.
 		self._authenticate(self.iam.issue(sub), hooks=[self.HOOK])
