@@ -44,7 +44,7 @@ class TestIamUserinfo(unittest.TestCase):
 		make_iam_service(KEY, base_url=IAM_URL, provider_id=1, issuer=ISS, default_roles=[ROLE], **fields)
 
 	def principal(self, userinfo, token=None, iam_name="Token Name", cached=False):
-		"""`fetch_principal` (or `get_principal`, cached without the details) with IAM answering `{sub, name}` and the provider answering `userinfo`."""
+		"""`fetch_principal` (or `get_principal`, cached) with IAM answering `{sub, name}` and the provider answering `userinfo`."""
 		token = token or _token()
 		iam = _response(json_body={"sub": "psut-1", "name": iam_name, "client_roles": {}})
 		service = settings.iam_service(KEY)
@@ -124,8 +124,8 @@ class TestIamUserinfo(unittest.TestCase):
 		principal, mock_get = self.principal(userinfo, token, cached=True)
 
 		self.assertEqual(mock_get.call_count, 0)
-		# The cache keeps identity and roles, not the person's details.
-		self.assertNotIn("phone_number", principal)
+		# The cache keeps the full principal, the person's details included.
+		self.assertEqual(principal["phone_number"], "+251911234503")
 		self.assertEqual(principal["sub"], "psut-1")
 
 	def test_userinfo_for_another_subject_is_not_merged(self):
@@ -199,3 +199,25 @@ class TestIamUserinfo(unittest.TestCase):
 	def test_row_refuses_a_plain_http_userinfo_url(self):
 		with self.assertRaises(frappe.ValidationError):
 			self.make_row(userinfo_url="http://esignet.example.org/userinfo")
+
+	# get_principal: the token's claims are the base; IAM's answer never replaces one.
+
+	def test_token_claims_win_over_iam_and_iam_fills_the_rest(self):
+		token = jwt.encode(
+			{"iss": ISS, "sub": "psut-1", "name": "From Token", "exp": int(time.time()) + 600},
+			"idp",
+			algorithm="HS256",
+		)
+		principal, _ = self.principal(_response(json_body={}), token, iam_name="From IAM", cached=True)
+		self.assertEqual(principal["name"], "From Token")
+		self.assertEqual(principal["iss"], ISS)
+		self.assertIn("client_roles", principal)  # only IAM has it
+
+	def test_a_rejected_token_contributes_no_claims(self):
+		service = settings.iam_service(KEY)
+		with (
+			patch("oan_auth_service.api.iam_tokens.requests.get", return_value=_response(status=401)),
+			self.assertRaises(iam_tokens.TokenError),
+		):
+			iam_tokens.get_principal(_token(), service)
+		self.assertIsNone(frappe.cache.get_value(iam_tokens.principal_cache_key(service, _token())))

@@ -66,6 +66,55 @@ class TestSyncProfile(unittest.TestCase):
 			frappe.delete_doc("User", other_user, force=True, ignore_permissions=True)
 			frappe.db.commit()  # nosemgrep: frappe-manual-commit
 
+	def test_da_id_and_preferred_username_sync_once_and_conflicts_are_skipped(self):
+		da_id = f"DA-T{frappe.generate_hash(length=8)}"
+		username = f"iamuser{frappe.generate_hash(length=8)}"
+		claims = _principal(da_id=da_id, preferred_username=username)
+		self.assertTrue(iam_users.sync_profile(self.user, claims))
+		row = frappe.db.get_value("User", self.user, ["da_registry_id", "username"], as_dict=True)
+		self.assertEqual((row.da_registry_id, row.username), (da_id, username))
+
+		# Read back on the next sign-in: unchanged claims change nothing.
+		self.assertFalse(iam_users.sync_profile(self.user, claims))
+
+		# Another account claiming the same DA-ID and username is skipped, not failed.
+		other_principal = _principal(sub=frappe.generate_hash(length=16))
+		other_user = iam_users.resolve_user(other_principal, SERVICE)
+		try:
+			iam_users.sync_profile(other_user, other_principal)
+			self.assertFalse(
+				iam_users.sync_profile(
+					other_user, {**other_principal, "da_id": da_id, "preferred_username": username}
+				)
+			)
+			other = frappe.db.get_value("User", other_user, ["da_registry_id", "username"], as_dict=True)
+			self.assertNotEqual(other.da_registry_id, da_id)
+			self.assertNotEqual(other.username, username)
+		finally:
+			frappe.delete_doc("User", other_user, force=True, ignore_permissions=True)
+			frappe.db.commit()  # nosemgrep: frappe-manual-commit
+
+	def test_a_new_user_takes_preferred_username_and_a_taken_one_does_not_block_creation(self):
+		username = f"iamnew{frappe.generate_hash(length=8)}"
+		first = _principal(
+			preferred_username=username, email=f"x_{frappe.generate_hash(length=6)}@example.com"
+		)
+		second = _principal(preferred_username=username)
+		users = []
+		try:
+			users.append(iam_users.resolve_user(first, SERVICE))
+			self.assertEqual(frappe.db.get_value("User", users[0], "username"), username)
+			# Creation never writes the login email; sync_profile owns it.
+			self.assertIsNone(frappe.db.get_value("User", users[0], "oan_login_email"))
+
+			users.append(iam_users.resolve_user(second, SERVICE))
+			self.assertTrue(frappe.db.exists("User", users[1]))
+			self.assertNotEqual(frappe.db.get_value("User", users[1], "username"), username)
+		finally:
+			for u in users:
+				frappe.delete_doc("User", u, force=True, ignore_permissions=True)
+			frappe.db.commit()  # nosemgrep: frappe-manual-commit
+
 	def test_claims_fill_names_mobile_birth_date_and_gender(self):
 		self.assertTrue(iam_users.sync_profile(self.user, self.principal))
 

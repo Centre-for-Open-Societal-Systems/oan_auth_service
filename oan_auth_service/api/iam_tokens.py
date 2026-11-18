@@ -227,36 +227,30 @@ def token_digest(token: str) -> str:
 	return hashlib.sha256(token.encode()).hexdigest()
 
 
-# What is cached and exposed as `frappe.local.oan_auth_claims`: who the caller is and
-# what IAM grants them. The person's details (phone, birthdate, national id, ...) are
-# not kept: they reach `sync_profile` and the login hooks once per token, from
-# `fetch_principal`, and the consuming app stores what it needs.
-PRINCIPAL_CACHED_KEYS = ("sub", "name", "client_roles", "email")
-
-
-def slim_principal(principal: dict) -> dict:
-	return {k: principal[k] for k in PRINCIPAL_CACHED_KEYS if k in principal}
-
-
 def get_principal(token: str, service) -> dict:
-	"""The identity and roles `service`'s IAM gives for `token`, or raise TokenError if it rejects it.
+	"""The identity, roles and person's details `service`'s IAM gives for `token`, or raise
+	TokenError if it rejects it.
 
-	Cached until the token expires, without the person's details; see
-	`fetch_principal` for those.
+	The token's own claims are the base; what `fetch_principal` returns is added to them but
+	never replaces a claim the token already carries. The token's claims are only trusted
+	after IAM has accepted the token (`fetch_principal` raises otherwise). The result is
+	cached until the token expires and exposed as `frappe.local.oan_auth_claims`.
 	"""
 	key = principal_cache_key(service, token)
 	principal = frappe.cache.get_value(key)
 	if principal:
 		return principal
 
-	full = fetch_principal(token, service)
+	fetched = fetch_principal(token, service)  # raises TokenError if IAM rejects the token
+	principal = dict(peek_claims(token))
+	for claim, value in fetched.items():
+		principal.setdefault(claim, value)
 	try:
 		if not hasattr(frappe.local, "_iam_full_principal"):
 			frappe.local._iam_full_principal = {}
-		frappe.local._iam_full_principal[token] = full
+		frappe.local._iam_full_principal[token] = principal
 	except Exception:
 		pass
-	principal = slim_principal(full)
 	frappe.cache.set_value(key, principal, expires_in_sec=seconds_until_expiry(token))
 	return principal
 
@@ -331,7 +325,7 @@ def with_logged_in_user(service, token: str, principal: dict) -> dict:
 			allow_redirects=False,
 		)
 		claims = response.json() if response.status_code == 200 else None
-	except (requests.RequestException, ValueError):
+	except requests.RequestException, ValueError:
 		return principal
 	if not isinstance(claims, dict) or claims.get("sub") not in (None, principal.get("sub")):
 		return principal

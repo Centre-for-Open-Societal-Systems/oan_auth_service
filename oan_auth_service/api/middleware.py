@@ -338,7 +338,7 @@ def validate_jwt_request(request=None):
 	try:
 		_check_csrf(request, prefix)
 		_authenticate_token(token, config)
-	except (frappe.AuthenticationError, frappe.PermissionError, frappe.ServiceUnavailableError):
+	except frappe.AuthenticationError, frappe.PermissionError, frappe.ServiceUnavailableError:
 		frappe.local.response.pop("message", None)
 	finally:
 		frappe.flags.oan_quiet_reject = False
@@ -499,10 +499,10 @@ def _provision_delegated_user(claims: dict, service, token: str) -> str:
 def _full_principal(service, token: str) -> dict:
 	"""The principal with the person's details, asked of IAM and the provider.
 
-	The cache holds identity and roles only, so the hooks' input is fetched here,
-	once per token (the hooks' done-key), with IAM's logged-in-user claims (email,
-	names) added. Reuses the in-request principal if `get_principal` just fetched
-	it on this request, and this function's own answer if it already ran.
+	The hooks also need IAM's logged-in-user claims (email, names), so their input is
+	built here, once per token (the hooks' done-key). Reuses the in-request principal if
+	`get_principal` just fetched it on this request, and this function's own answer if it
+	already ran.
 	"""
 	with_details = getattr(frappe.local, "_iam_details_principal", None)
 	if with_details is not None and token in with_details:

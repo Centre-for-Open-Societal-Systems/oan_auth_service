@@ -19,11 +19,13 @@ import frappe
 # Everything that reads it imports from here rather than repeating the string.
 LOGIN_EMAIL_FIELD = "oan_login_email"
 MUST_CHANGE_PASSWORD_FIELD = "oan_must_change_password"
+DA_REGISTRY_ID_FIELD = "da_registry_id"
 
 
 def after_install():
 	create_login_email_field()
 	create_must_change_password_field()
+	create_da_registry_id_field()
 	enable_custom_docperm_tracking()
 	index_user_full_name()
 
@@ -141,6 +143,37 @@ def create_must_change_password_field():
 			"no_copy": 1,
 			"description": (
 				"Set when an admin issues a temporary password. Cleared once the user sets a password of their own."
+			),
+		},
+	)
+
+	frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
+
+
+def create_da_registry_id_field():
+	"""Add `User.da_registry_id` — the DA-ID the DA Registry issued for this person.
+
+	IAM login (`api/iam_users.py`) fills it from the principal's `da_id`, so the field
+	belongs to this app rather than to the apps that read it. Consuming apps such as
+	da_services use it to bind a User to their DA record and limit a DA to their own data.
+
+	Unique so one DA-ID can only belong to one User; MariaDB allows any number of NULLs
+	under a unique index, so non-DA accounts simply leave it unset.
+	"""
+	from frappe.custom.doctype.custom_field.custom_field import create_custom_field
+
+	create_custom_field(
+		"User",
+		{
+			"fieldname": DA_REGISTRY_ID_FIELD,
+			"fieldtype": "Data",
+			"label": "DA Registry ID",
+			"insert_after": "username",
+			"unique": 1,
+			"in_standard_filter": 1,
+			"description": (
+				"DA-ID issued by the DA Registry. Required for the Development Agent role; "
+				"it is the record relationship that limits a DA to their own data."
 			),
 		},
 	)
