@@ -470,8 +470,8 @@ paths:
       summary: List login options
       description: 'Enabled login options in display order: one button per entry. Key `local` means this
         app''s own username and password form, which posts to `/api/v1/auth/login`; any other key starts
-        through `/api/v1/auth/iam/login`. Display fields only. Reads the database, never an IAM, so an
-        IAM outage does not hide its button.'
+        through `/api/v1/auth/iam/login`. Returns `default_provider` if only one IAM login option is enabled.
+        Display fields only. Reads the database, never an IAM, so an IAM outage does not hide its button.'
       operationId: get_api_v1_auth_iam_providers
       responses:
         '200':
@@ -499,11 +499,12 @@ paths:
       - Authentication & Session
       summary: Start a login option
       description: 'Start the login of an enabled IAM login option and return the identity provider URL
-        to send the browser to (`window.location = redirect_url`). `return_url` must be absolute and on
-        one of the option''s return origins. Also returns the option''s `cookie_prefix`: after the IAM
-        callback, the access token is in the `<cookie_prefix>X-Access-Token` cookie. Unknown, disabled
-        or `local` key, or a `return_url` off the allowed origins: 400. IAM answered unusably: 502. IAM
-        unreachable: 503.'
+        to send the browser to (`window.location = redirect_url`). `key` is optional if only one IAM login
+        option is enabled. `return_url` must be an absolute http(s) URL; which callers may use this endpoint
+        is controlled at the gateway. Also returns the option''s `cookie_prefix`: after the IAM callback,
+        the access token is in the `<cookie_prefix>X-Access-Token` cookie. Unknown, disabled or `local`
+        key, or a `return_url` that is not an absolute URL: 400. IAM answered unusably: 502. IAM unreachable:
+        503.'
       operationId: post_api_v1_auth_iam_login
       responses:
         '200':
@@ -769,6 +770,61 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/AdminUpdateUserRequest'
+    delete:
+      tags:
+      - Admin
+      summary: 'Admin: delete a user'
+      description: 'Permanently delete an account and its refresh tokens. Refused for the Administrator
+        account, the caller''s own account, and an account other records still link to; disable it instead
+        (`PATCH` with `enabled: false`). Records a consuming app created for the user are not touched,
+        so they may be left pointing at a deleted user.'
+      operationId: delete_api_v1_admin_users_user_id
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '400':
+          description: Validation or Client Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '401':
+          description: Unauthorized / Authentication Required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '403':
+          description: Caller lacks System Manager / Administrator, or the target account is protected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '404':
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: User Id parameter
+      security:
+      - BearerAuth: []
   /v1/admin/users/{user_id}/temporary-password:
     post:
       tags:
@@ -924,6 +980,52 @@ paths:
                 $ref: '#/components/schemas/StandardErrorResponse'
       security:
       - BearerAuth: []
+    post:
+      tags:
+      - Admin
+      summary: 'Admin: create a role'
+      description: Create a role for this service. The name must be a configured service prefix, or start
+        with one and a space. The role has no desk access and no permissions until you grant them.
+      operationId: post_api_v1_admin_roles
+      responses:
+        '201':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '400':
+          description: Validation or Client Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '401':
+          description: Unauthorized / Authentication Required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '403':
+          description: Caller lacks System Manager / Administrator, or the target account is protected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      security:
+      - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminCreateRoleSchema'
   /v1/admin/users/{user_id}/roles:
     get:
       tags:
@@ -1283,6 +1385,398 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/PermissionResetSchema'
+  /v1/admin/roles/{role}:
+    get:
+      tags:
+      - Admin
+      summary: 'Admin: get a role'
+      description: One role of this service, with the number of users who hold it. List those users with
+        `GET /users?role=`.
+      operationId: get_api_v1_admin_roles_role
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '400':
+          description: Validation or Client Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '401':
+          description: Unauthorized / Authentication Required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '403':
+          description: Caller lacks System Manager / Administrator, or the target account is protected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '404':
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      parameters:
+      - name: role
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Role parameter
+      security:
+      - BearerAuth: []
+    patch:
+      tags:
+      - Admin
+      summary: 'Admin: enable or disable a role'
+      description: Disabling a role removes it from every user who holds it, and enabling it again does
+        not restore them. Refresh tokens of the affected users are not revoked; access tokens already
+        issued keep the old role claim until they expire.
+      operationId: patch_api_v1_admin_roles_role
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '400':
+          description: Validation or Client Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '401':
+          description: Unauthorized / Authentication Required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '403':
+          description: Caller lacks System Manager / Administrator, or the target account is protected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '404':
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      parameters:
+      - name: role
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Role parameter
+      security:
+      - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminUpdateRoleSchema'
+    delete:
+      tags:
+      - Admin
+      summary: 'Admin: delete a role'
+      description: Delete a role created through this API. Roles that ship with an app, and roles still
+        held by a user, are refused.
+      operationId: delete_api_v1_admin_roles_role
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '400':
+          description: Validation or Client Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '401':
+          description: Unauthorized / Authentication Required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '403':
+          description: Caller lacks System Manager / Administrator, or the target account is protected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '404':
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      parameters:
+      - name: role
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Role parameter
+      security:
+      - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RoleNameSchema'
+  /v1/admin/users/{user_id}/user-permissions:
+    get:
+      tags:
+      - Admin
+      summary: 'Admin: list a user''s record restrictions'
+      description: User permissions of the user on this service's doctypes. Restrictions on other doctypes
+        are not shown.
+      operationId: get_api_v1_admin_users_user_id_user_permissions
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '400':
+          description: Validation or Client Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '401':
+          description: Unauthorized / Authentication Required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '403':
+          description: Caller lacks System Manager / Administrator, or the target account is protected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '404':
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: User Id parameter
+      security:
+      - BearerAuth: []
+    post:
+      tags:
+      - Admin
+      summary: 'Admin: restrict a user to a record'
+      description: Limit the user to one record (`for_value`) of a service doctype (`allow`). With `apply_to_all_doctypes`
+        false, it applies only to the service doctype `applicable_for`.
+      operationId: post_api_v1_admin_users_user_id_user_permissions
+      responses:
+        '201':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '400':
+          description: Validation or Client Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '401':
+          description: Unauthorized / Authentication Required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '403':
+          description: Caller lacks System Manager / Administrator, or the target account is protected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '404':
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: User Id parameter
+      security:
+      - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminAddUserPermissionSchema'
+  /v1/admin/users/{user_id}/user-permissions/{name}:
+    delete:
+      tags:
+      - Admin
+      summary: 'Admin: remove a record restriction'
+      description: Delete one user permission of the user on a service doctype.
+      operationId: delete_api_v1_admin_users_user_id_user_permissions_name
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '400':
+          description: Validation or Client Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '401':
+          description: Unauthorized / Authentication Required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '403':
+          description: Caller lacks System Manager / Administrator, or the target account is protected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '404':
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: User Id parameter
+      - name: name
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Name parameter
+      security:
+      - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserPermissionRefSchema'
+  /v1/admin/permissions/catalogue:
+    get:
+      tags:
+      - Admin
+      summary: 'Admin: roles, doctypes and rights that can be combined'
+      description: 'What `PUT /permissions` accepts: this service''s roles, its doctypes and the rights
+        a rule can grant. The rules themselves, standard and custom, come from `GET /permissions`.'
+      operationId: get_api_v1_admin_permissions_catalogue
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '400':
+          description: Validation or Client Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '401':
+          description: Unauthorized / Authentication Required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+        '403':
+          description: Caller lacks System Manager / Administrator, or the target account is protected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StandardErrorResponse'
+      security:
+      - BearerAuth: []
   /v1/notifications:
     get:
       tags:
@@ -2048,20 +2542,22 @@ components:
     IAMLoginSchema:
       properties:
         key:
-          description: Key of an enabled login option, e.g. `staff`.
-          maxLength: 64
-          minLength: 1
+          anyOf:
+          - maxLength: 64
+            type: string
+          - type: 'null'
+          default: null
+          description: Key of an enabled login option, e.g. `staff`. Optional if only one IAM service
+            is enabled.
           title: Key
-          type: string
         return_url:
           description: Absolute URL IAM sends the browser to after login. Its origin must be one of the
             login option's return origins.
           maxLength: 2048
           minLength: 1
-          title: Return Url
+          title: Return URL
           type: string
       required:
-      - key
       - return_url
       title: IAMLoginSchema
       type: object
@@ -2146,6 +2642,103 @@ components:
       - doctype
       title: PermissionResetSchema
       type: object
+    AdminCreateRoleSchema:
+      properties:
+        role:
+          description: Role name
+          maxLength: 140
+          minLength: 1
+          title: Role
+          type: string
+      required:
+      - role
+      title: AdminCreateRoleSchema
+      type: object
+    RoleNameSchema:
+      properties:
+        role:
+          description: Role name
+          maxLength: 140
+          minLength: 1
+          title: Role
+          type: string
+      required:
+      - role
+      title: RoleNameSchema
+      type: object
+    AdminUpdateRoleSchema:
+      properties:
+        role:
+          description: Role name
+          maxLength: 140
+          minLength: 1
+          title: Role
+          type: string
+        disabled:
+          description: Disabling a role removes it from every user who holds it
+          title: Disabled
+          type: boolean
+      required:
+      - role
+      - disabled
+      title: AdminUpdateRoleSchema
+      type: object
+    AdminAddUserPermissionSchema:
+      properties:
+        user_id:
+          description: User id
+          minLength: 1
+          title: User ID
+          type: string
+        allow:
+          description: Service doctype the user is restricted on
+          minLength: 1
+          title: Allow
+          type: string
+        for_value:
+          description: The one record of `allow` the user may access
+          minLength: 1
+          title: For Value
+          type: string
+        apply_to_all_doctypes:
+          default: true
+          description: Apply to every doctype linking to `allow`, or only `applicable_for`
+          title: Apply To All Doctypes
+          type: boolean
+        applicable_for:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          description: Service doctype it applies to
+          title: Applicable For
+        is_default:
+          default: false
+          title: Is Default
+          type: boolean
+      required:
+      - user_id
+      - allow
+      - for_value
+      title: AdminAddUserPermissionSchema
+      type: object
+    UserPermissionRefSchema:
+      properties:
+        user_id:
+          description: User id
+          minLength: 1
+          title: User ID
+          type: string
+        name:
+          description: User Permission id
+          minLength: 1
+          title: Name
+          type: string
+      required:
+      - user_id
+      - name
+      title: UserPermissionRefSchema
+      type: object
     ListNotificationsSchema:
       properties:
         page:
@@ -2173,7 +2766,7 @@ components:
       properties:
         notification_id:
           minLength: 1
-          title: Notification Id
+          title: Notification ID
           type: string
       required:
       - notification_id
@@ -2183,7 +2776,7 @@ components:
       properties:
         notification_id:
           minLength: 1
-          title: Notification Id
+          title: Notification ID
           type: string
         read:
           description: true marks read, false marks unread

@@ -69,20 +69,29 @@ The app includes a declarative Werkzeug REST Router (`oan_auth_service.api.route
 
 All require a bearer token for a user holding `System Manager` or `Administrator`. `{id}` is the user id only; find a user by email or phone with the list filters, so personal data never lands in access logs.
 
-| Method   | REST Path                                     | Description                                                                                |
-| -------- | --------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| `GET`    | `/api/v1/admin/users`                         | List users (`search`, `email`, `phone_number`, `role`, `enabled`, `page`, `page_size`)     |
-| `POST`   | `/api/v1/admin/users`                         | Onboard a user with a temporary password; `201`, no tokens                                 |
-| `GET`    | `/api/v1/admin/users/{id}`                    | User details, roles and app profiles                                                       |
-| `PATCH`  | `/api/v1/admin/users/{id}`                    | Change name, login email, mobile; `{"enabled": false}` disables and revokes refresh tokens |
-| `DELETE` | `/api/v1/admin/users/{id}/sessions`           | Revoke every refresh token                                                                 |
-| `POST`   | `/api/v1/admin/users/{id}/temporary-password` | Issue a temporary password (a generated one is returned once)                              |
-| `GET`    | `/api/v1/admin/users/{id}/roles`              | List the user's roles                                                                      |
-| `POST`   | `/api/v1/admin/users/{id}/roles`              | Grant roles (`{"roles": [...]}`)                                                           |
-| `DELETE` | `/api/v1/admin/users/{id}/roles/{role}`       | Revoke a role                                                                              |
-| `GET`    | `/api/v1/admin/roles`                         | List assignable roles                                                                      |
+| Method   | REST Path                                          | Description                                                                                |
+| -------- | -------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `GET`    | `/api/v1/admin/users`                              | List users (`search`, `email`, `phone_number`, `role`, `enabled`, `page`, `page_size`)     |
+| `POST`   | `/api/v1/admin/users`                              | Onboard a user with a temporary password; `201`, no tokens                                 |
+| `GET`    | `/api/v1/admin/users/{id}`                         | User details, roles and app profiles                                                       |
+| `DELETE` | `/api/v1/admin/users/{id}`                         | Permanently delete a user (prefer disabling)                                               |
+| `PATCH`  | `/api/v1/admin/users/{id}`                         | Change name, login email, mobile; `{"enabled": false}` disables and revokes refresh tokens |
+| `DELETE` | `/api/v1/admin/users/{id}/sessions`                | Revoke every refresh token                                                                 |
+| `POST`   | `/api/v1/admin/users/{id}/temporary-password`      | Issue a temporary password (a generated one is returned once)                              |
+| `GET`    | `/api/v1/admin/users/{id}/roles`                   | List the user's roles                                                                      |
+| `POST`   | `/api/v1/admin/users/{id}/roles`                   | Grant roles (`{"roles": [...]}`)                                                           |
+| `DELETE` | `/api/v1/admin/users/{id}/roles/{role}`            | Revoke a role                                                                              |
+| `GET`    | `/api/v1/admin/roles`                              | List assignable roles                                                                      |
+| `POST`   | `/api/v1/admin/roles`                              | Create a service role (`{"role": "..."}`)                                                  |
+| `GET`    | `/api/v1/admin/roles/{role}`                       | Get a role and its user count                                                              |
+| `PATCH`  | `/api/v1/admin/roles/{role}`                       | Enable or disable a role (`{"disabled": true}`)                                            |
+| `DELETE` | `/api/v1/admin/roles/{role}`                       | Delete a role created through the API, if no user holds it                                 |
+| `GET`    | `/api/v1/admin/users/{id}/user-permissions`        | List the user's record restrictions                                                        |
+| `POST`   | `/api/v1/admin/users/{id}/user-permissions`        | Restrict the user to one record of a service doctype                                       |
+| `DELETE` | `/api/v1/admin/users/{id}/user-permissions/{name}` | Remove a record restriction                                                                |
+| `GET`    | `/api/v1/admin/permissions/catalogue`              | Roles, doctypes and rights that `PUT /permissions` accepts                                 |
 
-There is no `DELETE` on a user: hard deletion would orphan records consuming apps linked to it. The `Administrator` account and the caller's own account cannot be disabled or have roles changed. Only the `Administrator` user may grant the `Administrator` role. Roles of IAM-delegated accounts are refused, since IAM overwrites them at login.
+`DELETE` on a user is permanent and does not touch records consuming apps linked to it; prefer disabling with `PATCH`. The `Administrator` account and the caller's own account cannot be disabled, deleted or have roles changed. Only the `Administrator` user may grant the `Administrator` role. Roles of IAM-delegated accounts are refused, since IAM overwrites them at login.
 
 ### HTTPS Transport Security
 
