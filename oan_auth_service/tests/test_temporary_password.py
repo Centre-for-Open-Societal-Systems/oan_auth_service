@@ -164,7 +164,7 @@ class TestTemporaryPassword(unittest.TestCase):
 				headers={"Authorization": f"Bearer {pair['access_token']}"},
 			)
 			frappe.set_user("Guest")
-			frappe.local.session = frappe._dict({"user": "Guest"})
+			frappe.local.session = frappe._dict({"user": "Guest", "data": frappe._dict()})
 			with self.assertRaises(frappe.AuthenticationError):
 				validate_jwt_request(req)
 
@@ -190,7 +190,7 @@ class TestTemporaryPassword(unittest.TestCase):
 				"/api/v1/auth/health", method="GET", headers={"Authorization": f"Bearer {token}"}
 			)
 			frappe.set_user("Guest")
-			frappe.local.session = frappe._dict({"user": "Guest"})
+			frappe.local.session = frappe._dict({"user": "Guest", "data": frappe._dict()})
 			validate_jwt_request(req)
 
 		self.assertEqual(frappe.session.user, user)

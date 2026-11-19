@@ -211,7 +211,7 @@ class TestRESTAuthEndpoints(unittest.TestCase):
 				headers={"Authorization": f"Bearer {new_access}"},
 			)
 			frappe.set_user("Guest")
-			frappe.local.session = frappe._dict({"user": "Guest"})
+			frappe.local.session = frappe._dict({"user": "Guest", "data": frappe._dict()})
 
 			from oan_auth_service.api.middleware import validate_jwt_request
 
@@ -239,7 +239,7 @@ class TestRESTAuthEndpoints(unittest.TestCase):
 		# Anonymous / Guest caller without Bearer token must be rejected
 		me_req = make_test_request("/api/v1/auth/me", method="GET")
 		frappe.set_user("Guest")
-		frappe.local.session = frappe._dict({"user": "Guest"})
+		frappe.local.session = frappe._dict({"user": "Guest", "data": frappe._dict()})
 
 		from oan_auth_service.api.middleware import validate_jwt_request
 
@@ -252,7 +252,7 @@ class TestRESTAuthEndpoints(unittest.TestCase):
 
 		req = make_test_request("/api/v1/auth/health", method="GET")
 		frappe.set_user("Guest")
-		frappe.local.session = frappe._dict({"user": "Guest"})
+		frappe.local.session = frappe._dict({"user": "Guest", "data": frappe._dict()})
 
 		validate_jwt_request(req)
 		self.assertEqual(frappe.session.user, "Guest")
@@ -269,7 +269,7 @@ class TestRESTAuthEndpoints(unittest.TestCase):
 				headers={"Authorization": f"Bearer {token}"},
 			)
 			frappe.set_user("Guest")
-			frappe.local.session = frappe._dict({"user": "Guest"})
+			frappe.local.session = frappe._dict({"user": "Guest", "data": frappe._dict()})
 
 			validate_jwt_request(req)
 			self.assertEqual(frappe.session.user, "Administrator")
@@ -302,7 +302,7 @@ class TestRESTAuthEndpoints(unittest.TestCase):
 				headers={"Authorization": f"Bearer {expired_token}"},
 			)
 			frappe.set_user("Guest")
-			frappe.local.session = frappe._dict({"user": "Guest"})
+			frappe.local.session = frappe._dict({"user": "Guest", "data": frappe._dict()})
 
 			with self.assertRaises(frappe.AuthenticationError):
 				validate_jwt_request(req)
@@ -319,7 +319,7 @@ class TestRESTAuthEndpoints(unittest.TestCase):
 				headers={"Authorization": f"Bearer {token}"},
 			)
 			frappe.set_user("Guest")
-			frappe.local.session = frappe._dict({"user": "Guest"})
+			frappe.local.session = frappe._dict({"user": "Guest", "data": frappe._dict()})
 
 			with self.assertRaises(frappe.AuthenticationError):
 				validate_jwt_request(req)
@@ -334,7 +334,7 @@ class TestRESTAuthEndpoints(unittest.TestCase):
 			headers={"Authorization": "Bearer not-a-jwt-token"},
 		)
 		frappe.set_user("Guest")
-		frappe.local.session = frappe._dict({"user": "Guest"})
+		frappe.local.session = frappe._dict({"user": "Guest", "data": frappe._dict()})
 
 		with self.assertRaises(frappe.AuthenticationError):
 			validate_jwt_request(req)

@@ -214,7 +214,7 @@ class TestIAMDelegatedLogin(unittest.TestCase):
 				"/api/v1/auth/health", method=method, headers=headers or {}, environ_base=env
 			)
 			frappe.set_user("Guest")
-			frappe.local.session = frappe._dict({"user": "Guest"})
+			frappe.local.session = frappe._dict({"user": "Guest", "data": frappe._dict()})
 			frappe.local.form_dict = frappe._dict(form_dict or {})
 			validate_jwt_request(req)
 		return frappe.session.user
@@ -226,7 +226,7 @@ class TestIAMDelegatedLogin(unittest.TestCase):
 				"/api/v1/auth/health", method=method, headers={"Authorization": f"Bearer {token}"}
 			)
 			frappe.set_user("Guest")
-			frappe.local.session = frappe._dict({"user": "Guest"})
+			frappe.local.session = frappe._dict({"user": "Guest", "data": frappe._dict()})
 			validate_jwt_request(req)
 		return frappe.session.user
 
