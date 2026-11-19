@@ -141,6 +141,32 @@ class PermissionResetSchema(BaseModel):
 	doctype: str = Field(..., min_length=1)
 
 
+class RoleNameSchema(BaseModel):
+	role: str = Field(..., min_length=1, max_length=140, title=N_("Role"), description="Role name")
+
+
+class AdminCreateRoleSchema(RoleNameSchema):
+	pass
+
+
+class AdminUpdateRoleSchema(RoleNameSchema):
+	disabled: bool = Field(..., description="Disabling a role removes it from every user who holds it")
+
+
+class UserPermissionRefSchema(UserRefSchema):
+	name: str = Field(..., min_length=1, description="User Permission id")
+
+
+class AdminAddUserPermissionSchema(UserRefSchema):
+	allow: str = Field(..., min_length=1, description="Service doctype the user is restricted on")
+	for_value: str = Field(..., min_length=1, description="The one record of `allow` the user may access")
+	apply_to_all_doctypes: bool = Field(
+		default=True, description="Apply to every doctype linking to `allow`, or only `applicable_for`"
+	)
+	applicable_for: str | None = Field(default=None, description="Service doctype it applies to")
+	is_default: bool = False
+
+
 class AdminTemporaryPasswordSchema(UserRefSchema):
 	temporary_password: str | None = Field(
 		default=None, max_length=128, description="Generated and returned when omitted."
@@ -561,6 +587,33 @@ def update_user(user_id: str, **kwargs):
 
 
 @route(
+	"/users/<user_id>",
+	methods=("DELETE",),
+	summary="Admin: delete a user",
+	description="Permanently delete an account and its refresh tokens. Refused for the Administrator account, the caller's own account, and an account other records still link to; disable it instead (`PATCH` with `enabled: false`). Records a consuming app created for the user are not touched, so they may be left pointing at a deleted user.",
+)
+@validate_request(UserRefSchema)
+@handle_api_errors
+@require_role(ADMIN_ROLES)
+def delete_user(user_id: str):
+	user = _resolve_target(user_id)
+	_guard_protected(user, "delete")
+	_guard_privileged(user)
+
+	revoke_all_for_user(user)
+	try:
+		frappe.delete_doc("User", user, ignore_permissions=True)
+	except frappe.LinkExistsError:
+		frappe.db.rollback()
+		frappe.throw(
+			_("User '{0}' is linked to other records; disable the account instead.").format(user),
+			frappe.ValidationError,
+		)
+	frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
+	return success_response(data={"user": user}, message=_("User deleted"))
+
+
+@route(
 	"/users/<user_id>/temporary-password",
 	methods=("POST",),
 	summary="Admin: issue a temporary password",
@@ -834,4 +887,231 @@ def reset_permissions(doctype: str, **kwargs):
 			"rules": permission_rules.rule_rows(doctype, _service_roles()),
 		},
 		message=_("Permissions reset"),
+	)
+
+
+# ---------------------------------------------------------------------------
+# Role management (service-scoped)
+# ---------------------------------------------------------------------------
+
+_ROLE_FIELDS = ["name", "disabled", "desk_access", "is_custom"]
+
+
+def _role_row(role: str) -> dict:
+	row = frappe.db.get_value("Role", role, _ROLE_FIELDS, as_dict=True)
+	row["users"] = frappe.db.count("Has Role", {"parenttype": "User", "role": role})
+	return row
+
+
+@route(
+	"/roles",
+	methods=("POST",),
+	status=201,
+	summary="Admin: create a role",
+	description="Create a role for this service. The name must be a configured service prefix, or start with one and a space. The role has no desk access and no permissions until you grant them.",
+)
+@validate_request(AdminCreateRoleSchema)
+@handle_api_errors
+@require_role(ADMIN_ROLES)
+def create_role(role: str):
+	role = role.strip()
+	if not role or not _in_scope(role) or role in _AMBIENT_ROLES:
+		frappe.throw(_("Role '{0}' cannot be created").format(role), frappe.ValidationError)
+	if frappe.db.exists("Role", role):
+		frappe.throw(_("Role '{0}' already exists").format(role), frappe.DuplicateEntryError)
+
+	doc = frappe.get_doc({"doctype": "Role", "role_name": role, "desk_access": 0, "is_custom": 1})
+	doc.insert(ignore_permissions=True)
+	frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
+	return success_response(data=_role_row(role), message=_("Role created"))
+
+
+@route(
+	"/roles/<role>",
+	methods=("GET",),
+	summary="Admin: get a role",
+	description="One role of this service, with the number of users who hold it. List those users with `GET /users?role=`.",
+)
+@validate_request(RoleNameSchema)
+@handle_api_errors
+@require_role(ADMIN_ROLES)
+def get_role(role: str):
+	return success_response(data=_role_row(_scoped_role(role)))
+
+
+@route(
+	"/roles/<role>",
+	methods=("PATCH",),
+	summary="Admin: enable or disable a role",
+	description="Disabling a role removes it from every user who holds it, and enabling it again does not restore them. Refresh tokens of the affected users are not revoked; access tokens already issued keep the old role claim until they expire.",
+)
+@validate_request(AdminUpdateRoleSchema)
+@handle_api_errors
+@require_role(ADMIN_ROLES)
+def update_role(role: str, disabled: bool):
+	role = _scoped_role(role)
+	if role in _AMBIENT_ROLES or role == "Administrator":
+		frappe.throw(_("Role '{0}' cannot be changed").format(role), frappe.PermissionError)
+	doc = frappe.get_doc("Role", role)
+	if bool(doc.disabled) != disabled:
+		doc.disabled = int(disabled)
+		doc.flags.ignore_permissions = True
+		doc.save()
+		frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
+	return success_response(data=_role_row(role), message=_("Role updated"))
+
+
+@route(
+	"/roles/<role>",
+	methods=("DELETE",),
+	summary="Admin: delete a role",
+	description="Delete a role created through this API. Roles that ship with an app, and roles still held by a user, are refused.",
+)
+@validate_request(RoleNameSchema)
+@handle_api_errors
+@require_role(ADMIN_ROLES)
+def delete_role(role: str):
+	role = _scoped_role(role)
+	if not frappe.db.get_value("Role", role, "is_custom"):
+		frappe.throw(_("Only roles created through this API can be deleted."), frappe.PermissionError)
+	if held := frappe.db.count("Has Role", {"parenttype": "User", "role": role}):
+		frappe.throw(
+			_("Role '{0}' is held by {1} user(s); revoke it first.").format(role, held),
+			frappe.ValidationError,
+		)
+	frappe.delete_doc("Role", role, ignore_permissions=True)
+	frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
+	return success_response(data={"role": role}, message=_("Role deleted"))
+
+
+# ---------------------------------------------------------------------------
+# User permissions (restrict a user to specific records of a service doctype)
+# ---------------------------------------------------------------------------
+
+_USER_PERMISSION_FIELDS = [
+	"name",
+	"user",
+	"allow",
+	"for_value",
+	"apply_to_all_doctypes",
+	"applicable_for",
+	"is_default",
+	"creation",
+]
+
+
+def _user_permissions(user: str) -> list[dict]:
+	rows = frappe.get_all(
+		"User Permission", filters={"user": user}, fields=_USER_PERMISSION_FIELDS, order_by="creation asc"
+	)
+	return [r for r in rows if _doctype_in_scope(r.allow)]
+
+
+@route(
+	"/users/<user_id>/user-permissions",
+	methods=("GET",),
+	summary="Admin: list a user's record restrictions",
+	description="User permissions of the user on this service's doctypes. Restrictions on other doctypes are not shown.",
+)
+@validate_request(UserRefSchema)
+@handle_api_errors
+@require_role(ADMIN_ROLES)
+def list_user_permissions(user_id: str):
+	user = _resolve_target(user_id)
+	return success_response(data=_user_permissions(user))
+
+
+@route(
+	"/users/<user_id>/user-permissions",
+	methods=("POST",),
+	status=201,
+	summary="Admin: restrict a user to a record",
+	description="Limit the user to one record (`for_value`) of a service doctype (`allow`). With `apply_to_all_doctypes` false, it applies only to the service doctype `applicable_for`.",
+)
+@validate_request(AdminAddUserPermissionSchema)
+@handle_api_errors
+@require_role(ADMIN_ROLES)
+def add_user_permission(
+	user_id: str,
+	allow: str,
+	for_value: str,
+	apply_to_all_doctypes: bool = True,
+	applicable_for: str | None = None,
+	is_default: bool = False,
+):
+	user = _resolve_target(user_id)
+	_guard_privileged(user)
+	_guard_protected(user, "change record restrictions of")
+	allow = _scoped_doctype(allow)
+	if apply_to_all_doctypes:
+		applicable_for = None
+	elif applicable_for:
+		applicable_for = _scoped_doctype(applicable_for)
+	else:
+		frappe.throw(_("Provide `applicable_for` when not applying to all doctypes."), frappe.ValidationError)
+	if not frappe.db.exists(allow, for_value):
+		frappe.throw(_("{0} '{1}' not found").format(allow, for_value), frappe.DoesNotExistError)
+
+	doc = frappe.get_doc(
+		{
+			"doctype": "User Permission",
+			"user": user,
+			"allow": allow,
+			"for_value": for_value,
+			"apply_to_all_doctypes": int(apply_to_all_doctypes),
+			"applicable_for": applicable_for,
+			"is_default": int(is_default),
+		}
+	)
+	doc.insert(ignore_permissions=True)
+	frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
+	return success_response(
+		data=frappe.db.get_value("User Permission", doc.name, _USER_PERMISSION_FIELDS, as_dict=True),
+		message=_("Record restriction added"),
+	)
+
+
+@route(
+	"/users/<user_id>/user-permissions/<name>",
+	methods=("DELETE",),
+	summary="Admin: remove a record restriction",
+	description="Delete one user permission of the user on a service doctype.",
+)
+@validate_request(UserPermissionRefSchema)
+@handle_api_errors
+@require_role(ADMIN_ROLES)
+def delete_user_permission(user_id: str, name: str):
+	user = _resolve_target(user_id)
+	_guard_privileged(user)
+	_guard_protected(user, "change record restrictions of")
+	row = frappe.db.get_value(
+		"User Permission", {"name": name, "user": user}, ["name", "allow"], as_dict=True
+	)
+	if not row or not _doctype_in_scope(row.allow):
+		raise frappe.DoesNotExistError(_("User permission not found"))
+	frappe.delete_doc("User Permission", row.name, ignore_permissions=True)
+	frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
+	return success_response(data={"name": row.name}, message=_("Record restriction removed"))
+
+
+# ---------------------------------------------------------------------------
+# Permission catalogue
+# ---------------------------------------------------------------------------
+
+
+@route(
+	"/permissions/catalogue",
+	methods=("GET",),
+	summary="Admin: roles, doctypes and rights that can be combined",
+	description="What `PUT /permissions` accepts: this service's roles, its doctypes and the rights a rule can grant. The rules themselves, standard and custom, come from `GET /permissions`.",
+)
+@handle_api_errors
+@require_role(ADMIN_ROLES)
+def permission_catalogue():
+	return success_response(
+		data={
+			"roles": sorted(_service_roles() - _AMBIENT_ROLES),
+			"doctypes": _service_doctypes(),
+			"rights": list(RIGHTS),
+		}
 	)
