@@ -605,7 +605,7 @@ class TestAuthenticationFailures(LogCase):
 	def _refused_by_the_middleware(self, **request_kwargs):
 		"""Run the auth hook on a request it refuses, then the request hook, and return the log."""
 		frappe.set_user("Guest")
-		frappe.local.session = frappe._dict({"user": "Guest"})
+		frappe.local.session = frappe._dict({"user": "Guest", "data": frappe._dict()})
 		request = make_test_request("/api/v1/auth/me", **request_kwargs)
 		with configured_keys(), CapturedLog() as captured:
 			rl.begin()

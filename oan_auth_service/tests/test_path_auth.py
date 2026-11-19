@@ -59,7 +59,9 @@ class TestPathAuth(unittest.TestCase):
 		with configured_keys():
 			req = make_test_request(path, method="GET", headers=headers)
 			frappe.set_user("Guest")
-			frappe.local.session = frappe._dict({"user": session_user, "sid": "test-sid"})
+			frappe.local.session = frappe._dict(
+				{"user": session_user, "sid": "test-sid", "data": frappe._dict()}
+			)
 			validate_jwt_request(req)
 		return frappe.session.user
 
