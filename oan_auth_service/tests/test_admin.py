@@ -197,7 +197,7 @@ class TestAdminEndpoints(unittest.TestCase):
 		status, _body = call("/api/v1/admin/users/Administrator", "PATCH", {"enabled": False})
 		self.assertEqual(status, 404)
 
-	def test_no_delete_on_user(self):
+	def test_user_route_methods(self):
 		from oan_auth_service.tests.test_router import registered_routes
 
 		methods = {
@@ -206,7 +206,7 @@ class TestAdminEndpoints(unittest.TestCase):
 			if r["path"] == "/api/v1/admin/users/<user_id>"
 			for m in r["methods"]
 		}
-		self.assertEqual(methods, {"GET", "PATCH"})
+		self.assertEqual(methods, {"GET", "PATCH", "DELETE"})
 
 	def test_delete_sessions(self):
 		data = self._create(email=f"sess_{frappe.generate_hash(length=6)}@example.com")
