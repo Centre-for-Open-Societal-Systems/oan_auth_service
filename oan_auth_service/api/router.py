@@ -188,11 +188,16 @@ def declared_routes(app: str) -> list[dict]:
 	For an app's gateway generator: import its route modules first, since importing
 	them is what declares the routes.
 	"""
-	return [
-		rule.endpoint._route
-		for rule in _rules
-		if inspect.unwrap(rule.endpoint).__module__.split(".")[0] == app
-	]
+	return [endpoint._route for endpoint in declared_endpoints(app)]
+
+
+def declared_endpoints(app: str) -> list[Callable]:
+	"""The registered endpoint of every route declared by a handler in package `app`.
+
+	Each carries its `_route`, and `__wrapped__` leads back to the handler and its
+	decorators (`@validate_request`, `@api_doc`), which is what spec generation reads.
+	"""
+	return [rule.endpoint for rule in _rules if inspect.unwrap(rule.endpoint).__module__.split(".")[0] == app]
 
 
 def prefixed(prefix: str) -> Callable:
