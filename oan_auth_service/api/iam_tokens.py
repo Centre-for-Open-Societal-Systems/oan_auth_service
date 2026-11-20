@@ -227,12 +227,17 @@ def token_digest(token: str) -> str:
 	return hashlib.sha256(token.encode()).hexdigest()
 
 
+# The claims of the principal IAM always decides, whatever the token itself carries.
+IAM_AUTHORITATIVE_CLAIMS = ("sub", "client_roles")
+
+
 def get_principal(token: str, service) -> dict:
 	"""The identity, roles and person's details `service`'s IAM gives for `token`, or raise
 	TokenError if it rejects it.
 
 	The token's own claims are the base; what `fetch_principal` returns is added to them but
-	never replaces a claim the token already carries. The token's claims are only trusted
+	never replaces a claim the token already carries, except `IAM_AUTHORITATIVE_CLAIMS`
+	(identity and roles), which are always IAM's. The token's claims are only trusted
 	after IAM has accepted the token (`fetch_principal` raises otherwise). The result is
 	cached until the token expires and exposed as `frappe.local.oan_auth_claims`.
 	"""
@@ -245,6 +250,13 @@ def get_principal(token: str, service) -> dict:
 	principal = dict(peek_claims(token))
 	for claim, value in fetched.items():
 		principal.setdefault(claim, value)
+	# Who the caller is and what they are granted come from IAM only: a provider's own
+	# `client_roles` claim has another shape (a list, not `{application: [roles]}`).
+	for claim in IAM_AUTHORITATIVE_CLAIMS:
+		if claim in fetched:
+			principal[claim] = fetched[claim]
+		else:
+			principal.pop(claim, None)
 	try:
 		if not hasattr(frappe.local, "_iam_full_principal"):
 			frappe.local._iam_full_principal = {}

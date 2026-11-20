@@ -213,6 +213,22 @@ class TestIamUserinfo(unittest.TestCase):
 		self.assertEqual(principal["iss"], ISS)
 		self.assertIn("client_roles", principal)  # only IAM has it
 
+	def test_iam_decides_identity_and_roles_over_the_token(self):
+		# A Keycloak token carries its own `client_roles` as a list; IAM's is per application.
+		token = jwt.encode(
+			{
+				"iss": ISS,
+				"sub": "psut-1",
+				"client_roles": ["uma_authorization", "Development Agent"],
+				"exp": int(time.time()) + 600,
+			},
+			"idp",
+			algorithm="HS256",
+		)
+		principal, _ = self.principal(_response(json_body={}), token, cached=True)
+		self.assertEqual(principal["client_roles"], {})
+		self.assertEqual(principal["sub"], "psut-1")
+
 	def test_a_rejected_token_contributes_no_claims(self):
 		service = settings.iam_service(KEY)
 		with (

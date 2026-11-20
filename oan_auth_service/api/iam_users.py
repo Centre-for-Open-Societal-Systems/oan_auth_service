@@ -103,11 +103,13 @@ def _create_user(user: str, principal: dict) -> None:
 			# The login email and DA-ID are unique too; sync_profile sets them right after
 			# the first sign-in, skipping a value another account holds.
 			"username": _claim(principal, "preferred_username"),
+			"da_registry_id": _claim(principal, "da_id"),
 			"enabled": 1,
 		}
 	)
 	try:
 		user_doc.insert(ignore_permissions=True)
+
 	except frappe.DuplicateEntryError:
 		# Two first requests raced; the other one created it.
 		frappe.db.rollback()
