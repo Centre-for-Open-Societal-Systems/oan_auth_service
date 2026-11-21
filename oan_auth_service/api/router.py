@@ -68,6 +68,9 @@ def rest(
 	auth: str | tuple[str, ...] | None = None,
 	roles: list[str] | tuple[str, ...] | None = None,
 	cache_seconds: int = 0,
+	security: str | None = None,
+	request_types: tuple[str, ...] | None = None,
+	response_types: tuple[str, ...] | None = None,
 ) -> Callable:
 	"""Expose `fn` at `path`, and return `fn` unchanged.
 
@@ -82,6 +85,13 @@ def rest(
 	`cache_seconds` lets a client reuse a successful GET for that long
 	(`Cache-Control: private, max-age=N`). Frappe's default is `no-store`, so a
 	route opts in; only the owner of the data knows how long it stays valid.
+
+	`security`, `request_types` and `response_types` only describe the route to the
+	OpenAPI generator. `security` names a scheme the app defines (the spec's default
+	is bearer, or none for a public route) for a route that takes a different
+	credential. `request_types` lists the body media types when it is not JSON only,
+	e.g. `("application/json", "multipart/form-data")`. `response_types` lists the
+	media types of a route that returns a file rather than the JSON envelope.
 
 	The wrapper is registered as the rule's endpoint; the module-level name stays
 	bound to the original function, so any direct caller is unaffected by the
@@ -139,6 +149,9 @@ def rest(
 			"roles": roles,
 			"status": status,
 			"tier": tier,
+			"security": security,
+			"request_types": request_types,
+			"response_types": response_types,
 		}
 		_rules.append(Rule(path, endpoint=endpoint, methods=[m.upper() for m in methods]))
 		_path_auth[path] = (auth, roles)

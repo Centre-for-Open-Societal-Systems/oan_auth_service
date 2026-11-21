@@ -196,7 +196,6 @@ def build_openapi(
 	schemas: dict[str, Any] | None = None,
 	envelopes: dict[str, Any] | None = None,
 	contact: dict[str, str] | None = None,
-	multipart_requests: dict[str, tuple[str, ...]] | None = None,
 	path_param_docs: dict[str, str] | None = None,
 	tag_for: Callable[[str, str], str] | None = None,
 	response_for: Callable[[str, str, str], str | None] | None = None,
@@ -213,13 +212,13 @@ def build_openapi(
 	- `tag_for(path, func_name)`: tag when `@api_doc` has no `tags`;
 	- `response_for(func_name, path, method)`: envelope name when there is no `response_model`;
 	- `query_parameters_for(func_name, path, method)`: query string of a GET with no request model;
-	- `security_for(func_name, is_public)`: the operation's `security`, default bearer/none;
+	- `security_for(func_name, is_public)`: the operation's `security` when the route declares no
+	  `security`; default bearer, or none for a public route;
 	- `customize_operation(op, func_name, method)`: last word on a finished operation.
 	"""
 	components = {**standard_schemas(), **copy.deepcopy(schemas or {})}
 	envelopes = copy.deepcopy(envelopes or {})
 	requests: dict[str, Any] = {}
-	multipart_requests = multipart_requests or {}
 	path_param_docs = path_param_docs or {}
 
 	paths: dict[str, Any] = {}
@@ -293,16 +292,18 @@ def build_openapi(
 			op["x-legacy-rpc-method"] = f"{unwrapped.__module__}.{func_name}"
 			if route.get("tier"):
 				op["x-gateway-tier"] = route["tier"]
-			op["security"] = (
-				security_for(func_name, is_public)
-				if security_for
-				else ([] if is_public else [{"BearerAuth": []}])
-			)
+			if route.get("security"):
+				op["security"] = [{route["security"]: []}]
+			elif security_for:
+				op["security"] = security_for(func_name, is_public)
+			else:
+				op["security"] = [] if is_public else [{"BearerAuth": []}]
 
 			# A model left empty once the path parameters are taken out means no body.
 			if method in ("POST", "PUT", "PATCH", "DELETE") and req_schema:
 				body = copy.deepcopy(req_schema)
-				if model_name in multipart_requests:
+				request_types = route.get("request_types") or ("application/json",)
+				if "multipart/form-data" in request_types:
 					body["properties"]["files"] = ARR(
 						BINARY, description="Files, sent as multipart/form-data"
 					)
@@ -313,11 +314,12 @@ def build_openapi(
 				requests[component] = body
 				op["requestBody"] = {
 					"required": bool(body.get("required")),
-					"content": {
-						ct: {"schema": REF(component)}
-						for ct in multipart_requests.get(model_name, ("application/json",))
-					},
+					"content": {ct: {"schema": REF(component)} for ct in request_types},
 				}
+
+			if route.get("response_types"):
+				ok = op["responses"][str(route.get("status") or 200)]
+				ok["content"] = {ct: {"schema": BINARY} for ct in route["response_types"]}
 
 			if customize_operation:
 				customize_operation(op, func_name, method)
