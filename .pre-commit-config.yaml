@@ -1,4 +1,7 @@
 exclude: 'node_modules|.git'
+# The code uses 3.14 syntax (`except A, B:`), which check-ast cannot parse on an older Python.
+default_language_version:
+  python: python3.14
 default_stages: [pre-commit]
 fail_fast: false
 
