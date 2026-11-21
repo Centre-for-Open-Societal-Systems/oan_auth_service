@@ -126,7 +126,7 @@ def import_route_modules(package: str, modules: list[str] | None = None) -> None
 		try:
 			importlib.import_module(name)
 		except Exception as e:
-			print(f"Warning: Failed to import {name}: {e}", file=sys.stderr)
+			sys.stderr.write(f"Warning: Failed to import {name}: {e}\n")
 
 
 def api_doc_of(endpoint_fn: Any) -> dict[str, Any] | None:
@@ -376,7 +376,7 @@ def write_specs(
 	):
 		out = openapi_dir / f"{filename}{suffix}.yaml"
 		dump_spec(spec, out, lines)
-		print(f"Wrote {out.name}: {n_paths} paths, {n_ops} operations, {n_schemas} schemas", file=sys.stderr)
+		sys.stderr.write(f"Wrote {out.name}: {n_paths} paths, {n_ops} operations, {n_schemas} schemas\n")
 
 
 # ---------------------------------------------------------------------------
