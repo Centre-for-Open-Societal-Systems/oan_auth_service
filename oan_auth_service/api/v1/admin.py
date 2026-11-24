@@ -5,8 +5,16 @@ import string
 
 import frappe
 from frappe import N_, _
-from frappe.core.page.permission_manager import permission_manager
-from frappe.permissions import ALL_USER_ROLE, GUEST_ROLE, SYSTEM_USER_ROLE
+from frappe.core.doctype.doctype.doctype import clear_permissions_cache, validate_permissions_for_doctype
+from frappe.permissions import (
+	ALL_USER_ROLE,
+	GUEST_ROLE,
+	SYSTEM_USER_ROLE,
+	add_permission,
+	reset_perms,
+	setup_custom_perms,
+	update_permission_property,
+)
 from frappe.permissions import rights as RIGHTS
 from frappe.query_builder.functions import Count
 from pydantic import BaseModel, Field, field_validator
@@ -21,7 +29,7 @@ from oan_auth_service.api.utils import (
 	handle_api_errors,
 	page_meta,
 	parse_multi_value,
-	require_role,
+	require_rule,
 	split_phone_number,
 	success_response,
 	validate_mobile,
@@ -40,8 +48,6 @@ from oan_auth_service.api.v1.auth import (
 from oan_auth_service.config import settings
 
 route = prefixed("/api/v1/admin")
-
-ADMIN_ROLES = ["System Manager", "Administrator"]
 
 # Implied by user type rather than granted (see `tokens.resolve_roles`), so
 # assigning or removing one is meaningless.
@@ -367,7 +373,7 @@ def _user_summary(row, roles: list[str] | None = None) -> dict:
 )
 @validate_request(AdminListUsersSchema)
 @handle_api_errors
-@require_role(ADMIN_ROLES)
+@require_rule("User", "read")
 def list_users(
 	page: int = 1,
 	page_size: int = 20,
@@ -450,7 +456,7 @@ def list_users(
 )
 @validate_request(AdminCreateUserSchema)
 @handle_api_errors
-@require_role(ADMIN_ROLES)
+@require_rule("User", "create")
 def create_user(
 	full_name: str,
 	email: str | None = None,
@@ -500,7 +506,7 @@ def create_user(
 )
 @validate_request(UserRefSchema)
 @handle_api_errors
-@require_role(ADMIN_ROLES)
+@require_rule("User", "read")
 def get_user(user_id: str):
 	user_doc = frappe.get_doc("User", _resolve_target(user_id))
 	data = _user_summary(user_doc)
@@ -517,7 +523,7 @@ def get_user(user_id: str):
 )
 @validate_request(AdminUpdateUserSchema, exclude_unset=True)
 @handle_api_errors
-@require_role(ADMIN_ROLES)
+@require_rule("User", "write")
 def update_user(user_id: str, **kwargs):
 	user = _resolve_target(user_id)
 	_guard_privileged(user)
@@ -594,7 +600,7 @@ def update_user(user_id: str, **kwargs):
 )
 @validate_request(UserRefSchema)
 @handle_api_errors
-@require_role(ADMIN_ROLES)
+@require_rule("User", "delete")
 def delete_user(user_id: str):
 	user = _resolve_target(user_id)
 	_guard_protected(user, "delete")
@@ -621,7 +627,7 @@ def delete_user(user_id: str):
 )
 @validate_request(AdminTemporaryPasswordSchema)
 @handle_api_errors
-@require_role(ADMIN_ROLES)
+@require_rule("User", "write")
 def reissue_temporary_password(user_id: str, temporary_password: str | None = None):
 	user = _resolve_target(user_id)
 	_guard_privileged(user)
@@ -645,7 +651,7 @@ def reissue_temporary_password(user_id: str, temporary_password: str | None = No
 )
 @validate_request(UserRefSchema)
 @handle_api_errors
-@require_role(ADMIN_ROLES)
+@require_rule("User", "write")
 def revoke_sessions(user_id: str):
 	user = _resolve_target(user_id)
 	_guard_privileged(user)
@@ -666,7 +672,7 @@ def revoke_sessions(user_id: str):
 	description="Every enabled role of this service, meaning the ones whose names are a configured service prefix, or start with one and a space.",
 )
 @handle_api_errors
-@require_role(ADMIN_ROLES)
+@require_rule("Role", "read")
 def list_roles():
 	prefix = _service_prefix()
 	roles = frappe.get_all(
@@ -688,7 +694,7 @@ def list_roles():
 )
 @validate_request(UserRefSchema)
 @handle_api_errors
-@require_role(ADMIN_ROLES)
+@require_rule("User", "read")
 def get_roles(user_id: str):
 	user = _resolve_target(user_id)
 	return success_response(data={"user": user, "roles": tokens.resolve_roles(user)})
@@ -702,7 +708,7 @@ def get_roles(user_id: str):
 )
 @validate_request(AdminRolesSchema)
 @handle_api_errors
-@require_role(ADMIN_ROLES)
+@require_rule("User", "write")
 def add_roles(user_id: str, roles: list[str] | str):
 	user = _resolve_target(user_id)
 	_guard_privileged(user)
@@ -734,7 +740,7 @@ def add_roles(user_id: str, roles: list[str] | str):
 )
 @validate_request(RoleRefSchema)
 @handle_api_errors
-@require_role(ADMIN_ROLES)
+@require_rule("User", "write")
 def remove_role(user_id: str, role: str):
 	user = _resolve_target(user_id)
 	_guard_privileged(user)
@@ -808,7 +814,7 @@ def _service_doctypes() -> list[str]:
 )
 @validate_request(PermissionQuerySchema)
 @handle_api_errors
-@require_role(ADMIN_ROLES)
+@require_rule("Custom DocPerm", "read")
 def list_permissions(role: str | None = None, doctype: str | None = None):
 	doctypes = [_scoped_doctype(doctype)] if doctype else _service_doctypes()
 	roles = {_scoped_role(role)} if role else _service_roles()
@@ -824,14 +830,14 @@ def list_permissions(role: str | None = None, doctype: str | None = None):
 )
 @validate_request(SetPermissionSchema)
 @handle_api_errors
-@require_role(ADMIN_ROLES)
+@require_rule("Custom DocPerm", "write")
 def set_permissions(role: str, doctype: str, permissions: dict[str, bool], permlevel: int = 0, **kwargs):
 	role = _scoped_role(role)
 	doctype = _scoped_doctype(doctype)
 	if unknown := [p for p in permissions if p not in RIGHTS]:
 		frappe.throw(_("Unknown rights: {0}").format(", ".join(unknown)), frappe.ValidationError)
 
-	permission_manager.add(doctype, role, permlevel)
+	add_permission(doctype, role, permlevel)
 	rules = frappe.db.count("Custom DocPerm", {"parent": doctype, "role": role, "permlevel": permlevel})
 	if rules > 1:
 		frappe.throw(
@@ -841,7 +847,8 @@ def set_permissions(role: str, doctype: str, permissions: dict[str, bool], perml
 			frappe.ValidationError,
 		)
 	for ptype, granted in permissions.items():
-		permission_manager.update(doctype, role, permlevel, ptype, str(int(granted)))
+		update_permission_property(doctype, role, permlevel, ptype, str(int(granted)))
+	frappe.db.after_commit.add(lambda: frappe.clear_cache(doctype=doctype))
 	frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
 	return success_response(
 		data=permission_rules.rule_rows(doctype, {role}), message=_("Permissions updated")
@@ -856,11 +863,20 @@ def set_permissions(role: str, doctype: str, permissions: dict[str, bool], perml
 )
 @validate_request(DeletePermissionSchema)
 @handle_api_errors
-@require_role(ADMIN_ROLES)
+@require_rule("Custom DocPerm", "delete")
 def delete_permission(role: str, doctype: str, permlevel: int = 0, **kwargs):
 	role = _scoped_role(role)
 	doctype = _scoped_doctype(doctype)
-	permission_manager.remove(doctype, role, permlevel)
+	setup_custom_perms(doctype)
+	for name in frappe.get_all(
+		"Custom DocPerm",
+		{"parent": doctype, "role": role, "permlevel": permlevel, "if_owner": 0},
+		pluck="name",
+	):
+		frappe.delete_doc("Custom DocPerm", name, ignore_permissions=True, force=True)
+	if not frappe.db.exists("Custom DocPerm", {"parent": doctype}):
+		frappe.throw(_("There must be at least one permission rule."), frappe.ValidationError)
+	validate_permissions_for_doctype(doctype, for_remove=True, alert=True)
 	frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
 	return success_response(data=permission_rules.rule_rows(doctype, {role}), message=_("Permission removed"))
 
@@ -873,12 +889,13 @@ def delete_permission(role: str, doctype: str, permlevel: int = 0, **kwargs):
 )
 @validate_request(PermissionResetSchema)
 @handle_api_errors
-@require_role(ADMIN_ROLES)
+@require_rule("Custom DocPerm", "delete")
 def reset_permissions(doctype: str, **kwargs):
 	doctype = _scoped_doctype(doctype)
 	removed = frappe.db.count("Custom DocPerm", {"parent": doctype})
 	if removed:
-		permission_manager.reset(doctype)
+		reset_perms(doctype)
+		clear_permissions_cache(doctype)
 	frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
 	return success_response(
 		data={
@@ -912,7 +929,7 @@ def _role_row(role: str) -> dict:
 )
 @validate_request(AdminCreateRoleSchema)
 @handle_api_errors
-@require_role(ADMIN_ROLES)
+@require_rule("Role", "create")
 def create_role(role: str):
 	role = role.strip()
 	if not role or not _in_scope(role) or role in _AMBIENT_ROLES:
@@ -936,7 +953,7 @@ def create_role(role: str):
 )
 @validate_request(RoleNameSchema)
 @handle_api_errors
-@require_role(ADMIN_ROLES)
+@require_rule("Role", "read")
 def get_role(role: str):
 	return success_response(data=_role_row(_scoped_role(role)))
 
@@ -949,7 +966,7 @@ def get_role(role: str):
 )
 @validate_request(AdminUpdateRoleSchema)
 @handle_api_errors
-@require_role(ADMIN_ROLES)
+@require_rule("Role", "write")
 def update_role(role: str, disabled: bool):
 	role = _scoped_role(role)
 	if role in _AMBIENT_ROLES or role == "Administrator":
@@ -971,7 +988,7 @@ def update_role(role: str, disabled: bool):
 )
 @validate_request(RoleNameSchema)
 @handle_api_errors
-@require_role(ADMIN_ROLES)
+@require_rule("Role", "delete")
 def delete_role(role: str):
 	role = _scoped_role(role)
 	if not frappe.db.get_value("Role", role, "is_custom"):
@@ -1018,7 +1035,7 @@ def _user_permissions(user: str) -> list[dict]:
 )
 @validate_request(UserRefSchema)
 @handle_api_errors
-@require_role(ADMIN_ROLES)
+@require_rule("User Permission", "read")
 def list_user_permissions(user_id: str):
 	user = _resolve_target(user_id)
 	return success_response(data=_user_permissions(user))
@@ -1033,7 +1050,7 @@ def list_user_permissions(user_id: str):
 )
 @validate_request(AdminAddUserPermissionSchema)
 @handle_api_errors
-@require_role(ADMIN_ROLES)
+@require_rule("User Permission", "create")
 def add_user_permission(
 	user_id: str,
 	allow: str,
@@ -1082,7 +1099,7 @@ def add_user_permission(
 )
 @validate_request(UserPermissionRefSchema)
 @handle_api_errors
-@require_role(ADMIN_ROLES)
+@require_rule("User Permission", "delete")
 def delete_user_permission(user_id: str, name: str):
 	user = _resolve_target(user_id)
 	_guard_privileged(user)
@@ -1109,7 +1126,7 @@ def delete_user_permission(user_id: str, name: str):
 	description="What `PUT /permissions` accepts: this service's roles, its doctypes and the rights a rule can grant. The rules themselves, standard and custom, come from `GET /permissions`.",
 )
 @handle_api_errors
-@require_role(ADMIN_ROLES)
+@require_rule("Custom DocPerm", "read")
 def permission_catalogue():
 	return success_response(
 		data={

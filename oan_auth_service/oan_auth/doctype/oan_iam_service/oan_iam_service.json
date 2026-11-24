@@ -25,6 +25,8 @@
   "jwks_url",
   "roles_section",
   "application",
+  "admin_client_id",
+  "admin_client_secret",
   "default_roles"
  ],
  "fields": [
@@ -144,6 +146,17 @@
    "label": "Application"
   },
   {
+   "description": "Optional. A service-account client of this login option's realm, allowed to manage clients there. When set, roles created or deleted through the admin API are mirrored into the Keycloak client named in Application.",
+   "fieldname": "admin_client_id",
+   "fieldtype": "Data",
+   "label": "Admin Client ID"
+  },
+  {
+   "fieldname": "admin_client_secret",
+   "fieldtype": "Password",
+   "label": "Admin Client Secret"
+  },
+  {
    "description": "Frappe roles every user of this login gets, whatever the token says. Granted to anyone the provider authenticates, so keep them low-privilege.",
    "fieldname": "default_roles",
    "fieldtype": "Table MultiSelect",
@@ -153,7 +166,7 @@
  ],
  "index_web_pages_for_search": 0,
  "links": [],
- "modified": "2026-10-30 17:15:00.000000",
+ "modified": "2026-11-24 12:00:00.000000",
  "modified_by": "Administrator",
  "module": "OAN Auth",
  "name": "OAN IAM Service",

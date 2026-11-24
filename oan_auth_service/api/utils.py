@@ -415,6 +415,36 @@ def require_role(roles: list[str]):
 	return decorator
 
 
+def require_rule(doctype: str, ptype: str):
+	"""Reject the call unless a role the caller holds grants `ptype` on `doctype` outright.
+
+	Stricter than `require_permission`: rules limited to the owner (`if_owner`) or to a permission
+	level do not count. Frappe lets every user read the `User` doctype under such a rule, and a
+	doctype-level check would let them through.
+	"""
+
+	def decorator(fn):
+		@wraps(fn)
+		def wrapper(*args, **kwargs):
+			if frappe.session.user != "Administrator":
+				roles = set(frappe.get_roles(frappe.session.user))
+				if not any(
+					r.role in roles and not r.permlevel and not r.if_owner and r.get(ptype)
+					for r in frappe.get_meta(doctype).permissions
+				):
+					frappe.throw(
+						_("Only a role with {0} permission on {1} can perform this action.").format(
+							ptype, doctype
+						),
+						frappe.PermissionError,
+					)
+			return fn(*args, **kwargs)
+
+		return wrapper
+
+	return decorator
+
+
 def require_permission(doctype: str, ptype: str):
 	"""Reject the call unless the caller holds `ptype` on `doctype` through DocPerm.
 

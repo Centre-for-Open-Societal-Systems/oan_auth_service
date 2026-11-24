@@ -4,7 +4,9 @@ Business rules for `/api/v1/admin` (public `/v1/admin`). Code: `oan_auth_service
 
 ## Who can call it
 
-Every endpoint requires System Manager or Administrator. Frappe's own `/api/resource/User` is not a substitute: it does not accept this service's bearer tokens, and it knows nothing of the synthetic user id, the login email field, the linked Contact or the `on_user_registered` hook.
+Every endpoint checks that a role the caller holds grants the right on the doctype it changes, not a fixed role. Rules limited to the owner or to a permission level do not count, because Frappe lets every user read `User` under such a rule: `User` for the user and session routes, `Role` for the role routes, `Custom DocPerm` for the role-permission routes and the catalogue, and `User Permission` for the record restrictions (read, write, create or delete as the route does). System Manager and Administrator hold all of these, so they behave as before. A dedicated role, such as a central `OAN Administrator` created by an init script in each service, can be given exactly those permissions and nothing else. The service scope below, and the rules on Administrator accounts, apply to every caller.
+
+The permission rules are written with Frappe's `add_permission`, `update_permission_property` and `reset_perms` rather than the desk's `permission_manager` endpoints, which insist on System Manager whatever the doctype permissions say. Frappe's own `/api/resource/User` is not a substitute: it does not accept this service's bearer tokens, and it knows nothing of the synthetic user id, the login email field, the linked Contact or the `on_user_registered` hook.
 
 ## Service scope
 
@@ -41,7 +43,7 @@ Only roles, doctypes and users of the calling service are visible.
 ## Roles and record restrictions
 
 - `POST /roles` creates a role whose name is in scope, with no desk access, and marks it `is_custom`. Desk access, home page and two-factor settings cannot be set here: desk access would let the role sign in to the Frappe desk.
-- When `keycloak_admin_client_id`, `keycloak_admin_client_secret` and `keycloak_admin_realm` are set in site_config, `POST /roles` and `DELETE /roles/{role}` also create or remove the client role of the same name in the Keycloak client (`application`) of every enabled login option whose `issuer` is a Keycloak realm. Keycloak is asked before the commit, so a refusal or an outage (502) leaves neither side changed, and the response lists the `realm/client` pairs touched under `keycloak`. Without those settings nothing is sent. `PATCH /roles/{role}` does not touch Keycloak.
+- When a login option (`OAN IAM Service`, one per Keycloak realm) has an `application`, an `admin_client_id` and an `admin_client_secret`, `POST /roles` and `DELETE /roles/{role}` also create or remove the client role of the same name in that Keycloak client. The admin client is a service account of the option's own realm with rights to manage clients there; the secret is a Password field, encrypted at rest. Options without them are skipped. Keycloak is asked before the commit, so a refusal or an outage (502) leaves neither side changed, and the response lists the `realm/client` pairs touched under `keycloak`. `PATCH /roles/{role}` does not touch Keycloak.
 - `DELETE /roles/{role}` works only on roles created through the API (`is_custom`), and only while no user holds them. Roles shipped by an app are refused.
 - `PATCH /roles/{role}` sets `disabled`. Disabling a role removes it from every user who holds it, and enabling it again does not give it back. Tokens already issued keep the old role claim until they expire.
 - Users holding a role are listed with `GET /users?role=`.
