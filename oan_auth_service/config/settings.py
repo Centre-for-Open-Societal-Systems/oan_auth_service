@@ -145,6 +145,7 @@ _IAM_SERVICE_FIELDS = (
 	"issuer",
 	"client_id",
 	"application",
+	"admin_client_id",
 	"cookie_prefix",
 	"userinfo_url",
 	"jwks_url",

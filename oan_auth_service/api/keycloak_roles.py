@@ -2,21 +2,18 @@
 
 A delegated login turns the token's client roles of a login option's `application` into Frappe roles of
 the same name (see `iam_users.granted_roles`). The admin API creates and deletes the Frappe role; this
-module creates and deletes the client role of that name in every Keycloak client a login option points at.
+module creates and deletes the client role of that name in the Keycloak client of every login option.
 
-Configured in site_config.json, all required to turn the mirror on (without them it does nothing):
-
-    "keycloak_admin_client_id": "oan-auth-admin",
-    "keycloak_admin_client_secret": "...",
-    "keycloak_admin_realm": "master"
-
-The client is a Keycloak service account (client credentials) allowed to manage clients in the realms of
-the login options. Realm and Keycloak URL come from each option's `issuer` (`https://<host>/realms/<realm>`).
+Each login option (`OAN IAM Service`, one per realm) carries its own `admin_client_id` and
+`admin_client_secret` (a Password field, encrypted at rest): a service-account client of the option's own
+realm, allowed to manage clients there. An option without them is skipped. Realm and Keycloak URL come
+from the option's `issuer` (`https://<host>/realms/<realm>`).
 """
 
 import frappe
 import requests
 from frappe import _
+from frappe.utils.password import get_decrypted_password
 
 from oan_auth_service.api.iam_tokens import is_secure_url
 from oan_auth_service.config import settings
@@ -36,38 +33,39 @@ def sync_role(role: str, delete: bool = False) -> list[str]:
 	Returns the `realm/client` pairs it touched. An existing role on create and a missing one on delete
 	are fine, so a retry after a half-finished call is safe. Raises `KeycloakError` on any other answer.
 	"""
-	admin_id = frappe.conf.get("keycloak_admin_client_id")
-	secret = frappe.conf.get("keycloak_admin_client_secret")
-	if not (admin_id and secret):
-		return []
-
-	targets = {
-		(s.issuer.rstrip("/"), s.application)
-		for s in settings.iam_services()
-		if s.application and s.issuer and "/realms/" in s.issuer
-	}
-	admin_realm = frappe.conf.get("keycloak_admin_realm") or "master"
-	touched, tokens = [], {}
-	for issuer, application in sorted(targets):
+	touched = []
+	for service in settings.iam_services():
+		if not (service.application and service.admin_client_id and "/realms/" in (service.issuer or "")):
+			continue
+		secret = get_decrypted_password(
+			"OAN IAM Service", service.key, "admin_client_secret", raise_exception=False
+		)
+		if not secret:
+			continue
+		issuer = service.issuer.rstrip("/")
 		base, realm = issuer.split("/realms/", 1)
 		if not is_secure_url(base):
 			raise KeycloakError(_("Keycloak URL {0} must be https.").format(base))
+		application = service.application
 		try:
-			if base not in tokens:
-				r = requests.post(
-					f"{base}/realms/{admin_realm}/protocol/openid-connect/token",
-					data={"grant_type": "client_credentials", "client_id": admin_id, "client_secret": secret},
-					timeout=TIMEOUT,
-					allow_redirects=False,
-				)
-				if r.status_code != 200:
-					raise KeycloakError(_("Keycloak refused the admin client ({0}).").format(r.status_code))
-				tokens[base] = {"Authorization": f"Bearer {r.json()['access_token']}"}
-			admin = f"{base}/admin/realms/{realm}/clients"
+			r = requests.post(
+				f"{issuer}/protocol/openid-connect/token",
+				data={
+					"grant_type": "client_credentials",
+					"client_id": service.admin_client_id,
+					"client_secret": secret,
+				},
+				timeout=TIMEOUT,
+				allow_redirects=False,
+			)
+			if r.status_code != 200:
+				raise KeycloakError(_("Keycloak refused the admin client ({0}).").format(r.status_code))
+			headers = {"Authorization": f"Bearer {r.json()['access_token']}"}
+			clients = f"{base}/admin/realms/{realm}/clients"
 			found = requests.get(
-				admin,
+				clients,
 				params={"clientId": application},
-				headers=tokens[base],
+				headers=headers,
 				timeout=TIMEOUT,
 				allow_redirects=False,
 			)
@@ -75,15 +73,15 @@ def sync_role(role: str, delete: bool = False) -> list[str]:
 				raise KeycloakError(
 					_("Keycloak client {0} not found in realm {1}.").format(application, realm)
 				)
-			roles = f"{admin}/{found.json()[0]['id']}/roles"
+			roles = f"{clients}/{found.json()[0]['id']}/roles"
 			if delete:
 				r = requests.delete(
-					f"{roles}/{role}", headers=tokens[base], timeout=TIMEOUT, allow_redirects=False
+					f"{roles}/{role}", headers=headers, timeout=TIMEOUT, allow_redirects=False
 				)
 				ok = (204, 404)
 			else:
 				r = requests.post(
-					roles, json={"name": role}, headers=tokens[base], timeout=TIMEOUT, allow_redirects=False
+					roles, json={"name": role}, headers=headers, timeout=TIMEOUT, allow_redirects=False
 				)
 				ok = (201, 409)
 		except (requests.RequestException, ValueError, KeyError) as exc:
