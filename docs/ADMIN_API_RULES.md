@@ -41,6 +41,7 @@ Only roles, doctypes and users of the calling service are visible.
 ## Roles and record restrictions
 
 - `POST /roles` creates a role whose name is in scope, with no desk access, and marks it `is_custom`. Desk access, home page and two-factor settings cannot be set here: desk access would let the role sign in to the Frappe desk.
+- When `keycloak_admin_client_id`, `keycloak_admin_client_secret` and `keycloak_admin_realm` are set in site_config, `POST /roles` and `DELETE /roles/{role}` also create or remove the client role of the same name in the Keycloak client (`application`) of every enabled login option whose `issuer` is a Keycloak realm. Keycloak is asked before the commit, so a refusal or an outage (502) leaves neither side changed, and the response lists the `realm/client` pairs touched under `keycloak`. Without those settings nothing is sent. `PATCH /roles/{role}` does not touch Keycloak.
 - `DELETE /roles/{role}` works only on roles created through the API (`is_custom`), and only while no user holds them. Roles shipped by an app are refused.
 - `PATCH /roles/{role}` sets `disabled`. Disabling a role removes it from every user who holds it, and enabling it again does not give it back. Tokens already issued keep the old role claim until they expire.
 - Users holding a role are listed with `GET /users?role=`.
