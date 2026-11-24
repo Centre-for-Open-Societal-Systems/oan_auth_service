@@ -11,7 +11,7 @@ from frappe.permissions import rights as RIGHTS
 from frappe.query_builder.functions import Count
 from pydantic import BaseModel, Field, field_validator
 
-from oan_auth_service.api import permission_rules, tokens
+from oan_auth_service.api import keycloak_roles, permission_rules, tokens
 from oan_auth_service.api.iam_users import is_delegated_user
 from oan_auth_service.api.router import prefixed
 from oan_auth_service.api.utils import (
@@ -922,8 +922,10 @@ def create_role(role: str):
 
 	doc = frappe.get_doc({"doctype": "Role", "role_name": role, "desk_access": 0, "is_custom": 1})
 	doc.insert(ignore_permissions=True)
+	# Before the commit: if Keycloak refuses, the request rolls the Frappe role back too.
+	keycloak = keycloak_roles.sync_role(role)
 	frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
-	return success_response(data=_role_row(role), message=_("Role created"))
+	return success_response(data={**_role_row(role), "keycloak": keycloak}, message=_("Role created"))
 
 
 @route(
@@ -980,8 +982,9 @@ def delete_role(role: str):
 			frappe.ValidationError,
 		)
 	frappe.delete_doc("Role", role, ignore_permissions=True)
+	keycloak = keycloak_roles.sync_role(role, delete=True)
 	frappe.db.commit()  # nosemgrep: frappe-semgrep-rules.rules.frappe-manual-commit
-	return success_response(data={"role": role}, message=_("Role deleted"))
+	return success_response(data={"role": role, "keycloak": keycloak}, message=_("Role deleted"))
 
 
 # ---------------------------------------------------------------------------
