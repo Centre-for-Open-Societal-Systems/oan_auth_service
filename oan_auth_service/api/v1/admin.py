@@ -5,13 +5,12 @@ import string
 
 import frappe
 from frappe import N_, _
-from frappe.core.doctype.doctype.doctype import validate_permissions_for_doctype
+from frappe.core.doctype.doctype.doctype import clear_permissions_cache, validate_permissions_for_doctype
 from frappe.permissions import (
 	ALL_USER_ROLE,
 	GUEST_ROLE,
 	SYSTEM_USER_ROLE,
 	add_permission,
-	clear_permissions_cache,
 	reset_perms,
 	setup_custom_perms,
 	update_permission_property,
