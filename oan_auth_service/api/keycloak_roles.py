@@ -87,7 +87,7 @@ def sync_role(role: str, delete: bool = False) -> list[str]:
 				)
 				ok = (201, 409)
 		except (requests.RequestException, ValueError, KeyError) as exc:
-			raise KeycloakError(_("Could not reach Keycloak: {0}").format(exc))
+			raise KeycloakError(_("Could not reach Keycloak: {0}").format(str(exc)))
 		if r.status_code not in ok:
 			raise KeycloakError(_("Keycloak answered {0} for role {1}.").format(r.status_code, role))
 		touched.append(f"{realm}/{application}")
