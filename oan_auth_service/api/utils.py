@@ -415,12 +415,20 @@ def require_role(roles: list[str]):
 	return decorator
 
 
+# Doctypes whose meta keeps its standard rules whatever `Custom DocPerm` holds.
+_STANDARD_PERMISSIONS_ONLY = frozenset({"DocType", "DocField", "DocPerm", "Custom DocPerm"})
+
+
 def require_rule(doctype: str, ptype: str):
 	"""Reject the call unless a role the caller holds grants `ptype` on `doctype` outright.
 
 	Stricter than `require_permission`: rules limited to the owner (`if_owner`) or to a permission
 	level do not count. Frappe lets every user read the `User` doctype under such a rule, and a
 	doctype-level check would let them through.
+
+	Frappe never applies custom rules to `DocType`, `DocField`, `DocPerm` and `Custom DocPerm`
+	(`Meta.set_custom_permissions` skips them), so for those the `Custom DocPerm` rows count in
+	addition to the standard rules.
 	"""
 
 	def decorator(fn):
@@ -428,9 +436,15 @@ def require_rule(doctype: str, ptype: str):
 		def wrapper(*args, **kwargs):
 			if frappe.session.user != "Administrator":
 				roles = set(frappe.get_roles(frappe.session.user))
+				if doctype in _STANDARD_PERMISSIONS_ONLY:
+					rules = [
+						*frappe.get_meta(doctype).permissions,
+						*frappe.get_all("Custom DocPerm", filters={"parent": doctype}, fields=["*"]),
+					]
+				else:
+					rules = frappe.get_meta(doctype).permissions
 				if not any(
-					r.role in roles and not r.permlevel and not r.if_owner and r.get(ptype)
-					for r in frappe.get_meta(doctype).permissions
+					r.role in roles and not r.permlevel and not r.if_owner and r.get(ptype) for r in rules
 				):
 					frappe.throw(
 						_("Only a role with {0} permission on {1} can perform this action.").format(
