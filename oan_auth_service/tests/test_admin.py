@@ -457,3 +457,44 @@ class TestAdminEndpoints(unittest.TestCase):
 		names = {r["name"] for r in body["data"]}
 		self.assertIn("Notification Listed Role", names)
 		self.assertTrue(all(n.startswith("Notification") for n in names))
+
+	def test_custom_docperm_rule_allows_set_permissions_without_system_manager(self):
+		ensure_role("Notification Perm Admin")
+		ensure_role("Notification Perm Target")
+		rule = frappe.get_doc(
+			{
+				"doctype": "Custom DocPerm",
+				"parent": "Custom DocPerm",
+				"parenttype": "DocType",
+				"parentfield": "permissions",
+				"role": "Notification Perm Admin",
+				"read": 1,
+				"write": 1,
+				"create": 1,
+				"delete": 1,
+			}
+		).insert(ignore_permissions=True)
+		self.addCleanup(
+			lambda: frappe.delete_doc("Custom DocPerm", rule.name, ignore_permissions=True, force=True)
+		)
+		self.addCleanup(self._reset_note_permissions)
+		non_sm = make_user("oan_perm_admin@example.com", "AdminPass123!", roles=["Notification Perm Admin"])
+		self.addCleanup(cleanup_user, non_sm)
+		frappe.set_user(non_sm)
+		with override_conf(service_prefix="Notification"):
+			status, body = call(
+				"/api/v1/admin/permissions",
+				"PUT",
+				{
+					"role": "Notification Perm Target",
+					"doctype": "Notification Log",
+					"permissions": {"read": True},
+				},
+			)
+			self.assertEqual(status, 200, body)
+			status, body = call(
+				"/api/v1/admin/permissions",
+				"DELETE",
+				{"role": "Notification Perm Target", "doctype": "Notification Log"},
+			)
+			self.assertEqual(status, 200, body)

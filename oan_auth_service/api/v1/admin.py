@@ -10,7 +10,6 @@ from frappe.permissions import (
 	ALL_USER_ROLE,
 	GUEST_ROLE,
 	SYSTEM_USER_ROLE,
-	add_permission,
 	reset_perms,
 	setup_custom_perms,
 	update_permission_property,
@@ -765,10 +764,15 @@ def remove_role(user_id: str, role: str):
 # ---------------------------------------------------------------------------
 
 
+# Roles that administer the site; a service prefix that happens to match one of these
+# (or an ambient role) must still not make its rules editable here.
+_RESERVED_ROLES = frozenset((*_AMBIENT_ROLES, "Administrator", "System Manager"))
+
+
 def _scoped_role(role: str) -> str:
 	"""Return `role` if it is a service role that exists, else raise."""
 	role = role.strip()
-	if not _in_scope(role) or not frappe.db.exists("Role", role):
+	if role in _RESERVED_ROLES or not _in_scope(role) or not frappe.db.exists("Role", role):
 		frappe.throw(_("Role '{0}' is not managed by this service.").format(role), frappe.PermissionError)
 	return role
 
@@ -822,6 +826,33 @@ def list_permissions(role: str | None = None, doctype: str | None = None):
 	return success_response(data=rows)
 
 
+def _ensure_custom_docperm(doctype: str, role: str, permlevel: int = 0) -> None:
+	"""Create a Custom DocPerm row if missing, with ignore_permissions=True after @require_rule.
+
+	Mirrors `frappe.permissions.add_permission`, whose `.save()` cannot skip the doctype
+	permission check (System Manager only); diff against it when upgrading Frappe. Callers
+	must have scoped `doctype` and `role` with `_scoped_doctype` and `_scoped_role`.
+	"""
+	setup_custom_perms(doctype)
+	if frappe.db.exists(
+		"Custom DocPerm", {"parent": doctype, "role": role, "permlevel": permlevel, "if_owner": 0}
+	):
+		return
+	frappe.get_doc(
+		{
+			"doctype": "Custom DocPerm",
+			"__islocal": 1,
+			"parent": doctype,
+			"parenttype": "DocType",
+			"parentfield": "permissions",
+			"role": role,
+			"permlevel": permlevel,
+			"read": 1,
+		}
+	).insert(ignore_permissions=True)
+	validate_permissions_for_doctype(doctype)
+
+
 @route(
 	"/permissions",
 	methods=("PUT",),
@@ -837,7 +868,7 @@ def set_permissions(role: str, doctype: str, permissions: dict[str, bool], perml
 	if unknown := [p for p in permissions if p not in RIGHTS]:
 		frappe.throw(_("Unknown rights: {0}").format(", ".join(unknown)), frappe.ValidationError)
 
-	add_permission(doctype, role, permlevel)
+	_ensure_custom_docperm(doctype, role, permlevel)
 	rules = frappe.db.count("Custom DocPerm", {"parent": doctype, "role": role, "permlevel": permlevel})
 	if rules > 1:
 		frappe.throw(
